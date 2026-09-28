@@ -1,0 +1,28 @@
+image:
+  repository: localhost:32000/pingmessenger-platform
+  tag: dev
+  pullPolicy: Always
+postgres:
+  image: postgres:17-alpine
+  database: pingmessenger
+  user: pingmessenger
+  password: pingmessenger-local-only
+auth:
+  jwtSigningSecret: development-only-change-before-any-shared-deployment-1234
+  # Existing local MicroK8s OpenIM Platform API service (namespace-qualified).
+  openIMAPIBaseURL: http://openimserver-openim-api.openim.svc.cluster.local
+  openIMAPIToken: ""
+email:
+  provider: smtp
+  smtpAddress: pingmessenger-mailpit:1025
+  smtpFrom: no-reply@pingmessenger.local
+  awsRegion: ap-south-1
+  awsSNSTopicARN: ""
+storage:
+  bucket: openim
+  endpoint: http://im-minio.openim.svc.cluster.local:9000
+  publicBaseURL: http://im-minio.openim.svc.cluster.local:9000/openim
+  accessKeyID: root
+  secretAccessKey: openIM123
+service:
+  port: 8080
