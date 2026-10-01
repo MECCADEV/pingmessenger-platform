@@ -17,6 +17,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/notify"
+	"pingmessenger/internal/openapi"
 	"pingmessenger/internal/openim"
 	"pingmessenger/internal/storage"
 )
@@ -41,12 +42,31 @@ func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, otp
 func (a *API) Router() fasthttp.RequestHandler {
 	r := router.New()
 	r.GET("/healthz", a.health)
+	r.GET("/openapi.json", a.openAPIDocument)
 	a.registerAuthRoutes(r)
 	a.registerMFARoutes(r)
 	a.registerSecurityRoutes(r)
 	a.registerProfileRoutes(r)
 	a.registerFriendRoutes(r)
 	return r.Handler
+}
+
+// openAPIDocument exposes the checked-in Huma-derived schema while leaving
+// FastHTTP as the only runtime router and handler implementation.
+func (a *API) openAPIDocument(ctx *fasthttp.RequestCtx) {
+	document, err := openapi.Document()
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not generate OpenAPI document"})
+		return
+	}
+	body, err := document.MarshalJSON()
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not marshal OpenAPI document"})
+		return
+	}
+	ctx.SetStatusCode(http.StatusOK)
+	ctx.SetContentType("application/vnd.oai.openapi+json;version=3.1")
+	_, _ = ctx.Write(body)
 }
 
 type signupRequest struct {
@@ -139,6 +159,7 @@ func (a *API) authenticated(ctx *fasthttp.RequestCtx) (string, string, bool) {
 	sessionID, ok2 := claims["sid"].(string)
 	return userID, sessionID, ok1 && ok2
 }
+
 // DecodeAndValidate is the only request-body entry point for API handlers.
 // It rejects typoed/unknown fields and a second JSON value before validating
 // the DTO's structural constraints. Authorization and database checks belong

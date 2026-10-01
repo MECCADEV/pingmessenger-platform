@@ -22,6 +22,9 @@ Regenerate it with `make openapi`. It is generated from Huma typed schemas only;
 the production FastHTTP router and handlers are not wrapped, replaced, or given
 additional documentation routes.
 
+The deployed document is served read-only at
+`https://api-platform-pingmessenger.meainternal.com/openapi.json`.
+
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
 that module. Development/test fixtures run through `make seed` and are refused
