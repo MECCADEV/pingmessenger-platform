@@ -94,11 +94,12 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create account"})
 		return
 	}
-	// Use the platform UUID as the OpenIM identity.  A failure is surfaced as
-	// pending sync without rolling back the local account, so callers can still
-	// complete contact verification while the dependency recovers.
+	// OpenIM's deployed storage accepts only alphanumeric user IDs. Keep the
+	// platform UUID as the database identity, and derive a stable safe OpenIM
+	// identity from it rather than sending UUID hyphens to OpenIM.
 	sync := "complete"
-	if _, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: id, Nickname: username}); provisionErr != nil || a.users.SetOpenIMUserID(context.Background(), id, id) != nil {
+	openIMUserID := "pm" + strings.ReplaceAll(id, "-", "")
+	if _, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: openIMUserID, Nickname: username}); provisionErr != nil || a.users.SetOpenIMUserID(context.Background(), id, openIMUserID) != nil {
 		sync = "pending"
 	}
 	writeJSON(ctx, http.StatusCreated, map[string]string{"user_id": id, "status": "pending_contact_verification", "openim_sync": sync})
@@ -138,10 +139,6 @@ func (a *API) authenticated(ctx *fasthttp.RequestCtx) (string, string, bool) {
 	sessionID, ok2 := claims["sid"].(string)
 	return userID, sessionID, ok1 && ok2
 }
-func (a *API) notImplemented(ctx *fasthttp.RequestCtx) {
-	writeJSON(ctx, http.StatusNotImplemented, map[string]string{"error": "endpoint not implemented"})
-}
-
 // DecodeAndValidate is the only request-body entry point for API handlers.
 // It rejects typoed/unknown fields and a second JSON value before validating
 // the DTO's structural constraints. Authorization and database checks belong

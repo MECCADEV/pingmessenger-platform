@@ -19,10 +19,22 @@ email:
   awsRegion: ap-south-1
   awsSNSTopicARN: ""
 storage:
+  # "minio" is for local MicroK8s. For AWS S3 set provider: aws and endpoint: "".
+  provider: minio
   bucket: openim
   endpoint: http://im-minio.openim.svc.cluster.local:9000
   publicBaseURL: http://im-minio.openim.svc.cluster.local:9000/openim
-  accessKeyID: root
-  secretAccessKey: openIM123
+  credentials:
+    # static creates a chart-owned Secret unless existingSecret is set. Use
+    # irsa on EKS (or another workload-identity provider) to use the AWS SDK
+    # default credential chain without injecting access keys.
+    mode: static
+    existingSecret: ""
+    accessKeyID: root
+    secretAccessKey: openIM123
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
 service:
   port: 8080

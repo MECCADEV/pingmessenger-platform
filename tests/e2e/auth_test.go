@@ -94,7 +94,7 @@ func uploadImage(t *testing.T, c *http.Client, base, access string) string {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusAccepted {
+	if response.StatusCode != http.StatusOK {
 		t.Fatalf("profile update status=%d", response.StatusCode)
 	}
 	var out map[string]string
@@ -218,7 +218,17 @@ func TestSecurityAndDiscoveryProtocolsAgainstDeployedAPI(t *testing.T) {
 		t.Fatalf("recovery_codes=%v", regenerated["recovery_codes"])
 	}
 	getAuthenticated(t, client, base+"/v1/security/activity", access, http.StatusOK)
-	postAuthenticatedJSON(t, client, base+"/v1/friends/discover-network", access, fmt.Sprintf(`{"emails":[%q]}`, email), http.StatusOK)
+	peer := fmt.Sprintf("peer-%d", time.Now().UnixNano())
+	peerEmail := peer + "@example.test"
+	post(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","email":%q}`, peer, peerEmail), http.StatusCreated)
+	peerSignup := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, peerEmail), http.StatusAccepted)
+	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, peerSignup["challenge_id"], mailCode(t, client, mailpit, peerEmail)), http.StatusOK)
+	peerLogin := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, peerEmail), http.StatusAccepted)
+	peerTokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"e2e-discovery"}`, peerLogin["challenge_id"], mailCode(t, client, mailpit, peerEmail)), http.StatusOK)
+	discovered := postAuthenticatedJSON(t, client, base+"/v1/friends/discover-network", peerTokens["access_token"].(string), fmt.Sprintf(`{"emails":[%q]}`, email), http.StatusOK)
+	if ids, ok := discovered["open_im_user_ids"].([]any); !ok || len(ids) != 1 {
+		t.Fatalf("discovered OpenIM identities = %v", discovered["open_im_user_ids"])
+	}
 	postAuthenticatedJSON(t, client, base+"/v1/security/revoke", access, `{"all":true}`, http.StatusNoContent)
 }
 

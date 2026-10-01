@@ -17,8 +17,28 @@ type: Opaque
 stringData:
   JWT_SIGNING_SECRET: {{ .Values.auth.jwtSigningSecret | quote }}
   OPENIM_API_TOKEN: {{ .Values.auth.openIMAPIToken | quote }}
-  AWS_ACCESS_KEY_ID: {{ .Values.storage.accessKeyID | quote }}
-  AWS_SECRET_ACCESS_KEY: {{ .Values.storage.secretAccessKey | quote }}
+{{- if and (eq .Values.storage.credentials.mode "static") (not .Values.storage.credentials.existingSecret) }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-storage
+type: Opaque
+stringData:
+  AWS_ACCESS_KEY_ID: {{ .Values.storage.credentials.accessKeyID | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ .Values.storage.credentials.secretAccessKey | quote }}
+{{- end }}
+---
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ default (printf "%s-api" .Release.Name) .Values.serviceAccount.name }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -54,6 +74,7 @@ spec:
   template:
     metadata: {labels: {app: {{ .Release.Name }}-api}}
     spec:
+      serviceAccountName: {{ default (printf "%s-api" .Release.Name) .Values.serviceAccount.name }}
       initContainers:
         - name: migrate
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -80,6 +101,11 @@ spec:
           envFrom:
             - secretRef: {name: {{ .Release.Name }}-database}
             - secretRef: {name: {{ .Release.Name }}-auth}
+            {{- if .Values.storage.credentials.existingSecret }}
+            - secretRef: {name: {{ .Values.storage.credentials.existingSecret }}}
+            {{- else if eq .Values.storage.credentials.mode "static" }}
+            - secretRef: {name: {{ .Release.Name }}-storage}
+            {{- end }}
           readinessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 2}
           livenessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 5}
 ---

@@ -28,7 +28,7 @@ func main() {
 	if err := pool.Ping(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-	openIM, err := openim.NewHTTPClient(cfg.OpenIMAPIBaseURL, cfg.OpenIMAPIToken)
+	openIM, err := openim.NewHTTPClientWithSharedSecret(cfg.OpenIMAPIBaseURL, cfg.OpenIMAPIToken, cfg.OpenIMSharedSecret, cfg.OpenIMAdminUserID)
 	if err != nil {
 		log.Fatal(err)
 	}

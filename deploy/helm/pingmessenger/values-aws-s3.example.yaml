@@ -1,0 +1,27 @@
+# Production override for Amazon S3. Apply with:
+# helm upgrade --install pingmessenger ./deploy/helm/pingmessenger \
+#   --namespace pingmessenger --create-namespace \
+#   -f deploy/helm/pingmessenger/values-aws-s3.example.yaml
+#
+# Create the bucket beforehand. Do not commit real ARNs, secrets, or tokens.
+email:
+  # AWS_REGION is shared by the S3 and SNS SDK clients in this service.
+  awsRegion: ap-south-1
+  provider: sns
+  awsSNSTopicARN: arn:aws:sns:ap-south-1:123456789012:pingmessenger-verification
+storage:
+  provider: aws
+  bucket: pingmessenger-assets-production
+  # Empty selects AWS S3 rather than a MinIO/custom S3-compatible endpoint.
+  endpoint: ""
+  publicBaseURL: https://assets.example.com
+  credentials:
+    # EKS IRSA: no AWS keys are mounted. The AWS SDK obtains temporary
+    # credentials using the service account role below.
+    mode: irsa
+    existingSecret: ""
+serviceAccount:
+  create: true
+  name: pingmessenger-api
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/pingmessenger-api

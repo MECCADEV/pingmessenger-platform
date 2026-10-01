@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	json "github.com/goccy/go-json"
@@ -18,9 +19,25 @@ import (
 // HTTPClient owns reusable, concurrency-safe HTTP connections. Construct it
 // once at startup and inject Client into services; never make one per request.
 type HTTPClient struct {
-	baseURL *url.URL
-	token   string
-	http    *http.Client
+	baseURL      *url.URL
+	token        string
+	sharedSecret string
+	adminUserID  string
+	tokenExpiry  time.Time
+	mu           sync.Mutex
+	http         *http.Client
+}
+
+// NewHTTPClientWithSharedSecret obtains a signed OpenIM admin token with the
+// shared secret and refreshes it before expiry. The shared secret is never
+// sent to ordinary Platform API endpoints.
+func NewHTTPClientWithSharedSecret(baseURL, token, sharedSecret, adminUserID string) (*HTTPClient, error) {
+	c, err := NewHTTPClient(baseURL, token)
+	if err != nil {
+		return nil, err
+	}
+	c.sharedSecret, c.adminUserID = sharedSecret, adminUserID
+	return c, nil
 }
 
 func NewHTTPClient(baseURL, token string) (*HTTPClient, error) {
@@ -75,6 +92,9 @@ func (c *HTTPClient) DiscoverUsers(ctx context.Context, request *DiscoverUsersRe
 }
 
 func (c *HTTPClient) call(ctx context.Context, operation string, request, response any) error {
+	if err := c.ensureAdminToken(ctx); err != nil {
+		return err
+	}
 	body, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("marshal OpenIM request: %w", err)
@@ -123,5 +143,59 @@ func (c *HTTPClient) call(ctx context.Context, operation string, request, respon
 			return fmt.Errorf("decode OpenIM %s data: %w", operation, err)
 		}
 	}
+	return nil
+}
+
+func (c *HTTPClient) ensureAdminToken(ctx context.Context) error {
+	if c.sharedSecret == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.token != "" && time.Now().Add(time.Minute).Before(c.tokenExpiry) {
+		return nil
+	}
+	body, err := json.Marshal(struct {
+		Secret string `json:"secret"`
+		UserID string `json:"userID"`
+	}{Secret: c.sharedSecret, UserID: c.adminUserID})
+	if err != nil {
+		return fmt.Errorf("marshal OpenIM admin token request: %w", err)
+	}
+	u := c.baseURL.JoinPath("auth", "get_admin_token")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create OpenIM admin token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	operationID := make([]byte, 12)
+	if _, err = rand.Read(operationID); err != nil {
+		return fmt.Errorf("create OpenIM admin token operation ID: %w", err)
+	}
+	req.Header.Set("operationID", hex.EncodeToString(operationID))
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("call OpenIM admin token: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("OpenIM admin token returned %d", resp.StatusCode)
+	}
+	var envelope struct {
+		ErrCode int    `json:"errCode"`
+		ErrMsg  string `json:"errMsg"`
+		Data    struct {
+			Token             string `json:"token"`
+			ExpireTimeSeconds int64  `json:"expireTimeSeconds"`
+		} `json:"data"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return fmt.Errorf("decode OpenIM admin token response: %w", err)
+	}
+	if envelope.ErrCode != 0 || envelope.Data.Token == "" {
+		return fmt.Errorf("OpenIM admin token failed (%d): %s", envelope.ErrCode, envelope.ErrMsg)
+	}
+	c.token = envelope.Data.Token
+	c.tokenExpiry = time.Now().Add(time.Duration(envelope.Data.ExpireTimeSeconds) * time.Second)
 	return nil
 }
