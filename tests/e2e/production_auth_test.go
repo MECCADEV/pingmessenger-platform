@@ -4,15 +4,20 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 )
+
+const productionE2EQueueURL = "https://sqs.ap-south-1.amazonaws.com/403048695675/pingmessenger-auth-e2e"
 
 // TestProductionAuthContract exercises every public auth boundary that can be
 // verified without reading a production OTP. It is deliberately opt-in so a
@@ -65,6 +70,149 @@ func TestProductionAuthContract(t *testing.T) {
 	}
 	assertStatus(t, client, http.MethodPost, base+"/v1/profile/update", `{}`, http.StatusUnauthorized, "unauthenticated profile update")
 	assertStatus(t, client, http.MethodPost, base+"/v1/security/revoke", `{"all":true}`, http.StatusUnauthorized, "unauthenticated session revoke")
+}
+
+// TestProductionCompleteAuthFlow uses the private SNS-to-SQS inbox to verify
+// every OTP-dependent auth protocol against production. It must run alone:
+// the queue is drained before each challenge because the SNS message body does
+// not include the recipient address.
+func TestProductionCompleteAuthFlow(t *testing.T) {
+	base := productionBaseURL(t)
+	inbox := newProductionInbox(t)
+	client := &http.Client{Timeout: 15 * time.Second}
+	name := fmt.Sprintf("prod-full-%d", time.Now().UnixNano())
+	email := name + "@example.test"
+	post(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","email":%q}`, name, email), http.StatusCreated)
+
+	inbox.drain(t)
+	signup := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, email), http.StatusAccepted)
+	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, signup["challenge_id"], inbox.otp(t)), http.StatusOK)
+
+	inbox.drain(t)
+	login := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, email), http.StatusAccepted)
+	tokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"production-e2e","device_name":"production-e2e"}`, login["challenge_id"], inbox.otp(t)), http.StatusOK)
+	access, refresh := tokens["access_token"].(string), tokens["refresh_token"].(string)
+	next := postJSON(t, client, base+"/v1/auth/refresh", fmt.Sprintf(`{"refresh_token":%q}`, refresh), http.StatusOK)
+	if next["refresh_token"] == refresh || next["access_token"] == "" {
+		t.Fatal("refresh token rotation failed")
+	}
+
+	getAuthenticated(t, client, base+"/v1/profile/", access, http.StatusOK)
+	getAuthenticated(t, client, base+"/v1/security/backup-codes", access, http.StatusOK)
+	getAuthenticated(t, client, base+"/v1/security/activity", access, http.StatusOK)
+	inbox.drain(t)
+	stepUp := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"step_up"}`, email), http.StatusAccepted)
+	regenerated := postAuthenticatedJSON(t, client, base+"/v1/security/backup-codes/regenerate", access, fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, stepUp["challenge_id"], inbox.otp(t)), http.StatusOK)
+	if codes, ok := regenerated["recovery_codes"].([]any); !ok || len(codes) != 10 {
+		t.Fatalf("unexpected regenerated backup codes: %#v", regenerated)
+	}
+	image := uploadImage(t, client, base, access)
+	profile := getJSONAuthenticated(t, client, base+"/v1/profile/", access)
+	if profile["image"] != image {
+		t.Fatalf("profile image = %#v; want %q", profile["image"], image)
+	}
+	postAuthenticatedJSON(t, client, base+"/v1/security/revoke", access, `{"all":true}`, http.StatusNoContent)
+}
+
+type productionInbox struct{ queueURL string }
+
+func newProductionInbox(t *testing.T) productionInbox {
+	t.Helper()
+	queue := os.Getenv("E2E_SNS_SQS_QUEUE_URL")
+	if queue == "" {
+		queue = productionE2EQueueURL
+	}
+	if queue != productionE2EQueueURL {
+		t.Fatal("E2E_SNS_SQS_QUEUE_URL must be the dedicated PingMessenger E2E queue")
+	}
+	if _, err := exec.LookPath("aws"); err != nil {
+		t.Fatalf("aws CLI is required for production OTP E2E: %v", err)
+	}
+	return productionInbox{queueURL: queue}
+}
+
+func (i productionInbox) drain(t *testing.T) {
+	t.Helper()
+	for n := 0; n < 10; n++ {
+		messages := i.receive(t, 0)
+		if len(messages) == 0 {
+			return
+		}
+		for _, message := range messages {
+			i.delete(t, message.ReceiptHandle)
+		}
+	}
+	t.Fatal("dedicated SNS E2E queue did not drain")
+}
+
+func (i productionInbox) otp(t *testing.T) string {
+	t.Helper()
+	deadline := time.Now().Add(90 * time.Second)
+	code := regexp.MustCompile(`\b\d{6}\b`)
+	for time.Now().Before(deadline) {
+		for _, message := range i.receive(t, 10) {
+			i.delete(t, message.ReceiptHandle)
+			var envelope struct{ Message string }
+			if json.Unmarshal([]byte(message.Body), &envelope) == nil {
+				if match := code.FindString(envelope.Message); match != "" {
+					return match
+				}
+			}
+		}
+	}
+	t.Fatal("timed out waiting for SNS OTP in dedicated SQS queue")
+	return ""
+}
+
+type sqsMessage struct {
+	Body          string `json:"Body"`
+	ReceiptHandle string `json:"ReceiptHandle"`
+}
+
+func (i productionInbox) receive(t *testing.T, wait int) []sqsMessage {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "aws", "--profile", "chainsystems", "--region", "ap-south-1", "sqs", "receive-message", "--queue-url", i.queueURL, "--max-number-of-messages", "10", "--wait-time-seconds", fmt.Sprint(wait), "--visibility-timeout", "30", "--output", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("receive SNS E2E message: %v", err)
+	}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return nil
+	}
+	var response struct {
+		Messages []sqsMessage `json:"Messages"`
+	}
+	if err = json.Unmarshal(out, &response); err != nil {
+		t.Fatal(err)
+	}
+	return response.Messages
+}
+func (i productionInbox) delete(t *testing.T, receipt string) {
+	t.Helper()
+	if err := exec.Command("aws", "--profile", "chainsystems", "--region", "ap-south-1", "sqs", "delete-message", "--queue-url", i.queueURL, "--receipt-handle", receipt).Run(); err != nil {
+		t.Fatalf("delete SNS E2E message: %v", err)
+	}
+}
+
+func getJSONAuthenticated(t *testing.T, c *http.Client, endpoint, access string) map[string]any {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, endpoint, nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: got %d", endpoint, resp.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 func productionBaseURL(t *testing.T) string {
