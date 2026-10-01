@@ -111,6 +111,21 @@ func TestProductionCompleteAuthFlow(t *testing.T) {
 	if profile["image"] != image {
 		t.Fatalf("profile image = %#v; want %q", profile["image"], image)
 	}
+	// A separate verified user proves production contact discovery returns the
+	// OpenIM identity only after both contacts are active.
+	peerName := fmt.Sprintf("prod-peer-%d", time.Now().UnixNano())
+	peerEmail := peerName + "@example.test"
+	post(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","email":%q}`, peerName, peerEmail), http.StatusCreated)
+	inbox.drain(t)
+	peerSignup := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, peerEmail), http.StatusAccepted)
+	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, peerSignup["challenge_id"], inbox.otp(t)), http.StatusOK)
+	inbox.drain(t)
+	peerLogin := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, peerEmail), http.StatusAccepted)
+	peerTokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"production-e2e-peer"}`, peerLogin["challenge_id"], inbox.otp(t)), http.StatusOK)
+	discovered := postAuthenticatedJSON(t, client, base+"/v1/friends/discover-network", peerTokens["access_token"].(string), fmt.Sprintf(`{"emails":[%q]}`, email), http.StatusOK)
+	if ids, ok := discovered["open_im_user_ids"].([]any); !ok || len(ids) != 1 {
+		t.Fatalf("expected one discovered OpenIM identity: %#v", discovered)
+	}
 	postAuthenticatedJSON(t, client, base+"/v1/security/revoke", access, `{"all":true}`, http.StatusNoContent)
 }
 
