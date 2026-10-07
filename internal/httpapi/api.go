@@ -23,20 +23,21 @@ import (
 )
 
 type API struct {
-	db        Pinger
-	openIM    openim.Client
-	users     *auth.UserRepository
-	email     notify.EmailSender
-	otpSecret string
-	tokens    *auth.TokenManager
-	objects   storage.ObjectStore
-	assetBase string
-	validate  *validator.Validate
+	db                Pinger
+	openIM            openim.Client
+	users             *auth.UserRepository
+	email             notify.EmailSender
+	otpSecret         string
+	tokens            *auth.TokenManager
+	deviceTokenCipher *auth.DeviceTokenCipher
+	objects           storage.ObjectStore
+	assetBase         string
+	validate          *validator.Validate
 }
 type Pinger interface{ Ping(context.Context) error }
 
-func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, otpSecret string, tokens *auth.TokenManager, objects storage.ObjectStore, assetBase string) *API {
-	return &API{db: pool, openIM: openIM, users: auth.NewUserRepository(pool), email: email, otpSecret: otpSecret, tokens: tokens, objects: objects, assetBase: assetBase, validate: validator.New()}
+func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase string) *API {
+	return &API{db: pool, openIM: openIM, users: auth.NewUserRepository(pool), email: email, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, validate: validator.New()}
 }
 
 func (a *API) Router() fasthttp.RequestHandler {
@@ -48,6 +49,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	a.registerSecurityRoutes(r)
 	a.registerProfileRoutes(r)
 	a.registerFriendRoutes(r)
+	a.registerOpenIMRoutes(r)
 	return r.Handler
 }
 
@@ -157,7 +159,10 @@ func (a *API) authenticated(ctx *fasthttp.RequestCtx) (string, string, bool) {
 	}
 	userID, ok1 := claims["sub"].(string)
 	sessionID, ok2 := claims["sid"].(string)
-	return userID, sessionID, ok1 && ok2
+	if !ok1 || !ok2 || !a.users.SessionActive(context.Background(), userID, sessionID) {
+		return "", "", false
+	}
+	return userID, sessionID, true
 }
 
 // DecodeAndValidate is the only request-body entry point for API handlers.

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -263,7 +264,8 @@ func postAuthenticatedJSON(t *testing.T, c *http.Client, url, access, body strin
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != want {
-		t.Fatalf("POST %s: got %d want %d", url, resp.StatusCode, want)
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST %s: got %d want %d: %s", url, resp.StatusCode, want, body)
 	}
 	if want == http.StatusNoContent {
 		return nil

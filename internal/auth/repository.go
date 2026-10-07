@@ -100,6 +100,84 @@ type Session struct {
 	ExpiresAt  time.Time
 }
 
+func (r *UserRepository) SessionActive(ctx context.Context, userID, sessionID string) bool {
+	var active bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM device_sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now())`, sessionID, userID).Scan(&active)
+	return err == nil && active
+}
+func (r *UserRepository) SessionPlatform(ctx context.Context, userID, sessionID string) (string, error) {
+	var platform string
+	err := r.pool.QueryRow(ctx, `SELECT platform_id FROM device_sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now()`, sessionID, userID).Scan(&platform)
+	return platform, err
+}
+
+type DeviceKey struct{ PublicJWK, Fingerprint string }
+
+func (r *UserRepository) DeviceKey(ctx context.Context, sessionID string) (*DeviceKey, error) {
+	k := new(DeviceKey)
+	err := r.pool.QueryRow(ctx, `SELECT public_jwk::text,fingerprint FROM device_keys WHERE session_id=$1 AND revoked_at IS NULL`, sessionID).Scan(&k.PublicJWK, &k.Fingerprint)
+	return k, err
+}
+func (r *UserRepository) UpsertDeviceKey(ctx context.Context, sessionID, publicJWK, fingerprint string) error {
+	_, err := r.pool.Exec(ctx, `INSERT INTO device_keys(session_id,public_jwk,fingerprint) VALUES($1,$2::jsonb,$3) ON CONFLICT(session_id) DO UPDATE SET public_jwk=EXCLUDED.public_jwk,fingerprint=EXCLUDED.fingerprint,rotated_at=now(),revoked_at=NULL`, sessionID, publicJWK, fingerprint)
+	return err
+}
+
+type DeviceProofChallenge struct {
+	ID, SessionID, NonceHash, Audience string
+	ExpiresAt                          time.Time
+	Consumed                           bool
+}
+
+func (r *UserRepository) CreateDeviceProofChallenge(ctx context.Context, sessionID, nonceHash, audience string, expiresAt time.Time) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `INSERT INTO device_proof_challenges(session_id,nonce_hash,audience,expires_at) VALUES($1,$2,$3,$4) RETURNING id::text`, sessionID, nonceHash, audience, expiresAt).Scan(&id)
+	return id, err
+}
+func (r *UserRepository) DeviceProofChallenge(ctx context.Context, id string) (*DeviceProofChallenge, error) {
+	c := new(DeviceProofChallenge)
+	var consumed *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT id::text,session_id::text,nonce_hash,audience,expires_at,consumed_at FROM device_proof_challenges WHERE id=$1`, id).Scan(&c.ID, &c.SessionID, &c.NonceHash, &c.Audience, &c.ExpiresAt, &consumed)
+	c.Consumed = consumed != nil
+	return c, err
+}
+func (r *UserRepository) ConsumeDeviceProofChallenge(ctx context.Context, id, sessionID string) error {
+	result, err := r.pool.Exec(ctx, `UPDATE device_proof_challenges SET consumed_at=now() WHERE id=$1 AND session_id=$2 AND consumed_at IS NULL AND expires_at>now()`, id, sessionID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("device proof is not usable")
+	}
+	return nil
+}
+
+type OpenIMDeviceToken struct{ Ciphertext string }
+
+func (r *UserRepository) ActiveOpenIMDeviceToken(ctx context.Context, sessionID string) (*OpenIMDeviceToken, error) {
+	t := new(OpenIMDeviceToken)
+	err := r.pool.QueryRow(ctx, `SELECT token_ciphertext FROM openim_device_tokens WHERE session_id=$1 AND revoked_at IS NULL AND expires_at>now() ORDER BY issued_at DESC LIMIT 1`, sessionID).Scan(&t.Ciphertext)
+	return t, err
+}
+func (r *UserRepository) ReplaceOpenIMDeviceToken(ctx context.Context, sessionID, tokenHash, ciphertext string, platformID int, expiresAt time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE openim_device_tokens SET revoked_at=now() WHERE session_id=$1 AND revoked_at IS NULL`, sessionID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO openim_device_tokens(session_id,token_hash,token_ciphertext,platform_id,expires_at) VALUES($1,$2,$3,$4,$5)`, sessionID, tokenHash, ciphertext, platformID, expiresAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+func (r *UserRepository) RevokeOpenIMDeviceToken(ctx context.Context, sessionID string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE openim_device_tokens SET revoked_at=now() WHERE session_id=$1 AND revoked_at IS NULL`, sessionID)
+	return err
+}
+
 func (r *UserRepository) CreateSession(ctx context.Context, userID, refreshHash, platform, deviceName, deviceID string, expiresAt time.Time) (*Session, error) {
 	s := new(Session)
 	err := r.pool.QueryRow(ctx, `INSERT INTO device_sessions (user_id,refresh_token_hash,platform_id,device_name,device_id,expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::text,user_id::text,expires_at`, userID, refreshHash, platform, deviceName, deviceID, expiresAt).Scan(&s.ID, &s.UserID, &s.ExpiresAt)
@@ -187,6 +265,15 @@ func (r *UserRepository) OpenIMUserID(ctx context.Context, userID string) (strin
 	var openIMUserID string
 	err := r.pool.QueryRow(ctx, `SELECT openim_user_id FROM users WHERE id=$1 AND deleted_at IS NULL`, userID).Scan(&openIMUserID)
 	return openIMUserID, err
+}
+
+// Username returns the immutable account name needed to repair a pending
+// OpenIM provision. The platform UUID remains the source for the derived
+// OpenIM identity; this value is presentation metadata only.
+func (r *UserRepository) Username(ctx context.Context, userID string) (string, error) {
+	var username string
+	err := r.pool.QueryRow(ctx, `SELECT username FROM users WHERE id=$1 AND deleted_at IS NULL`, userID).Scan(&username)
+	return username, err
 }
 
 func (r *UserRepository) SetOpenIMUserID(ctx context.Context, userID, openIMUserID string) error {

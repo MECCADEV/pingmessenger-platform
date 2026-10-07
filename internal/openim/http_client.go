@@ -90,6 +90,21 @@ func (c *HTTPClient) DiscoverUsers(ctx context.Context, request *DiscoverUsersRe
 	}
 	return response, nil
 }
+func (c *HTTPClient) GetUserToken(ctx context.Context, request *GetUserTokenRequest) (*GetUserTokenResponse, error) {
+	response := new(GetUserTokenResponse)
+	if err := c.call(ctx, "auth/get_user_token", request, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+func (c *HTTPClient) KickTokens(ctx context.Context, tokens []string) error {
+	if len(tokens) == 0 {
+		return nil
+	}
+	return c.call(ctx, "auth/kick_tokens", struct {
+		Tokens []string `json:"tokens"`
+	}{Tokens: tokens}, nil)
+}
 
 func (c *HTTPClient) call(ctx context.Context, operation string, request, response any) error {
 	if err := c.ensureAdminToken(ctx); err != nil {

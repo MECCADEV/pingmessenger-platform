@@ -128,6 +128,47 @@ type revokeBody struct {
 type revokeInput struct{ Body revokeBody }
 type emptyOutput struct{}
 
+type deviceJWK struct {
+	Kty string `json:"kty" enum:"EC"`
+	Crv string `json:"crv" enum:"P-256"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
+}
+type registerDeviceKeyInput struct {
+	Body struct {
+		PublicKey deviceJWK `json:"public_key"`
+	}
+}
+type registerDeviceKeyOutput struct {
+	Body struct {
+		Fingerprint string `json:"fingerprint"`
+		Status      string `json:"status"`
+	}
+}
+type openIMChallengeOutput struct {
+	Body struct {
+		ChallengeID string `json:"challenge_id" format:"uuid"`
+		Nonce       string `json:"nonce"`
+		Audience    string `json:"audience"`
+		ExpiresAt   string `json:"expires_at" format:"date-time"`
+	}
+}
+type issueOpenIMTokenInput struct {
+	Body struct {
+		ChallengeID string `json:"challenge_id" format:"uuid"`
+		Nonce       string `json:"nonce"`
+		Signature   string `json:"signature"`
+		Fingerprint string `json:"fingerprint"`
+	}
+}
+type issueOpenIMTokenOutput struct {
+	Body struct {
+		Token      string `json:"token"`
+		PlatformID int32  `json:"platform_id"`
+		ExpiresAt  string `json:"expires_at" format:"date-time"`
+	}
+}
+
 type profileOutput struct {
 	Body struct {
 		Image *string `json:"image" format:"uri"`
@@ -156,7 +197,7 @@ type discoverOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.1.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.2.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -180,6 +221,9 @@ func newDocument() (*DocumentModel, error) {
 	register[regenerateInput, regenerateOutput](api, operation(http.MethodPost, "/v1/security/backup-codes/regenerate", "regenerateBackupCodes", "Security", "Replace backup codes after a step-up challenge.", 200, bearer))
 	register[struct{}, activityOutput](api, operation(http.MethodGet, "/v1/security/activity", "listSecurityActivity", "Security", "List active and historic sessions.", 200, bearer))
 	register[revokeInput, emptyOutput](api, operation(http.MethodPost, "/v1/security/revoke", "revokeSessions", "Security", "Revoke selected sessions or all other sessions.", 204, bearer))
+	register[registerDeviceKeyInput, registerDeviceKeyOutput](api, operation(http.MethodPost, "/v1/openim/device-key", "registerOpenIMDeviceKey", "OpenIM", "Register or rotate this device's P-256 public key. Private keys remain on the device.", 200, bearer))
+	register[struct{}, openIMChallengeOutput](api, operation(http.MethodPost, "/v1/openim/token/challenge", "createOpenIMTokenChallenge", "OpenIM", "Create a session-bound device-proof challenge.", 201, bearer))
+	register[issueOpenIMTokenInput, issueOpenIMTokenOutput](api, operation(http.MethodPost, "/v1/openim/token/issue", "issueOpenIMToken", "OpenIM", "Verify the signed device proof and issue an OpenIM token for this device.", 200, bearer))
 	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile asset URL.", 200, bearer))
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Upload an image form field as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20

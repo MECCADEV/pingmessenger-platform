@@ -11,6 +11,8 @@ type Client interface {
 	ListSessions(context.Context, *ListSessionsRequest) ([]*Session, error)
 	RevokeSessions(context.Context, *RevokeSessionsRequest) error
 	DiscoverUsers(context.Context, *DiscoverUsersRequest) (*DiscoverUsersResponse, error)
+	GetUserToken(context.Context, *GetUserTokenRequest) (*GetUserTokenResponse, error)
+	KickTokens(context.Context, []string) error
 }
 
 type ProvisionUserRequest struct {
@@ -37,3 +39,11 @@ type RevokeSessionsRequest struct {
 }
 type DiscoverUsersRequest struct{ UserIDs []string }
 type DiscoverUsersResponse struct{ UserIDs []string }
+type GetUserTokenRequest struct {
+	UserID     string `json:"userID"`
+	PlatformID int32  `json:"platformID"`
+}
+type GetUserTokenResponse struct {
+	Token             string `json:"token"`
+	ExpireTimeSeconds int64  `json:"expireTimeSeconds"`
+}

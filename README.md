@@ -43,9 +43,16 @@ The production API is live at
 PostgreSQL instance; it calls OpenIM only over the cluster network at
 `http://openimserver-openim-api.openim.svc.cluster.local`.
 
-OpenIM is deliberately not publicly routed. Its MongoDB (three members),
-Kafka (two brokers, replication factor two), and shared Redis dependency are
-cluster-private. Avatar/object writes use the private S3 bucket
+OpenIM client APIs are publicly available only under
+`https://api-platform-pingmessenger.meainternal.com/openim/`. The gateway
+strips the `/openim` prefix before forwarding to OpenIM. Client-safe API
+groups (`user`, `friend`, `group`, `conversation`, `msg`, `third`, and
+`auth/parse_token`) are routed; OpenIM admin/token-minting endpoints remain
+cluster-private. Use an OpenIM user token in its required `token` header and
+send an `operationID` header on OpenIM requests.
+
+Its MongoDB (three members), Kafka (two brokers, replication factor two), and
+shared Redis dependency are cluster-private. Avatar/object writes use the private S3 bucket
 `pingmessenger-openim-403048695675-ap-south-1` through IRSA; do not add AWS
 credentials to Helm values or application environment files.
 
