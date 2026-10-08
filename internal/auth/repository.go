@@ -385,6 +385,17 @@ func (r *UserRepository) PasswordLogin(ctx context.Context, username string) (*P
 	return account, nil
 }
 
+func (r *UserRepository) PasswordLoginByEmail(ctx context.Context, email string) (*PasswordLogin, error) {
+	account := new(PasswordLogin)
+	err := r.pool.QueryRow(ctx, `SELECT u.id::text, u.password_hash
+		FROM users u JOIN user_contacts c ON c.user_id=u.id
+		WHERE c.kind='email' AND c.value_normalized=$1 AND u.deleted_at IS NULL AND u.status <> 'disabled'`, email).Scan(&account.UserID, &account.PasswordHash)
+	if err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
 func (r *UserRepository) UsernameAvailable(ctx context.Context, username string) (bool, error) {
 	var exists bool
 	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE username = $1 AND deleted_at IS NULL)`, username).Scan(&exists)

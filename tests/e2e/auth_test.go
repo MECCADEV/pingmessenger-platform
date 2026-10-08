@@ -26,8 +26,9 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	get(t, client, baseURL+"/healthz", http.StatusOK)
 
 	username := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
+	email := username + "@example.test"
 	post(t, client, baseURL+"/v1/auth/verify-username", fmt.Sprintf(`{"username":%q}`, username), http.StatusOK)
-	created := postJSON(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","nickname":"Display Name"}`, username), http.StatusCreated)
+	created := postJSON(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","nickname":"Display Name","email":%q}`, username, email), http.StatusCreated)
 	if created["status"] != "active" {
 		t.Fatalf("signup status=%v", created["status"])
 	}
@@ -35,9 +36,14 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	post(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, username), http.StatusConflict)
 	post(t, client, baseURL+"/v1/auth/signup", `{"username":"valid-name","password":"correct-horse-battery-staple","unknown":true}`, http.StatusUnprocessableEntity)
 	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":"wrong-password","platform_id":"web"}`, username), http.StatusUnauthorized, "wrong password")
+	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"email":%q,"password":"correct-horse-battery-staple","platform_id":"web"}`, username, email), http.StatusUnprocessableEntity, "both login identifiers")
 	tokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e"}`, username), http.StatusOK)
 	if tokens["access_token"] == "" || tokens["refresh_token"] == "" {
 		t.Fatalf("direct password login did not return tokens: %#v", tokens)
+	}
+	emailTokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-email"}`, email), http.StatusOK)
+	if emailTokens["access_token"] == "" || emailTokens["refresh_token"] == "" {
+		t.Fatalf("email password login did not return tokens: %#v", emailTokens)
 	}
 }
 

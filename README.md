@@ -40,10 +40,11 @@ methods; neither is required to create an account or to sign in. The primary
 sign-in route is `POST /v1/auth/login`:
 
 ```json
-{"username":"alice","password":"correct-horse-battery-staple","platform_id":"android","device_name":"Pixel"}
+{"email":"alice@example.com","password":"correct-horse-battery-staple","platform_id":"android","device_name":"Pixel"}
 ```
 
-It returns the normal access token, refresh token, and device session. The
+Supply exactly one of `username` or an attached `email`; it returns the normal
+access token, refresh token, and device session. The
 legacy `/v1/auth/login/start` and `/v1/auth/login/verify` routes remain for
 optional email-OTP login. A signup may include `nickname`; it is a non-unique
 display name stored in PostgreSQL. Read it with `GET /v1/profile/` and update
