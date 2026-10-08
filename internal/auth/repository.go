@@ -95,6 +95,12 @@ func (r *UserRepository) RecordChallengeFailure(ctx context.Context, id string) 
 	return err
 }
 
+// InvalidateChallenge prevents an OTP from being used when delivery failed.
+func (r *UserRepository) InvalidateChallenge(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE mfa_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, id)
+	return err
+}
+
 type Session struct {
 	ID, UserID string
 	ExpiresAt  time.Time

@@ -76,6 +76,7 @@ func (a *API) issueChallenge(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err = a.email.Send(context.Background(), &notify.Email{To: contact.Value, Subject: "PingMessenger verification code", Text: "Your verification code is " + code + ". It expires in 10 minutes."}); err != nil {
+		_ = a.users.InvalidateChallenge(context.Background(), id)
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not deliver verification code"})
 		return
 	}

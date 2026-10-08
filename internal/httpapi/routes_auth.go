@@ -40,7 +40,12 @@ func (a *API) loginStart(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	id, err := a.users.CreateChallenge(context.Background(), contact, "login", auth.HashOTP(a.otpSecret, code), time.Now().Add(10*time.Minute))
-	if err != nil || a.email.Send(context.Background(), &notify.Email{To: contact.Value, Subject: "PingMessenger login code", Text: "Your login code is " + code + ". It expires in 10 minutes."}) != nil {
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not deliver verification code"})
+		return
+	}
+	if err := a.email.Send(context.Background(), &notify.Email{To: contact.Value, Subject: "PingMessenger login code", Text: "Your login code is " + code + ". It expires in 10 minutes."}); err != nil {
+		_ = a.users.InvalidateChallenge(context.Background(), id)
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not deliver verification code"})
 		return
 	}
