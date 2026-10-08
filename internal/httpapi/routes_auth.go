@@ -61,6 +61,11 @@ func (a *API) loginVerify(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	platform, ok := auth.NormalizePlatform(req.PlatformID)
+	if !ok {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "unsupported platform_id"})
+		return
+	}
 	ch, err := a.users.GetChallenge(context.Background(), req.ChallengeID)
 	if err != nil || ch.Purpose != "login" || ch.Consumed || ch.Attempts >= 5 || time.Now().After(ch.ExpiresAt) || !auth.OTPMatches(a.otpSecret, req.Code, ch.CodeHash) {
 		if ch != nil {
@@ -80,7 +85,7 @@ func (a *API) loginVerify(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
 	}
-	session, err := a.users.CreateSession(context.Background(), ch.UserID, hash, req.PlatformID, req.DeviceName, req.DeviceID, time.Now().Add(a.tokens.RefreshTTL()))
+	session, err := a.users.CreateSession(context.Background(), ch.UserID, hash, platform, req.DeviceName, req.DeviceID, time.Now().Add(a.tokens.RefreshTTL()))
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return

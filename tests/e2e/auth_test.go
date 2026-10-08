@@ -47,7 +47,7 @@ func TestMFAAndPasswordlessLoginAgainstDeployedAPI(t *testing.T) {
 	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, challenge, code), http.StatusOK)
 	login := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, email), http.StatusAccepted)["challenge_id"].(string)
 	code = mailCode(t, client, mailpit, email)
-	tokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"e2e","device_name":"e2e"}`, login, code), http.StatusOK)
+	tokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"web","device_name":"e2e"}`, login, code), http.StatusOK)
 	refresh := tokens["refresh_token"].(string)
 	next := postJSON(t, client, base+"/v1/auth/refresh", fmt.Sprintf(`{"refresh_token":%q}`, refresh), http.StatusOK)
 	if next["refresh_token"] == refresh || next["access_token"] == "" {
@@ -209,7 +209,7 @@ func TestSecurityAndDiscoveryProtocolsAgainstDeployedAPI(t *testing.T) {
 	signup := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, email), http.StatusAccepted)
 	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, signup["challenge_id"], mailCode(t, client, mailpit, email)), http.StatusOK)
 	login := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, email), http.StatusAccepted)
-	tokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"e2e-security"}`, login["challenge_id"], mailCode(t, client, mailpit, email)), http.StatusOK)
+	tokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"web"}`, login["challenge_id"], mailCode(t, client, mailpit, email)), http.StatusOK)
 	access := tokens["access_token"].(string)
 
 	getAuthenticated(t, client, base+"/v1/security/backup-codes", access, http.StatusOK)
@@ -225,7 +225,7 @@ func TestSecurityAndDiscoveryProtocolsAgainstDeployedAPI(t *testing.T) {
 	peerSignup := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, peerEmail), http.StatusAccepted)
 	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, peerSignup["challenge_id"], mailCode(t, client, mailpit, peerEmail)), http.StatusOK)
 	peerLogin := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, peerEmail), http.StatusAccepted)
-	peerTokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"e2e-discovery"}`, peerLogin["challenge_id"], mailCode(t, client, mailpit, peerEmail)), http.StatusOK)
+	peerTokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"web"}`, peerLogin["challenge_id"], mailCode(t, client, mailpit, peerEmail)), http.StatusOK)
 	discovered := postAuthenticatedJSON(t, client, base+"/v1/friends/discover-network", peerTokens["access_token"].(string), fmt.Sprintf(`{"emails":[%q]}`, email), http.StatusOK)
 	if ids, ok := discovered["open_im_user_ids"].([]any); !ok || len(ids) != 1 {
 		t.Fatalf("discovered OpenIM identities = %v", discovered["open_im_user_ids"])
