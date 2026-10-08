@@ -141,6 +141,34 @@ func TestProductionCompleteAuthFlow(t *testing.T) {
 	postAuthenticatedJSON(t, client, base+"/v1/security/revoke", access, `{"all":true}`, http.StatusNoContent)
 }
 
+func TestProductionEmailFactorGatesPasswordLogin(t *testing.T) {
+	base := productionBaseURL(t)
+	inbox := newProductionInbox(t)
+	client := &http.Client{Timeout: 15 * time.Second}
+	name := fmt.Sprintf("prod-mfa-email-%d", time.Now().UnixNano())
+	email := name + "@example.test"
+	password := "correct-horse-battery-staple"
+	post(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q,"email":%q}`, name, password, email), http.StatusCreated)
+	inbox.drain(t)
+	signup := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, email), http.StatusAccepted)
+	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, signup["challenge_id"], inbox.otp(t)), http.StatusOK)
+	baseTokens := postJSON(t, client, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, password), http.StatusOK)
+	access := baseTokens["access_token"].(string)
+	factor := postAuthenticatedJSON(t, client, base+"/v1/security/mfa/factors", access, fmt.Sprintf(`{"kind":"email","contact":%q}`, email), http.StatusCreated)
+	if factor["status"] != "enabled" {
+		t.Fatalf("email factor was not enabled: %#v", factor)
+	}
+	inbox.drain(t)
+	pending := postJSON(t, client, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, password), http.StatusAccepted)
+	if pending["mfa_required"] != true {
+		t.Fatalf("password login did not require MFA: %#v", pending)
+	}
+	verified := postJSON(t, client, base+"/v1/auth/login/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, pending["challenge_id"], inbox.otp(t)), http.StatusOK)
+	if verified["access_token"] == "" || verified["refresh_token"] == "" {
+		t.Fatalf("email MFA did not issue tokens: %#v", verified)
+	}
+}
+
 func testProductionDeviceOpenIMBridge(t *testing.T, client *http.Client, base, access, openIMUserID string) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

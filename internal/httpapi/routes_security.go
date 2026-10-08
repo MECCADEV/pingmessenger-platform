@@ -68,6 +68,7 @@ func (a *API) enrollMFA(ctx *fasthttp.RequestCtx) {
 			writeJSON(ctx, 422, map[string]string{"error": "contact must be verified before MFA enrollment"})
 			return
 		}
+		req.ContactID = contact.ID
 		id, err := a.users.BeginMFAFactor(context.Background(), uid, req.Kind, req.ContactID, "", req.Label)
 		if err != nil {
 			writeJSON(ctx, 422, map[string]string{"error": "could not enroll MFA factor"})
