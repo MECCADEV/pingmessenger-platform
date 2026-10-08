@@ -137,7 +137,9 @@ type verifyMFAEnrollmentInput struct {
 }
 type disableMFAInput struct {
 	Body struct {
-		FactorID string `json:"factor_id" format:"uuid"`
+		FactorID    string `json:"factor_id" format:"uuid"`
+		ChallengeID string `json:"challenge_id" format:"uuid"`
+		Code        string `json:"code" minLength:"6" maxLength:"6"`
 	}
 }
 type loginMFAVerifyInput struct {

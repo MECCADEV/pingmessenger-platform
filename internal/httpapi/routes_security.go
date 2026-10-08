@@ -124,7 +124,9 @@ func (a *API) verifyMFAEnrollment(ctx *fasthttp.RequestCtx) {
 }
 
 type disableMFARequest struct {
-	FactorID string `json:"factor_id" validate:"required,uuid4"`
+	FactorID    string `json:"factor_id" validate:"required,uuid4"`
+	ChallengeID string `json:"challenge_id" validate:"required,uuid4"`
+	Code        string `json:"code" validate:"required,len=6,numeric"`
 }
 
 func (a *API) disableMFA(ctx *fasthttp.RequestCtx) {
@@ -136,6 +138,18 @@ func (a *API) disableMFA(ctx *fasthttp.RequestCtx) {
 	var req disableMFARequest
 	if err := a.DecodeAndValidate(ctx, &req); err != nil {
 		writeJSON(ctx, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	challenge, err := a.users.GetChallenge(context.Background(), req.ChallengeID)
+	if err != nil || challenge.UserID != uid || challenge.Purpose != "step_up" || challenge.Consumed || challenge.Attempts >= 5 || time.Now().After(challenge.ExpiresAt) || !auth.OTPMatches(a.otpSecret, req.Code, challenge.CodeHash) {
+		if challenge != nil {
+			_ = a.users.RecordChallengeFailure(context.Background(), challenge.ID)
+		}
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "valid step-up verification required"})
+		return
+	}
+	if err = a.users.ConsumeChallenge(context.Background(), challenge); err != nil {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "valid step-up verification required"})
 		return
 	}
 	if err := a.users.DisableMFAFactor(context.Background(), uid, req.FactorID); err != nil {
