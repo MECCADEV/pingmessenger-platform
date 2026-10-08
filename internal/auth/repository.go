@@ -73,7 +73,9 @@ func (r *UserRepository) ConsumeChallenge(ctx context.Context, challenge *Challe
 		return err
 	}
 	defer tx.Rollback(ctx)
-	result, err := tx.Exec(ctx, `UPDATE mfa_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, challenge.ID)
+	// The handler's pre-read improves error classification, but this predicate is
+	// authoritative under concurrent verification requests and expiry races.
+	result, err := tx.Exec(ctx, `UPDATE mfa_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL AND expires_at>now() AND attempts<5`, challenge.ID)
 	if err != nil {
 		return err
 	}
