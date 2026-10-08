@@ -97,11 +97,55 @@ type refreshInput struct{ Body refreshBody }
 type refreshOutput struct{ Body tokenResponse }
 
 type challengeBody struct {
-	Email   string `json:"email" format:"email" maxLength:"254"`
+	Email   string `json:"email,omitempty" format:"email" maxLength:"254"`
+	Phone   string `json:"phone,omitempty" maxLength:"32"`
 	Purpose string `json:"purpose" enum:"signup_contact_verification,login,step_up"`
 }
 type challengeInput struct{ Body challengeBody }
 type challengeOutput struct{ Body challengeResponse }
+type mfaFactorBody struct {
+	ID           string `json:"id" format:"uuid"`
+	Kind         string `json:"kind"`
+	ContactValue string `json:"contact_value,omitempty"`
+	Preferred    bool   `json:"preferred"`
+}
+type mfaListOutput struct {
+	Body struct {
+		Factors []mfaFactorBody `json:"factors"`
+	}
+}
+type enrollMFAInput struct {
+	Body struct {
+		Kind      string `json:"kind" enum:"email,phone,totp"`
+		ContactID string `json:"contact_id,omitempty" format:"uuid"`
+		Label     string `json:"label,omitempty"`
+	}
+}
+type enrollMFAOutput struct {
+	Body struct {
+		FactorID string `json:"factor_id" format:"uuid"`
+		Kind     string `json:"kind"`
+		Secret   string `json:"secret,omitempty"`
+		Status   string `json:"status"`
+	}
+}
+type verifyMFAEnrollmentInput struct {
+	Body struct {
+		FactorID string `json:"factor_id" format:"uuid"`
+		Code     string `json:"code" minLength:"6" maxLength:"6"`
+	}
+}
+type disableMFAInput struct {
+	Body struct {
+		FactorID string `json:"factor_id" format:"uuid"`
+	}
+}
+type loginMFAVerifyInput struct {
+	Body struct {
+		ChallengeID string `json:"challenge_id" format:"uuid"`
+		Code        string `json:"code" minLength:"6" maxLength:"6"`
+	}
+}
 type verifyInput struct{ Body verifyBody }
 type verifyOutput struct {
 	Body struct {
@@ -212,7 +256,7 @@ type discoverOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.3.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.4.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -233,6 +277,11 @@ func newDocument() (*DocumentModel, error) {
 	register[refreshInput, refreshOutput](api, operation(http.MethodPost, "/v1/auth/refresh", "refreshSession", "Auth", "Rotate a refresh token.", 200, public))
 	register[challengeInput, challengeOutput](api, operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email verification or step-up challenge.", 202, public))
 	register[verifyInput, verifyOutput](api, operation(http.MethodPost, "/v1/mfa/verify", "verifyMFAChallenge", "MFA", "Verify a non-login MFA challenge.", 200, public))
+	register[loginMFAVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/mfa/verify", "verifyLoginMFA", "Auth", "Complete one enabled MFA factor before creating a login session.", 200, public))
+	register[struct{}, mfaListOutput](api, operation(http.MethodGet, "/v1/security/mfa", "listMFA", "Security", "List enabled account MFA factors.", 200, bearer))
+	register[enrollMFAInput, enrollMFAOutput](api, operation(http.MethodPost, "/v1/security/mfa/factors", "enrollMFA", "Security", "Enroll an email, phone, or TOTP factor.", 201, bearer))
+	register[verifyMFAEnrollmentInput, enrollMFAOutput](api, operation(http.MethodPost, "/v1/security/mfa/factors/verify", "verifyMFAEnrollment", "Security", "Confirm TOTP enrollment.", 200, bearer))
+	register[disableMFAInput, emptyOutput](api, operation(http.MethodPost, "/v1/security/mfa/factors/disable", "disableMFA", "Security", "Disable an enabled MFA factor.", 200, bearer))
 	register[struct{}, remainingOutput](api, operation(http.MethodGet, "/v1/security/backup-codes", "getBackupCodeStatus", "Security", "Get remaining backup-code count.", 200, bearer))
 	register[regenerateInput, regenerateOutput](api, operation(http.MethodPost, "/v1/security/backup-codes/regenerate", "regenerateBackupCodes", "Security", "Replace backup codes after a step-up challenge.", 200, bearer))
 	register[struct{}, activityOutput](api, operation(http.MethodGet, "/v1/security/activity", "listSecurityActivity", "Security", "List active and historic sessions.", 200, bearer))

@@ -27,6 +27,7 @@ type API struct {
 	openIM            openim.Client
 	users             *auth.UserRepository
 	email             notify.EmailSender
+	sms               notify.SMSSender
 	otpSecret         string
 	tokens            *auth.TokenManager
 	deviceTokenCipher *auth.DeviceTokenCipher
@@ -36,8 +37,8 @@ type API struct {
 }
 type Pinger interface{ Ping(context.Context) error }
 
-func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase string) *API {
-	return &API{db: pool, openIM: openIM, users: auth.NewUserRepository(pool), email: email, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, validate: validator.New()}
+func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase string) *API {
+	return &API{db: pool, openIM: openIM, users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, validate: validator.New()}
 }
 
 func (a *API) Router() fasthttp.RequestHandler {

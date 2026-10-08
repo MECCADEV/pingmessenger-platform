@@ -15,6 +15,23 @@ type SNS struct {
 	topicARN string
 }
 
+type DirectSMS struct{ client *sns.Client }
+
+func NewDirectSMS(ctx context.Context, region string) (*DirectSMS, error) {
+	if region == "" {
+		return nil, fmt.Errorf("AWS_REGION is required")
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if err != nil {
+		return nil, err
+	}
+	return &DirectSMS{client: sns.NewFromConfig(cfg)}, nil
+}
+func (s *DirectSMS) SendSMS(ctx context.Context, msg *SMS) error {
+	_, err := s.client.Publish(ctx, &sns.PublishInput{PhoneNumber: &msg.To, Message: &msg.Text})
+	return err
+}
+
 func NewSNS(ctx context.Context, region, topicARN string) (*SNS, error) {
 	if region == "" || topicARN == "" {
 		return nil, fmt.Errorf("AWS_REGION and AWS_SNS_TOPIC_ARN are required")

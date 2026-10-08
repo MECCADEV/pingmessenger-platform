@@ -37,6 +37,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	sms, err := notify.NewDirectSMS(context.Background(), cfg.AWSRegion)
+	if err != nil {
+		log.Fatal(err)
+	}
 	tokens := auth.NewTokenManager(cfg.JWTSigningSecret, cfg.JWTIssuer, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	deviceTokenCipher, err := auth.NewDeviceTokenCipher(cfg.DeviceTokenEncryptionKey)
 	if err != nil {
@@ -46,7 +50,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &fasthttp.Server{Handler: httpapi.New(pool, openIM, email, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, cfg.S3PublicBaseURL).Router(), Name: "pingmessenger-api"}
+	server := &fasthttp.Server{Handler: httpapi.New(pool, openIM, email, sms, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, cfg.S3PublicBaseURL).Router(), Name: "pingmessenger-api"}
 	log.Printf("PingMessenger API listening on %s (%s)", cfg.HTTPAddr, cfg.AppEnv)
 	if err := server.ListenAndServe(cfg.HTTPAddr); err != nil {
 		log.Printf("server stopped: %v", err)

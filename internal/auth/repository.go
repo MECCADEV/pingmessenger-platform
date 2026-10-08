@@ -25,6 +25,146 @@ type PasswordLogin struct {
 	UserID, PasswordHash string
 }
 
+type MFAFactor struct {
+	ID, Kind, ContactID, ContactValue, SecretCiphertext string
+	Preferred                                           bool
+}
+
+func (r *UserRepository) MFAFactor(ctx context.Context, userID, id string) (*MFAFactor, error) {
+	f := new(MFAFactor)
+	err := r.pool.QueryRow(ctx, `SELECT f.id::text,f.kind::text,COALESCE(f.contact_id::text,''),COALESCE(c.value_normalized,''),COALESCE(f.secret_ciphertext,''),f.preferred FROM user_mfa_factors f LEFT JOIN user_contacts c ON c.id=f.contact_id WHERE f.id=$2 AND f.user_id=$1 AND f.enabled_at IS NOT NULL AND f.disabled_at IS NULL`, userID, id).Scan(&f.ID, &f.Kind, &f.ContactID, &f.ContactValue, &f.SecretCiphertext, &f.Preferred)
+	return f, err
+}
+
+func (r *UserRepository) ContactForMFA(ctx context.Context, userID, kind, id string) (*Contact, error) {
+	c := new(Contact)
+	var verifiedAt *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT id::text,user_id::text,kind::text,value_normalized,verified_at FROM user_contacts WHERE id=$3 AND user_id=$1 AND kind=$2::contact_kind`, userID, kind, id).Scan(&c.ID, &c.UserID, &c.Kind, &c.Value, &verifiedAt)
+	c.Verified = verifiedAt != nil
+	return c, err
+}
+
+func (r *UserRepository) CreateMFAEnrollment(ctx context.Context, userID, factorID, codeHash string, expiresAt time.Time) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `INSERT INTO mfa_enrollment_challenges(user_id,factor_id,code_hash,expires_at) VALUES($1,$2,NULLIF($3,''),$4) RETURNING id::text`, userID, factorID, codeHash, expiresAt).Scan(&id)
+	return id, err
+}
+
+type MFAEnrollment struct {
+	ID, UserID, FactorID, CodeHash string
+	Attempts                       int
+	ExpiresAt                      time.Time
+	Consumed                       bool
+}
+
+func (r *UserRepository) MFAEnrollment(ctx context.Context, id string) (*MFAEnrollment, error) {
+	e := new(MFAEnrollment)
+	var consumed *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT id::text,user_id::text,factor_id::text,COALESCE(code_hash,''),attempts,expires_at,consumed_at FROM mfa_enrollment_challenges WHERE id=$1`, id).Scan(&e.ID, &e.UserID, &e.FactorID, &e.CodeHash, &e.Attempts, &e.ExpiresAt, &consumed)
+	e.Consumed = consumed != nil
+	return e, err
+}
+func (r *UserRepository) ConsumeMFAEnrollment(ctx context.Context, id string) error {
+	rr, err := r.pool.Exec(ctx, `UPDATE mfa_enrollment_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL AND expires_at>now() AND attempts<5`, id)
+	if err != nil {
+		return err
+	}
+	if rr.RowsAffected() != 1 {
+		return fmt.Errorf("enrollment challenge unavailable")
+	}
+	return nil
+}
+func (r *UserRepository) RecordMFAEnrollmentFailure(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE mfa_enrollment_challenges SET attempts=attempts+1 WHERE id=$1 AND consumed_at IS NULL`, id)
+	return err
+}
+func (r *UserRepository) ActivateMFAFactor(ctx context.Context, userID, factorID string) error {
+	rr, err := r.pool.Exec(ctx, `UPDATE user_mfa_factors SET enabled_at=now(),updated_at=now(),preferred=NOT EXISTS(SELECT 1 FROM user_mfa_factors WHERE user_id=$1 AND enabled_at IS NOT NULL AND disabled_at IS NULL) WHERE id=$2 AND user_id=$1 AND disabled_at IS NULL`, userID, factorID)
+	if err != nil {
+		return err
+	}
+	if rr.RowsAffected() != 1 {
+		return fmt.Errorf("factor not found")
+	}
+	return nil
+}
+
+func (r *UserRepository) PreferredMFAFactor(ctx context.Context, userID string) (*MFAFactor, error) {
+	f := new(MFAFactor)
+	err := r.pool.QueryRow(ctx, `SELECT f.id::text,f.kind::text,COALESCE(f.contact_id::text,''),COALESCE(c.value_normalized,''),COALESCE(f.secret_ciphertext,''),f.preferred FROM user_mfa_factors f LEFT JOIN user_contacts c ON c.id=f.contact_id WHERE f.user_id=$1 AND f.enabled_at IS NOT NULL AND f.disabled_at IS NULL ORDER BY f.preferred DESC,f.created_at LIMIT 1`, userID).Scan(&f.ID, &f.Kind, &f.ContactID, &f.ContactValue, &f.SecretCiphertext, &f.Preferred)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+func (r *UserRepository) EnableMFAFactor(ctx context.Context, userID, kind, contactID, secretCiphertext, label string) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `INSERT INTO user_mfa_factors(user_id,kind,contact_id,secret_ciphertext,label,enabled_at,preferred) VALUES($1,$2::mfa_factor_kind,NULLIF($3,'')::uuid,NULLIF($4,''),$5,now(),NOT EXISTS(SELECT 1 FROM user_mfa_factors WHERE user_id=$1 AND enabled_at IS NOT NULL AND disabled_at IS NULL)) RETURNING id::text`, userID, kind, contactID, secretCiphertext, label).Scan(&id)
+	return id, err
+}
+func (r *UserRepository) BeginMFAFactor(ctx context.Context, userID, kind, contactID, secretCiphertext, label string) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `INSERT INTO user_mfa_factors(user_id,kind,contact_id,secret_ciphertext,label) VALUES($1,$2::mfa_factor_kind,NULLIF($3,'')::uuid,NULLIF($4,''),$5) RETURNING id::text`, userID, kind, contactID, secretCiphertext, label).Scan(&id)
+	return id, err
+}
+func (r *UserRepository) DisableMFAFactor(ctx context.Context, userID, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE user_mfa_factors SET disabled_at=now(),preferred=false,updated_at=now() WHERE id=$2 AND user_id=$1 AND disabled_at IS NULL`, userID, id)
+	return err
+}
+func (r *UserRepository) MFAFactors(ctx context.Context, userID string) ([]*MFAFactor, error) {
+	rows, err := r.pool.Query(ctx, `SELECT f.id::text,f.kind::text,COALESCE(f.contact_id::text,''),COALESCE(c.value_normalized,''),f.preferred FROM user_mfa_factors f LEFT JOIN user_contacts c ON c.id=f.contact_id WHERE f.user_id=$1 AND f.enabled_at IS NOT NULL AND f.disabled_at IS NULL ORDER BY f.created_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*MFAFactor
+	for rows.Next() {
+		f := new(MFAFactor)
+		if err = rows.Scan(&f.ID, &f.Kind, &f.ContactID, &f.ContactValue, &f.Preferred); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+type PendingLogin struct {
+	ID, UserID, FactorID, PlatformID, DeviceName, DeviceID, CodeHash string
+	Attempts                                                         int
+	ExpiresAt                                                        time.Time
+	Consumed                                                         bool
+}
+
+func (r *UserRepository) CreatePendingLogin(ctx context.Context, p *PendingLogin) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `INSERT INTO pending_login_challenges(user_id,factor_id,platform_id,device_name,device_id,code_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id::text`, p.UserID, p.FactorID, p.PlatformID, p.DeviceName, p.DeviceID, p.CodeHash, p.ExpiresAt).Scan(&id)
+	return id, err
+}
+func (r *UserRepository) PendingLogin(ctx context.Context, id string) (*PendingLogin, error) {
+	p := new(PendingLogin)
+	var consumed *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT id::text,user_id::text,factor_id::text,platform_id,COALESCE(device_name,''),COALESCE(device_id,''),COALESCE(code_hash,''),attempts,expires_at,consumed_at FROM pending_login_challenges WHERE id=$1`, id).Scan(&p.ID, &p.UserID, &p.FactorID, &p.PlatformID, &p.DeviceName, &p.DeviceID, &p.CodeHash, &p.Attempts, &p.ExpiresAt, &consumed)
+	p.Consumed = consumed != nil
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+func (r *UserRepository) ConsumePendingLogin(ctx context.Context, id string) error {
+	rr, err := r.pool.Exec(ctx, `UPDATE pending_login_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL AND expires_at>now() AND attempts<5`, id)
+	if err != nil {
+		return err
+	}
+	if rr.RowsAffected() != 1 {
+		return fmt.Errorf("pending login unavailable")
+	}
+	return nil
+}
+func (r *UserRepository) RecordPendingLoginFailure(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE pending_login_challenges SET attempts=attempts+1 WHERE id=$1 AND consumed_at IS NULL`, id)
+	return err
+}
+
 type Contact struct {
 	ID, UserID, Kind, Value string
 	Verified                bool

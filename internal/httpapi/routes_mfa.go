@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
 	"net/http"
@@ -49,7 +50,8 @@ func (a *API) verifyChallenge(ctx *fasthttp.RequestCtx) {
 }
 
 type challengeRequest struct {
-	Email   string `json:"email" validate:"required,email,max=254"`
+	Email   string `json:"email" validate:"omitempty,email,max=254"`
+	Phone   string `json:"phone" validate:"omitempty,max=32"`
 	Purpose string `json:"purpose" validate:"required,oneof=signup_contact_verification login step_up"`
 }
 
@@ -59,7 +61,15 @@ func (a *API) issueChallenge(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
-	contact, err := a.users.FindContact(context.Background(), "email", strings.ToLower(strings.TrimSpace(req.Email)))
+	if (strings.TrimSpace(req.Email) == "") == (strings.TrimSpace(req.Phone) == "") {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "provide exactly one of email or phone"})
+		return
+	}
+	kind, value := "email", strings.ToLower(strings.TrimSpace(req.Email))
+	if req.Phone != "" {
+		kind, value = "phone", strings.TrimSpace(req.Phone)
+	}
+	contact, err := a.users.FindContact(context.Background(), kind, value)
 	// Do not reveal account existence to an unauthenticated caller.
 	if err != nil {
 		writeJSON(ctx, http.StatusAccepted, map[string]string{"status": "if eligible, a verification code was sent"})
@@ -75,7 +85,14 @@ func (a *API) issueChallenge(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create challenge"})
 		return
 	}
-	if err = a.email.Send(context.Background(), &notify.Email{To: contact.Value, Subject: "PingMessenger verification code", Text: "Your verification code is " + code + ". It expires in 10 minutes."}); err != nil {
+	if kind == "email" {
+		err = a.email.Send(context.Background(), &notify.Email{To: contact.Value, Subject: "PingMessenger verification code", Text: "Your verification code is " + code + ". It expires in 10 minutes."})
+	} else if a.sms != nil {
+		err = a.sms.SendSMS(context.Background(), &notify.SMS{To: contact.Value, Text: "Your PingMessenger verification code is " + code + ". It expires in 10 minutes."})
+	} else {
+		err = fmt.Errorf("SMS delivery unavailable")
+	}
+	if err != nil {
 		_ = a.users.InvalidateChallenge(context.Background(), id)
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not deliver verification code"})
 		return

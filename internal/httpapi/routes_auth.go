@@ -2,7 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"github.com/fasthttp/router"
+	"github.com/jackc/pgx/v5"
 	"github.com/valyala/fasthttp"
 	"net/http"
 	"pingmessenger/internal/auth"
@@ -17,6 +20,7 @@ func (a *API) registerAuthRoutes(r *router.Router) {
 	r.POST("/v1/auth/login", a.loginPassword)
 	r.POST("/v1/auth/login/start", a.loginStart)
 	r.POST("/v1/auth/login/verify", a.loginVerify)
+	r.POST("/v1/auth/login/mfa/verify", a.loginMFAVerify)
 	r.POST("/v1/auth/refresh", a.refresh)
 }
 
@@ -59,7 +63,92 @@ func (a *API) loginPassword(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
 		return
 	}
+	factor, factorErr := a.users.PreferredMFAFactor(context.Background(), account.UserID)
+	if factorErr != nil && !errors.Is(factorErr, pgx.ErrNoRows) {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load MFA policy"})
+		return
+	}
+	if factorErr == nil {
+		challenge, err := a.startPendingMFA(context.Background(), account.UserID, factor, platform, req.DeviceName, req.DeviceID)
+		if err != nil {
+			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not start MFA challenge"})
+			return
+		}
+		writeJSON(ctx, http.StatusAccepted, map[string]any{"mfa_required": true, "challenge_id": challenge, "factor_kind": factor.Kind})
+		return
+	}
 	a.issueLoginSession(ctx, account.UserID, platform, req.DeviceName, req.DeviceID)
+}
+
+func (a *API) startPendingMFA(ctx context.Context, userID string, factor *auth.MFAFactor, platform, deviceName, deviceID string) (string, error) {
+	codeHash := ""
+	code := ""
+	if factor.Kind == "email" || factor.Kind == "phone" {
+		var err error
+		code, err = auth.NewOTP()
+		if err != nil {
+			return "", err
+		}
+		codeHash = auth.HashOTP(a.otpSecret, code)
+	}
+	id, err := a.users.CreatePendingLogin(ctx, &auth.PendingLogin{UserID: userID, FactorID: factor.ID, PlatformID: platform, DeviceName: deviceName, DeviceID: deviceID, CodeHash: codeHash, ExpiresAt: time.Now().Add(10 * time.Minute)})
+	if err != nil {
+		return "", err
+	}
+	if factor.Kind == "email" {
+		if err = a.email.Send(ctx, &notify.Email{To: factor.ContactValue, Subject: "PingMessenger login code", Text: "Your login code is " + code + ". It expires in 10 minutes."}); err != nil {
+			return "", err
+		}
+	}
+	if factor.Kind == "phone" {
+		if a.sms == nil {
+			return "", fmt.Errorf("SMS delivery is unavailable")
+		}
+		if err = a.sms.SendSMS(ctx, &notify.SMS{To: factor.ContactValue, Text: "Your PingMessenger login code is " + code + ". It expires in 10 minutes."}); err != nil {
+			return "", err
+		}
+	}
+	return id, nil
+}
+
+type loginMFAVerifyRequest struct {
+	ChallengeID string `json:"challenge_id" validate:"required,uuid4"`
+	Code        string `json:"code" validate:"required,len=6,numeric"`
+}
+
+func (a *API) loginMFAVerify(ctx *fasthttp.RequestCtx) {
+	var req loginMFAVerifyRequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	pending, err := a.users.PendingLogin(context.Background(), req.ChallengeID)
+	if err != nil || pending.Consumed || pending.Attempts >= 5 || time.Now().After(pending.ExpiresAt) {
+		writeJSON(ctx, 401, map[string]string{"error": "invalid or expired MFA challenge"})
+		return
+	}
+	factor, err := a.users.MFAFactor(context.Background(), pending.UserID, pending.FactorID)
+	if err != nil {
+		writeJSON(ctx, 401, map[string]string{"error": "invalid MFA challenge"})
+		return
+	}
+	valid := false
+	if factor.Kind == "totp" {
+		secret, e := a.deviceTokenCipher.Decrypt(factor.SecretCiphertext)
+		valid = e == nil && auth.TOTPMatches(secret, req.Code, time.Now())
+	} else {
+		valid = auth.OTPMatches(a.otpSecret, req.Code, pending.CodeHash)
+	}
+	if !valid {
+		_ = a.users.RecordPendingLoginFailure(context.Background(), pending.ID)
+		writeJSON(ctx, 401, map[string]string{"error": "invalid MFA code"})
+		return
+	}
+	if err = a.users.ConsumePendingLogin(context.Background(), pending.ID); err != nil {
+		writeJSON(ctx, 401, map[string]string{"error": "invalid or expired MFA challenge"})
+		return
+	}
+	a.issueLoginSession(ctx, pending.UserID, pending.PlatformID, pending.DeviceName, pending.DeviceID)
 }
 
 type loginStartRequest struct {

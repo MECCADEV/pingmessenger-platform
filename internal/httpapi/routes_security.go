@@ -10,10 +10,139 @@ import (
 )
 
 func (a *API) registerSecurityRoutes(r *router.Router) {
+	r.GET("/v1/security/mfa", a.listMFA)
+	r.POST("/v1/security/mfa/factors", a.enrollMFA)
+	r.POST("/v1/security/mfa/factors/verify", a.verifyMFAEnrollment)
+	r.POST("/v1/security/mfa/factors/disable", a.disableMFA)
 	r.GET("/v1/security/backup-codes", a.backupCodes)
 	r.POST("/v1/security/backup-codes/regenerate", a.regenerateBackupCodes)
 	r.GET("/v1/security/activity", a.activity)
 	r.POST("/v1/security/revoke", a.revoke)
+}
+func (a *API) listMFA(ctx *fasthttp.RequestCtx) {
+	uid, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	f, err := a.users.MFAFactors(context.Background(), uid)
+	if err != nil {
+		writeJSON(ctx, 500, map[string]string{"error": "could not list MFA factors"})
+		return
+	}
+	writeJSON(ctx, 200, map[string]any{"factors": f})
+}
+
+type enrollMFARequest struct {
+	Kind      string `json:"kind" validate:"required,oneof=email phone totp"`
+	ContactID string `json:"contact_id" validate:"omitempty,uuid4"`
+	Label     string `json:"label" validate:"omitempty,max=128"`
+}
+
+func (a *API) enrollMFA(ctx *fasthttp.RequestCtx) {
+	uid, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req enrollMFARequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Kind != "totp" {
+		if req.ContactID == "" {
+			writeJSON(ctx, 422, map[string]string{"error": "contact_id is required"})
+			return
+		}
+		contact, err := a.users.ContactForMFA(context.Background(), uid, req.Kind, req.ContactID)
+		if err != nil || !contact.Verified {
+			writeJSON(ctx, 422, map[string]string{"error": "contact must be verified before MFA enrollment"})
+			return
+		}
+		id, err := a.users.BeginMFAFactor(context.Background(), uid, req.Kind, req.ContactID, "", req.Label)
+		if err != nil {
+			writeJSON(ctx, 422, map[string]string{"error": "could not enroll MFA factor"})
+			return
+		}
+		if err = a.users.ActivateMFAFactor(context.Background(), uid, id); err != nil {
+			writeJSON(ctx, 500, map[string]string{"error": "could not activate MFA factor"})
+			return
+		}
+		writeJSON(ctx, 201, map[string]string{"factor_id": id, "kind": req.Kind, "status": "enabled"})
+		return
+	}
+	secret, err := auth.NewTOTPSecret()
+	if err != nil {
+		writeJSON(ctx, 500, map[string]string{"error": "could not create TOTP secret"})
+		return
+	}
+	encrypted, err := a.deviceTokenCipher.Encrypt(secret)
+	if err != nil {
+		writeJSON(ctx, 500, map[string]string{"error": "could not protect TOTP secret"})
+		return
+	}
+	id, err := a.users.BeginMFAFactor(context.Background(), uid, "totp", "", encrypted, req.Label)
+	if err != nil {
+		writeJSON(ctx, 422, map[string]string{"error": "could not enroll MFA factor"})
+		return
+	}
+	writeJSON(ctx, 201, map[string]string{"factor_id": id, "kind": "totp", "secret": secret, "status": "setup_required"})
+}
+
+type verifyMFAEnrollmentRequest struct {
+	FactorID string `json:"factor_id" validate:"required,uuid4"`
+	Code     string `json:"code" validate:"required,len=6,numeric"`
+}
+
+func (a *API) verifyMFAEnrollment(ctx *fasthttp.RequestCtx) {
+	uid, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req verifyMFAEnrollmentRequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	f, err := a.users.MFAFactor(ctx, uid, req.FactorID)
+	if err != nil || f.Kind != "totp" {
+		writeJSON(ctx, 422, map[string]string{"error": "TOTP factor not found"})
+		return
+	}
+	secret, err := a.deviceTokenCipher.Decrypt(f.SecretCiphertext)
+	if err != nil || !auth.TOTPMatches(secret, req.Code, time.Now()) {
+		writeJSON(ctx, 401, map[string]string{"error": "invalid TOTP code"})
+		return
+	}
+	if err = a.users.ActivateMFAFactor(ctx, uid, req.FactorID); err != nil {
+		writeJSON(ctx, 500, map[string]string{"error": "could not activate TOTP factor"})
+		return
+	}
+	writeJSON(ctx, 200, map[string]string{"factor_id": req.FactorID, "status": "enabled"})
+}
+
+type disableMFARequest struct {
+	FactorID string `json:"factor_id" validate:"required,uuid4"`
+}
+
+func (a *API) disableMFA(ctx *fasthttp.RequestCtx) {
+	uid, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, 401, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req disableMFARequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, 422, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := a.users.DisableMFAFactor(context.Background(), uid, req.FactorID); err != nil {
+		writeJSON(ctx, 422, map[string]string{"error": "could not disable MFA factor"})
+		return
+	}
+	writeJSON(ctx, 200, map[string]string{"status": "disabled"})
 }
 func (a *API) backupCodes(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
