@@ -6,6 +6,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"net/http"
 	"pingmessenger/internal/auth"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,7 @@ func (a *API) listMFA(ctx *fasthttp.RequestCtx) {
 type enrollMFARequest struct {
 	Kind      string `json:"kind" validate:"required,oneof=email phone totp"`
 	ContactID string `json:"contact_id" validate:"omitempty,uuid4"`
+	Contact   string `json:"contact" validate:"omitempty,max=254"`
 	Label     string `json:"label" validate:"omitempty,max=128"`
 }
 
@@ -51,11 +53,17 @@ func (a *API) enrollMFA(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if req.Kind != "totp" {
-		if req.ContactID == "" {
-			writeJSON(ctx, 422, map[string]string{"error": "contact_id is required"})
+		if req.ContactID == "" && strings.TrimSpace(req.Contact) == "" {
+			writeJSON(ctx, 422, map[string]string{"error": "contact_id or contact is required"})
 			return
 		}
-		contact, err := a.users.ContactForMFA(context.Background(), uid, req.Kind, req.ContactID)
+		var contact *auth.Contact
+		var err error
+		if req.ContactID != "" {
+			contact, err = a.users.ContactForMFA(context.Background(), uid, req.Kind, req.ContactID)
+		} else {
+			contact, err = a.users.ContactForMFAValue(context.Background(), uid, req.Kind, strings.TrimSpace(req.Contact))
+		}
 		if err != nil || !contact.Verified {
 			writeJSON(ctx, 422, map[string]string{"error": "contact must be verified before MFA enrollment"})
 			return

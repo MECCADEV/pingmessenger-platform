@@ -118,6 +118,7 @@ type enrollMFAInput struct {
 	Body struct {
 		Kind      string `json:"kind" enum:"email,phone,totp"`
 		ContactID string `json:"contact_id,omitempty" format:"uuid"`
+		Contact   string `json:"contact,omitempty"`
 		Label     string `json:"label,omitempty"`
 	}
 }

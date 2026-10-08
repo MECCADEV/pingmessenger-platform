@@ -49,6 +49,13 @@ func (r *UserRepository) ContactForMFA(ctx context.Context, userID, kind, id str
 	c.Verified = verifiedAt != nil
 	return c, err
 }
+func (r *UserRepository) ContactForMFAValue(ctx context.Context, userID, kind, value string) (*Contact, error) {
+	c := new(Contact)
+	var verifiedAt *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT id::text,user_id::text,kind::text,value_normalized,verified_at FROM user_contacts WHERE user_id=$1 AND kind=$2::contact_kind AND value_normalized=$3`, userID, kind, value).Scan(&c.ID, &c.UserID, &c.Kind, &c.Value, &verifiedAt)
+	c.Verified = verifiedAt != nil
+	return c, err
+}
 
 func (r *UserRepository) CreateMFAEnrollment(ctx context.Context, userID, factorID, codeHash string, expiresAt time.Time) (string, error) {
 	var id string
