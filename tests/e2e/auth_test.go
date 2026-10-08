@@ -27,10 +27,18 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 
 	username := fmt.Sprintf("e2e-%d", time.Now().UnixNano())
 	post(t, client, baseURL+"/v1/auth/verify-username", fmt.Sprintf(`{"username":%q}`, username), http.StatusOK)
-	post(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","email":%q}`, username, username+"@example.test"), http.StatusCreated)
+	created := postJSON(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","nickname":"Display Name"}`, username), http.StatusCreated)
+	if created["status"] != "active" {
+		t.Fatalf("signup status=%v", created["status"])
+	}
 	post(t, client, baseURL+"/v1/auth/verify-username", fmt.Sprintf(`{"username":%q}`, username), http.StatusOK)
 	post(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, username), http.StatusConflict)
 	post(t, client, baseURL+"/v1/auth/signup", `{"username":"valid-name","password":"correct-horse-battery-staple","unknown":true}`, http.StatusUnprocessableEntity)
+	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":"wrong-password","platform_id":"web"}`, username), http.StatusUnauthorized, "wrong password")
+	tokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e"}`, username), http.StatusOK)
+	if tokens["access_token"] == "" || tokens["refresh_token"] == "" {
+		t.Fatalf("direct password login did not return tokens: %#v", tokens)
+	}
 }
 
 func TestMFAAndPasswordlessLoginAgainstDeployedAPI(t *testing.T) {

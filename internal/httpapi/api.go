@@ -74,6 +74,7 @@ func (a *API) openAPIDocument(ctx *fasthttp.RequestCtx) {
 type signupRequest struct {
 	Username string `json:"username" validate:"required,min=3,max=64"`
 	Password string `json:"password" validate:"required,min=12,max=256"`
+	Nickname string `json:"nickname" validate:"omitempty,max=128"`
 	Email    string `json:"email" validate:"omitempty,email,max=254"`
 	Phone    string `json:"phone" validate:"omitempty,max=32"`
 }
@@ -106,7 +107,8 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 		k, v := "phone", strings.TrimSpace(request.Phone)
 		kind, value = &k, &v
 	}
-	id, err := a.users.Create(context.Background(), &auth.CreateUserParams{Username: username, PasswordHash: passwordHash, ContactKind: kind, ContactValue: value})
+	nickname := strings.TrimSpace(request.Nickname)
+	id, err := a.users.Create(context.Background(), &auth.CreateUserParams{Username: username, PasswordHash: passwordHash, Nickname: nickname, ContactKind: kind, ContactValue: value})
 	if err != nil {
 		var pgError *pgconn.PgError
 		if strings.Contains(err.Error(), "duplicate key") || (errors.As(err, &pgError) && pgError.Code == "23505") {
@@ -121,10 +123,14 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 	// identity from it rather than sending UUID hyphens to OpenIM.
 	sync := "complete"
 	openIMUserID := "pm" + strings.ReplaceAll(id, "-", "")
-	if _, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: openIMUserID, Nickname: username}); provisionErr != nil || a.users.SetOpenIMUserID(context.Background(), id, openIMUserID) != nil {
+	openIMNickname := nickname
+	if openIMNickname == "" {
+		openIMNickname = username
+	}
+	if _, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: openIMUserID, Nickname: openIMNickname}); provisionErr != nil || a.users.SetOpenIMUserID(context.Background(), id, openIMUserID) != nil {
 		sync = "pending"
 	}
-	writeJSON(ctx, http.StatusCreated, map[string]string{"user_id": id, "status": "pending_contact_verification", "openim_sync": sync})
+	writeJSON(ctx, http.StatusCreated, map[string]string{"user_id": id, "status": "active", "openim_sync": sync})
 }
 
 func (a *API) verifyUsername(ctx *fasthttp.RequestCtx) {

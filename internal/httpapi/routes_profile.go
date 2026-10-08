@@ -10,6 +10,7 @@ import (
 	"path"
 	"pingmessenger/internal/openim"
 	"pingmessenger/internal/storage"
+	"strings"
 )
 
 func (a *API) registerProfileRoutes(r *router.Router) {
@@ -22,12 +23,12 @@ func (a *API) profile(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	p, err := a.users.ProfilePath(context.Background(), userID)
+	p, err := a.users.Profile(context.Background(), userID)
 	if err != nil {
-		writeJSON(ctx, http.StatusOK, map[string]any{"image": nil})
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load profile"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]string{"image": p})
+	writeJSON(ctx, http.StatusOK, map[string]any{"image": p.Image, "nickname": p.Nickname})
 }
 func (a *API) updateProfile(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
@@ -35,50 +36,92 @@ func (a *API) updateProfile(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	file, err := ctx.FormFile("image")
-	if err != nil {
-		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "image multipart field is required"})
+	form, formErr := ctx.Request.MultipartForm()
+	if formErr != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "multipart/form-data is required"})
 		return
 	}
-	stream, err := file.Open()
-	if err != nil {
-		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "could not read image"})
+	defer ctx.Request.RemoveMultipartFormFiles()
+	nicknameValues, nicknameProvided := form.Value["nickname"]
+	nickname := ""
+	if nicknameProvided {
+		if len(nicknameValues) != 1 {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "nickname must be provided once"})
+			return
+		}
+		nickname = strings.TrimSpace(nicknameValues[0])
+		if len(nickname) > 128 {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "nickname must be at most 128 characters"})
+			return
+		}
+	}
+	file, fileErr := ctx.FormFile("image")
+	if fileErr != nil && !nicknameProvided {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "image or nickname multipart field is required"})
 		return
 	}
-	defer stream.Close()
-	contentType := file.Header.Get("Content-Type")
-	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
-		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "image must be jpeg, png, or webp"})
-		return
+	var public *string
+	if fileErr == nil {
+		stream, err := file.Open()
+		if err != nil {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "could not read image"})
+			return
+		}
+		defer stream.Close()
+		contentType := file.Header.Get("Content-Type")
+		if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "image must be jpeg, png, or webp"})
+			return
+		}
+		data, err := storage.ReadLimited(stream, 5<<20)
+		if err != nil {
+			writeJSON(ctx, http.StatusRequestEntityTooLarge, map[string]string{"error": err.Error()})
+			return
+		}
+		id := make([]byte, 16)
+		if _, err = rand.Read(id); err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create asset"})
+			return
+		}
+		key := path.Join("profiles", userID, hex.EncodeToString(id))
+		if err = a.objects.Put(context.Background(), key, contentType, data); err != nil {
+			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not store image"})
+			return
+		}
+		image := storage.PublicPath(a.assetBase, key)
+		if err = a.users.StoreProfileAsset(context.Background(), userID, key, image, contentType, int64(len(data))); err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not store image metadata"})
+			return
+		}
+		public = &image
 	}
-	data, err := storage.ReadLimited(stream, 5<<20)
-	if err != nil {
-		writeJSON(ctx, http.StatusRequestEntityTooLarge, map[string]string{"error": err.Error()})
-		return
+	if nicknameProvided {
+		if err := a.users.UpdateNickname(context.Background(), userID, nickname); err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not update nickname"})
+			return
+		}
 	}
-	id := make([]byte, 16)
-	if _, err = rand.Read(id); err != nil {
-		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create asset"})
-		return
-	}
-	key := path.Join("profiles", userID, hex.EncodeToString(id))
-	if err = a.objects.Put(context.Background(), key, contentType, data); err != nil {
-		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not store image"})
-		return
-	}
-	public := storage.PublicPath(a.assetBase, key)
-	if err = a.users.StoreProfileAsset(context.Background(), userID, key, public, contentType, int64(len(data))); err != nil {
-		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not store image metadata"})
-		return
+	effectiveNickname := nickname
+	if !nicknameProvided {
+		profile, err := a.users.Profile(context.Background(), userID)
+		if err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load profile"})
+			return
+		}
+		effectiveNickname = profile.Nickname
 	}
 	openIMUserID, err := a.users.OpenIMUserID(context.Background(), userID)
 	if err != nil {
-		writeJSON(ctx, http.StatusAccepted, map[string]string{"image": public, "sync": "pending"})
+		writeJSON(ctx, http.StatusAccepted, map[string]any{"image": public, "nickname": effectiveNickname, "sync": "pending"})
 		return
 	}
-	if err = a.openIM.UpdateProfile(context.Background(), &openim.UpdateProfileRequest{UserID: openIMUserID, FaceURL: &public}); err != nil {
-		writeJSON(ctx, http.StatusAccepted, map[string]string{"image": public, "sync": "pending"})
+	var openIMNickname *string
+	if nicknameProvided {
+		openIMNickname = &nickname
+	}
+	if err = a.openIM.UpdateProfile(context.Background(), &openim.UpdateProfileRequest{UserID: openIMUserID, Nickname: openIMNickname, FaceURL: public}); err != nil {
+		writeJSON(ctx, http.StatusAccepted, map[string]any{"image": public, "nickname": effectiveNickname, "sync": "pending"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]string{"image": public, "sync": "complete"})
+	writeJSON(ctx, http.StatusOK, map[string]any{"image": public, "nickname": effectiveNickname, "sync": "complete"})
 }

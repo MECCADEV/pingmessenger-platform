@@ -25,6 +25,31 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
+## Account authentication
+
+`username` is required at signup and is case-insensitively unique among active
+accounts. Clients may preflight it with `POST /v1/auth/verify-username`:
+
+```json
+{"username":"alice"}
+```
+
+The database unique index remains the authority, so clients must still handle
+`409 Conflict` on a concurrent signup. `email` and `phone` are optional contact
+methods; neither is required to create an account or to sign in. The primary
+sign-in route is `POST /v1/auth/login`:
+
+```json
+{"username":"alice","password":"correct-horse-battery-staple","platform_id":"android","device_name":"Pixel"}
+```
+
+It returns the normal access token, refresh token, and device session. The
+legacy `/v1/auth/login/start` and `/v1/auth/login/verify` routes remain for
+optional email-OTP login. A signup may include `nickname`; it is a non-unique
+display name stored in PostgreSQL. Read it with `GET /v1/profile/` and update
+it (with or without an image) through authenticated multipart
+`POST /v1/profile/update` using the `nickname` form field.
+
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
 that module. Development/test fixtures run through `make seed` and are refused

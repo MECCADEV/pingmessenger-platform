@@ -14,9 +14,39 @@ import (
 func (a *API) registerAuthRoutes(r *router.Router) {
 	r.POST("/v1/auth/signup", a.signup)
 	r.POST("/v1/auth/verify-username", a.verifyUsername)
+	r.POST("/v1/auth/login", a.loginPassword)
 	r.POST("/v1/auth/login/start", a.loginStart)
 	r.POST("/v1/auth/login/verify", a.loginVerify)
 	r.POST("/v1/auth/refresh", a.refresh)
+}
+
+type passwordLoginRequest struct {
+	Username   string `json:"username" validate:"required,min=3,max=64"`
+	Password   string `json:"password" validate:"required,min=12,max=256"`
+	PlatformID string `json:"platform_id" validate:"required,max=64"`
+	DeviceName string `json:"device_name" validate:"omitempty,max=128"`
+	DeviceID   string `json:"device_id" validate:"omitempty,max=128"`
+}
+
+// loginPassword is the primary login route. It deliberately has no contact or
+// OTP dependency: email is optional account metadata, not an auth prerequisite.
+func (a *API) loginPassword(ctx *fasthttp.RequestCtx) {
+	var req passwordLoginRequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	platform, ok := auth.NormalizePlatform(req.PlatformID)
+	if !ok {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "unsupported platform_id"})
+		return
+	}
+	account, err := a.users.PasswordLogin(context.Background(), strings.ToLower(strings.TrimSpace(req.Username)))
+	if err != nil || !auth.VerifyPassword(req.Password, account.PasswordHash) {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
+		return
+	}
+	a.issueLoginSession(ctx, account.UserID, platform, req.DeviceName, req.DeviceID)
 }
 
 type loginStartRequest struct {
@@ -85,17 +115,21 @@ func (a *API) loginVerify(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid or expired challenge"})
 		return
 	}
+	a.issueLoginSession(ctx, ch.UserID, platform, req.DeviceName, req.DeviceID)
+}
+
+func (a *API) issueLoginSession(ctx *fasthttp.RequestCtx, userID, platform, deviceName, deviceID string) {
 	refresh, hash, err := a.tokens.NewRefresh()
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
 	}
-	session, err := a.users.CreateSession(context.Background(), ch.UserID, hash, platform, req.DeviceName, req.DeviceID, time.Now().Add(a.tokens.RefreshTTL()))
+	session, err := a.users.CreateSession(context.Background(), userID, hash, platform, deviceName, deviceID, time.Now().Add(a.tokens.RefreshTTL()))
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
 	}
-	access, _, err := a.tokens.IssueAccess(ch.UserID, session.ID)
+	access, _, err := a.tokens.IssueAccess(userID, session.ID)
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not issue access token"})
 		return

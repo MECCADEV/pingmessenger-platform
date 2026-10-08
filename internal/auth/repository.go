@@ -15,7 +15,14 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository { return &UserReposit
 
 type CreateUserParams struct {
 	Username, PasswordHash, OpenIMUserID string
+	Nickname                             string
 	ContactKind, ContactValue            *string
+}
+
+// PasswordLogin is the minimum account record needed to authenticate a direct
+// username/password login. The Argon2id verifier never leaves this package.
+type PasswordLogin struct {
+	UserID, PasswordHash string
 }
 
 type Contact struct {
@@ -266,6 +273,34 @@ func (r *UserRepository) ProfilePath(ctx context.Context, userID string) (string
 	return path, err
 }
 
+type Profile struct {
+	Nickname string
+	Image    *string
+}
+
+func (r *UserRepository) Profile(ctx context.Context, userID string) (*Profile, error) {
+	p := new(Profile)
+	err := r.pool.QueryRow(ctx, `SELECT u.nickname, (
+		SELECT public_path FROM profile_assets
+		WHERE user_id=u.id AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1
+	) FROM users u WHERE u.id=$1 AND u.deleted_at IS NULL`, userID).Scan(&p.Nickname, &p.Image)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (r *UserRepository) UpdateNickname(ctx context.Context, userID, nickname string) error {
+	result, err := r.pool.Exec(ctx, `UPDATE users SET nickname=$2, updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, userID, nickname)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
 // OpenIMUserID returns the immutable identity used by the OpenIM deployment.
 // Keeping it separate from the platform UUID leaves room for future account
 // migrations while preventing profile updates from targeting the wrong user.
@@ -325,7 +360,7 @@ func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (strin
 	}
 	defer tx.Rollback(ctx)
 	var id string
-	err = tx.QueryRow(ctx, `INSERT INTO users (username, password_hash, openim_user_id) VALUES ($1, $2, NULLIF($3, '')) RETURNING id::text`, p.Username, p.PasswordHash, p.OpenIMUserID).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO users (username, password_hash, nickname, openim_user_id, status) VALUES ($1, $2, $3, NULLIF($4, ''), 'active') RETURNING id::text`, p.Username, p.PasswordHash, p.Nickname, p.OpenIMUserID).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("insert user: %w", err)
 	}
@@ -339,6 +374,15 @@ func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (strin
 		return "", err
 	}
 	return id, nil
+}
+
+func (r *UserRepository) PasswordLogin(ctx context.Context, username string) (*PasswordLogin, error) {
+	account := new(PasswordLogin)
+	err := r.pool.QueryRow(ctx, `SELECT id::text, password_hash FROM users WHERE username=$1 AND deleted_at IS NULL AND status <> 'disabled'`, username).Scan(&account.UserID, &account.PasswordHash)
+	if err != nil {
+		return nil, err
+	}
+	return account, nil
 }
 
 func (r *UserRepository) UsernameAvailable(ctx context.Context, username string) (bool, error) {
