@@ -4,6 +4,10 @@ package e2e
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base32"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +20,41 @@ import (
 	"testing"
 	"time"
 )
+
+func TestProductionTOTPLoginMFA(t *testing.T) {
+	base := os.Getenv("E2E_BASE_URL")
+	if base == "" {
+		t.Fatal("E2E_BASE_URL is required")
+	}
+	c := &http.Client{Timeout: 15 * time.Second}
+	user := fmt.Sprintf("totp-%d", time.Now().UnixNano())
+	pass := "correct-horse-battery-staple"
+	post(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, user, pass), http.StatusCreated)
+	tokens := postJSON(t, c, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, user, pass), http.StatusOK)
+	access := tokens["access_token"].(string)
+	enrolled := postAuthenticatedJSON(t, c, base+"/v1/security/mfa/factors", access, `{"kind":"totp","label":"e2e"}`, http.StatusCreated)
+	secret := enrolled["secret"].(string)
+	factor := enrolled["factor_id"].(string)
+	postAuthenticatedJSON(t, c, base+"/v1/security/mfa/factors/verify", access, fmt.Sprintf(`{"factor_id":%q,"code":%q}`, factor, totpCode(secret, time.Now())), http.StatusOK)
+	pending := postJSON(t, c, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, user, pass), http.StatusAccepted)
+	challenge := pending["challenge_id"].(string)
+	verified := postJSON(t, c, base+"/v1/auth/login/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, challenge, totpCode(secret, time.Now())), http.StatusOK)
+	if verified["access_token"] == "" || verified["refresh_token"] == "" {
+		t.Fatalf("MFA login did not return tokens: %#v", verified)
+	}
+}
+
+func totpCode(secret string, now time.Time) string {
+	key, _ := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
+	var b [8]byte
+	binary.BigEndian.PutUint64(b[:], uint64(now.Unix()/30))
+	m := hmac.New(sha1.New, key)
+	m.Write(b[:])
+	s := m.Sum(nil)
+	i := s[len(s)-1] & 15
+	v := (uint32(s[i])&127)<<24 | uint32(s[i+1])<<16 | uint32(s[i+2])<<8 | uint32(s[i+3])
+	return fmt.Sprintf("%06d", v%1000000)
+}
 
 func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	baseURL := os.Getenv("E2E_BASE_URL")

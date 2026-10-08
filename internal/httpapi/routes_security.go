@@ -106,7 +106,7 @@ func (a *API) verifyMFAEnrollment(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, 422, map[string]string{"error": err.Error()})
 		return
 	}
-	f, err := a.users.MFAFactor(ctx, uid, req.FactorID)
+	f, err := a.users.MFAFactorEnrollment(context.Background(), uid, req.FactorID)
 	if err != nil || f.Kind != "totp" {
 		writeJSON(ctx, 422, map[string]string{"error": "TOTP factor not found"})
 		return

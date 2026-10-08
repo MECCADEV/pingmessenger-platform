@@ -36,6 +36,12 @@ func (r *UserRepository) MFAFactor(ctx context.Context, userID, id string) (*MFA
 	return f, err
 }
 
+func (r *UserRepository) MFAFactorEnrollment(ctx context.Context, userID, id string) (*MFAFactor, error) {
+	f := new(MFAFactor)
+	err := r.pool.QueryRow(ctx, `SELECT f.id::text,f.kind::text,COALESCE(f.contact_id::text,''),COALESCE(c.value_normalized,''),COALESCE(f.secret_ciphertext,''),f.preferred FROM user_mfa_factors f LEFT JOIN user_contacts c ON c.id=f.contact_id WHERE f.id=$2 AND f.user_id=$1 AND f.disabled_at IS NULL`, userID, id).Scan(&f.ID, &f.Kind, &f.ContactID, &f.ContactValue, &f.SecretCiphertext, &f.Preferred)
+	return f, err
+}
+
 func (r *UserRepository) ContactForMFA(ctx context.Context, userID, kind, id string) (*Contact, error) {
 	c := new(Contact)
 	var verifiedAt *time.Time
