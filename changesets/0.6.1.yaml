@@ -1,0 +1,104 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.6.0
+  next: 0.6.1
+  bump: patch
+  compatibility: additive
+releaseDate: 2026-10-09
+summary: >-
+  Documents the deployed identity, recovery, contact-verification, username,
+  and device-bound WebSocket protocol additions. Existing clients remain
+  compatible; the WebSocket route is optional and HTTP uniqueness endpoints
+  remain authoritative.
+changes:
+  - id: auth-password-recovery
+    type: endpoint
+    method: POST
+    path: /v1/auth/password/recovery/start
+    description: >-
+      Starts privacy-preserving recovery using exactly one of username, ping_id,
+      email, or phone. If a verified contact is eligible, a short-lived OTP
+      challenge is delivered; otherwise the response does not reveal account
+      existence.
+  - id: auth-password-recovery-complete
+    type: endpoint
+    method: POST
+    path: /v1/auth/password/recovery/complete
+    description: >-
+      Completes password recovery with the challenge_id, six-digit OTP, and a
+      new password. Successful recovery revokes existing sessions.
+  - id: auth-password-change
+    type: endpoint
+    method: POST
+    path: /v1/auth/password/change
+    description: >-
+      Changes the authenticated user's password. With a verified email or
+      phone factor, the endpoint returns a step-up challenge instead of
+      changing the password immediately.
+  - id: auth-password-change-verify
+    type: endpoint
+    method: POST
+    path: /v1/auth/password/change/verify
+    description: >-
+      Verifies the password-change OTP and applies the pending password change;
+      previous sessions are revoked.
+  - id: profile-username-update
+    type: endpoint
+    method: PATCH
+    path: /v1/profile/username
+    description: >-
+      Sets or changes the optional unique username. The server normalizes and
+      enforces uniqueness transactionally; nickname remains non-unique.
+  - id: auth-username-availability-http
+    type: endpoint
+    method: POST
+    path: /v1/auth/verify-username
+    description: >-
+      Checks username availability over HTTP. This is advisory; signup and
+      profile update remain the authoritative uniqueness operations.
+  - id: auth-username-availability-websocket
+    type: websocket
+    method: GET
+    path: /v1/auth/username/availability
+    description: >-
+      Upgrades to WebSocket and accepts JSON check_username frames. Each
+      connection is limited to 60 checks, usernames are trimmed/lowercased,
+      unknown JSON fields are rejected, and no account metadata is disclosed.
+    requestFrame:
+      type: check_username
+      request_id: string
+      username: string
+    responseFrame:
+      type: username_availability
+      request_id: string
+      username: string
+      available: boolean
+  - id: contact-verification-delivery
+    type: protocol
+    description: >-
+      Email delivery uses SES in production. Phone delivery uses transactional
+      AWS SNS SMS. Test-only SES/Mailpit and SNS/SQS mirrors are opt-in through
+      environment variables and are empty in the production deployment.
+  - id: openapi-contract
+    type: schema
+    description: >-
+      Regenerates the checked-in OpenAPI 3.1 schema from Huma typed schemas;
+      the runtime FastHTTP router is unchanged. The WebSocket upgrade is
+      represented as a schema-only 101 operation.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:20261009-identity-api061
+  helmChart:
+    path: deploy/helm/pingmessenger
+    appVersion: 0.6.1
+  production:
+    namespace: pingmessenger
+    deployment: pingmessenger-api
+    mirrorsEnabled: false
+verification:
+  - go test ./...
+  - go vet ./...
+  - go test -tags=e2e ./tests/e2e
+  - helm lint deploy/helm/pingmessenger
+  - GET https://api-platform-pingmessenger.meainternal.com/healthz
+  - GET https://api-platform-pingmessenger.meainternal.com/openapi.json

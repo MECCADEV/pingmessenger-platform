@@ -304,7 +304,7 @@ type discoverOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.6.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.6.1")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
