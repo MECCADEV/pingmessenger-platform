@@ -46,6 +46,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	r.GET("/healthz", a.health)
 	r.GET("/openapi.json", a.openAPIDocument)
 	a.registerAuthRoutes(r)
+	a.registerUsernameAvailabilityWS(r)
 	a.registerPasswordRoutes(r)
 	a.registerMFARoutes(r)
 	a.registerSecurityRoutes(r)

@@ -25,7 +25,7 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.5.0`. Cluster E2E coverage is in
+The current contract version is `0.6.0`. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
 SES delivery with a test mirror, password recovery, and OpenIM interoperability.
 
@@ -71,6 +71,22 @@ MFA and recovery email use AWS SES directly in production (`EMAIL_PROVIDER=ses`,
 sender `AWS_SES_FROM_EMAIL`) and SMTP/Mailpit locally. SNS is not the recipient
 inbox path. `EMAIL_MIRROR_SMTP_ADDRESS` is an explicit test-only mirror and must
 remain unset in production.
+
+Username endpoints:
+
+- `POST /v1/auth/verify-username` — HTTP preflight, `{ "username": "alice" }`.
+- `PATCH /v1/profile/username` — authenticated username update.
+- `GET /v1/auth/username/availability` over WebSocket — connect to
+  `wss://api-platform-pingmessenger.meainternal.com/v1/auth/username/availability`
+  and send `{ "type":"check_username", "request_id":"r1", "username":"alice" }`.
+  The response is `{ "type":"username_availability", "request_id":"r1", "username":"alice", "available":true }`.
+  The socket accepts at most 60 checks and never returns account metadata.
+
+Phone verification uses `POST /v1/mfa/challenge` with
+`{ "phone":"+...", "purpose":"signup_contact_verification" }`, then
+`POST /v1/mfa/verify`. Production sends through AWS SNS transactional SMS;
+`SMS_MIRROR_TOPIC_ARN` is an opt-in test-only SNS/SQS mirror for inspecting
+codes and must remain empty in production.
 
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to

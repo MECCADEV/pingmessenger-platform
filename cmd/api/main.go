@@ -37,7 +37,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sms, err := notify.NewDirectSMS(context.Background(), cfg.AWSRegion)
+	sms, err := notify.NewDirectSMS(context.Background(), cfg.AWSRegion, cfg.SMSMirrorTopicARN)
 	if err != nil {
 		log.Fatal(err)
 	}

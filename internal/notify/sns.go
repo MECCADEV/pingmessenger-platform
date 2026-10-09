@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sns/types"
 )
 
 // SNS publishes verification mail through a pre-subscribed SNS topic. IAM
@@ -15,9 +17,12 @@ type SNS struct {
 	topicARN string
 }
 
-type DirectSMS struct{ client *sns.Client }
+type DirectSMS struct {
+	client         *sns.Client
+	mirrorTopicARN string
+}
 
-func NewDirectSMS(ctx context.Context, region string) (*DirectSMS, error) {
+func NewDirectSMS(ctx context.Context, region, mirrorTopicARN string) (*DirectSMS, error) {
 	if region == "" {
 		return nil, fmt.Errorf("AWS_REGION is required")
 	}
@@ -25,11 +30,24 @@ func NewDirectSMS(ctx context.Context, region string) (*DirectSMS, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DirectSMS{client: sns.NewFromConfig(cfg)}, nil
+	return &DirectSMS{client: sns.NewFromConfig(cfg), mirrorTopicARN: mirrorTopicARN}, nil
 }
 func (s *DirectSMS) SendSMS(ctx context.Context, msg *SMS) error {
-	_, err := s.client.Publish(ctx, &sns.PublishInput{PhoneNumber: &msg.To, Message: &msg.Text})
-	return err
+	_, err := s.client.Publish(ctx, &sns.PublishInput{
+		PhoneNumber: &msg.To,
+		Message:     &msg.Text,
+		MessageAttributes: map[string]types.MessageAttributeValue{
+			"AWS.SNS.SMS.SMSType": {DataType: aws.String("String"), StringValue: aws.String("Transactional")},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	// Explicitly opt-in test sink; production leaves SMS_MIRROR_TOPIC_ARN empty.
+	if s.mirrorTopicARN != "" {
+		_, _ = s.client.Publish(ctx, &sns.PublishInput{TopicArn: &s.mirrorTopicARN, Message: &msg.Text})
+	}
+	return nil
 }
 
 func NewSNS(ctx context.Context, region, topicARN string) (*SNS, error) {

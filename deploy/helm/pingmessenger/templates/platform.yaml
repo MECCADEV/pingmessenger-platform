@@ -98,6 +98,7 @@ spec:
             - {name: AWS_SES_FROM_EMAIL, value: {{ .Values.email.awsSESFromEmail | quote }}}
             - {name: EMAIL_MIRROR_SMTP_ADDRESS, value: {{ .Values.email.mirrorSMTPAddress | quote }}}
             - {name: EMAIL_MIRROR_FROM, value: {{ .Values.email.mirrorFrom | quote }}}
+            - {name: SMS_MIRROR_TOPIC_ARN, value: {{ .Values.email.smsMirrorTopicARN | quote }}}
             - {name: S3_BUCKET, value: {{ .Values.storage.bucket | quote }}}
             - {name: S3_ENDPOINT, value: {{ .Values.storage.endpoint | quote }}}
             - {name: S3_PUBLIC_BASE_URL, value: {{ .Values.storage.publicBaseURL | quote }} }

@@ -3,4 +3,4 @@ name: pingmessenger-platform
 description: PingMessenger platform API and local PostgreSQL dependency
 type: application
 version: 0.2.0
-appVersion: "0.5.0"
+appVersion: "0.6.0"

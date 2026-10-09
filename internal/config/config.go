@@ -32,6 +32,7 @@ type Config struct {
 	AWSRegion                string
 	AWSSNSTopicARN           string
 	AWSSESFromEmail          string
+	SMSMirrorTopicARN        string
 }
 
 func Load() (Config, error) {
@@ -53,7 +54,7 @@ func Load() (Config, error) {
 		S3Bucket: os.Getenv("S3_BUCKET"), S3Endpoint: os.Getenv("S3_ENDPOINT"),
 		OpenIMAPIToken: os.Getenv("OPENIM_API_TOKEN"), OpenIMSharedSecret: os.Getenv("OPENIM_SHARED_SECRET"), OpenIMAdminUserID: value("OPENIM_ADMIN_USER_ID", "imAdmin"),
 		DeviceTokenEncryptionKey: os.Getenv("DEVICE_TOKEN_ENCRYPTION_KEY"),
-		EmailProvider:            value("EMAIL_PROVIDER", "smtp"), SMTPAddress: os.Getenv("SMTP_ADDRESS"), SMTPFrom: os.Getenv("SMTP_FROM"), EmailMirrorSMTPAddress: os.Getenv("EMAIL_MIRROR_SMTP_ADDRESS"), EmailMirrorFrom: value("EMAIL_MIRROR_FROM", "e2e-mirror@pingmessenger.local"), AWSRegion: os.Getenv("AWS_REGION"), AWSSNSTopicARN: os.Getenv("AWS_SNS_TOPIC_ARN"), AWSSESFromEmail: os.Getenv("AWS_SES_FROM_EMAIL"),
+		EmailProvider:            value("EMAIL_PROVIDER", "smtp"), SMTPAddress: os.Getenv("SMTP_ADDRESS"), SMTPFrom: os.Getenv("SMTP_FROM"), EmailMirrorSMTPAddress: os.Getenv("EMAIL_MIRROR_SMTP_ADDRESS"), EmailMirrorFrom: value("EMAIL_MIRROR_FROM", "e2e-mirror@pingmessenger.local"), AWSRegion: os.Getenv("AWS_REGION"), AWSSNSTopicARN: os.Getenv("AWS_SNS_TOPIC_ARN"), AWSSESFromEmail: os.Getenv("AWS_SES_FROM_EMAIL"), SMSMirrorTopicARN: os.Getenv("SMS_MIRROR_TOPIC_ARN"),
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

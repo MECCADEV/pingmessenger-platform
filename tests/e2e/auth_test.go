@@ -366,6 +366,30 @@ func postAuthenticatedJSON(t *testing.T, c *http.Client, url, access, body strin
 	return out
 }
 
+func patchAuthenticatedJSON(t *testing.T, c *http.Client, url, access, body string, want int) map[string]any {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+access)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != want {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH %s: got %d want %d: %s", url, resp.StatusCode, want, body)
+	}
+	var out map[string]any
+	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func get(t *testing.T, client *http.Client, url string, want int) {
 	t.Helper()
 	response, err := client.Get(url)
