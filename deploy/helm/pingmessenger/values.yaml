@@ -18,6 +18,9 @@ email:
   smtpFrom: no-reply@pingmessenger.local
   awsRegion: ap-south-1
   awsSNSTopicARN: ""
+  awsSESFromEmail: no-reply@meainternal.com
+  mirrorSMTPAddress: ""
+  mirrorFrom: e2e-mirror@pingmessenger.local
 storage:
   # "minio" is for local MicroK8s. For AWS S3 set provider: aws and endpoint: "".
   provider: minio

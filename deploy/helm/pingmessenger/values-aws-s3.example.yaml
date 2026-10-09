@@ -5,10 +5,12 @@
 #
 # Create the bucket beforehand. Do not commit real ARNs, secrets, or tokens.
 email:
-  # AWS_REGION is shared by the S3 and SNS SDK clients in this service.
+  # AWS_REGION is shared by the S3 and SES SDK clients in this service.
   awsRegion: ap-south-1
-  provider: sns
-  awsSNSTopicARN: arn:aws:sns:ap-south-1:123456789012:pingmessenger-verification
+  provider: ses
+  awsSESFromEmail: no-reply@meainternal.com
+  # SNS is not the user-inbox path; keep this empty unless internal fan-out is needed.
+  awsSNSTopicARN: ""
 storage:
   provider: aws
   bucket: pingmessenger-assets-production

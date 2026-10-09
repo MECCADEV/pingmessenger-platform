@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"github.com/fasthttp/router"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/valyala/fasthttp"
 	"net/http"
 	"path"
@@ -15,6 +17,7 @@ import (
 
 func (a *API) registerProfileRoutes(r *router.Router) {
 	r.GET("/v1/profile/", a.profile)
+	r.PATCH("/v1/profile/username", a.updateUsername)
 	r.POST("/v1/profile/update", a.updateProfile)
 }
 func (a *API) profile(ctx *fasthttp.RequestCtx) {
@@ -28,7 +31,31 @@ func (a *API) profile(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load profile"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]any{"image": p.Image, "nickname": p.Nickname})
+	writeJSON(ctx, http.StatusOK, map[string]any{"username": p.Username, "ping_id": p.PingID, "image": p.Image, "nickname": p.Nickname})
+}
+
+func (a *API) updateUsername(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req usernameRequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	username := strings.ToLower(strings.TrimSpace(req.Username))
+	if err := a.users.UpdateUsername(context.Background(), userID, username); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeJSON(ctx, http.StatusConflict, map[string]string{"error": "username is already in use"})
+			return
+		}
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not update username"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]string{"username": username})
 }
 func (a *API) updateProfile(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)

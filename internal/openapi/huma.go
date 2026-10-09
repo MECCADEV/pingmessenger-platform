@@ -26,17 +26,24 @@ type errorBody struct {
 }
 
 type signupBody struct {
-	Username string `json:"username" minLength:"3" maxLength:"64" doc:"Unique account name."`
-	Password string `json:"password" minLength:"12" maxLength:"256" doc:"Password used for direct username/password login."`
-	Nickname string `json:"nickname,omitempty" maxLength:"128" doc:"Optional non-unique display name."`
-	Email    string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Optional email contact."`
-	Phone    string `json:"phone,omitempty" maxLength:"32" doc:"Optional phone contact."`
+	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Optional unique account name."`
+	Password   string `json:"password" minLength:"12" maxLength:"256" doc:"Password used for direct username/password login."`
+	Nickname   string `json:"nickname,omitempty" maxLength:"128" doc:"Optional non-unique display name."`
+	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Optional email contact."`
+	Phone      string `json:"phone,omitempty" maxLength:"32" doc:"Optional phone contact."`
+	PlatformID string `json:"platform_id,omitempty" maxLength:"64" doc:"Device platform; defaults to web."`
+	DeviceName string `json:"device_name,omitempty" maxLength:"128"`
+	DeviceID   string `json:"device_id,omitempty" maxLength:"128"`
 }
 type signupInput struct{ Body signupBody }
 type signupResponse struct {
-	UserID     string `json:"user_id" format:"uuid"`
-	Status     string `json:"status"`
-	OpenIMSync string `json:"openim_sync" enum:"complete,pending"`
+	UserID       string `json:"user_id" format:"uuid"`
+	PingID       string `json:"ping_id" pattern:"^[0-9]{12}$"`
+	Status       string `json:"status"`
+	OpenIMSync   string `json:"openim_sync" enum:"complete,pending"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	SessionID    string `json:"session_id" format:"uuid"`
 }
 type signupOutput struct{ Body signupResponse }
 
@@ -47,6 +54,11 @@ type usernameInput struct{ Body usernameBody }
 type usernameOutput struct {
 	Body struct {
 		Available bool `json:"available"`
+	}
+}
+type usernameUpdateOutput struct {
+	Body struct {
+		Username string `json:"username"`
 	}
 }
 
@@ -95,6 +107,32 @@ type refreshBody struct {
 }
 type refreshInput struct{ Body refreshBody }
 type refreshOutput struct{ Body tokenResponse }
+
+type passwordRecoveryStartBody struct {
+	Username string `json:"username,omitempty"`
+	PingID   string `json:"ping_id,omitempty" pattern:"^[0-9]{12}$"`
+	Email    string `json:"email,omitempty" format:"email"`
+	Phone    string `json:"phone,omitempty"`
+}
+type passwordRecoveryStartInput struct{ Body passwordRecoveryStartBody }
+type passwordChallengeBody struct {
+	ChallengeID string `json:"challenge_id" format:"uuid"`
+	Code        string `json:"code" minLength:"6" maxLength:"6" pattern:"^[0-9]{6}$"`
+	NewPassword string `json:"new_password" minLength:"12" maxLength:"256"`
+}
+type passwordChallengeInput struct{ Body passwordChallengeBody }
+type passwordChangeBody struct {
+	CurrentPassword string `json:"current_password" minLength:"12" maxLength:"256"`
+	NewPassword     string `json:"new_password" minLength:"12" maxLength:"256"`
+}
+type passwordChangeInput struct{ Body passwordChangeBody }
+type passwordChangeVerifyInput struct{ Body passwordChallengeBody }
+type passwordStatusOutput struct {
+	Body struct {
+		Status      string `json:"status"`
+		ChallengeID string `json:"challenge_id,omitempty" format:"uuid"`
+	}
+}
 
 type challengeBody struct {
 	Email   string `json:"email,omitempty" format:"email" maxLength:"254"`
@@ -230,6 +268,8 @@ type issueOpenIMTokenOutput struct {
 
 type profileOutput struct {
 	Body struct {
+		Username string  `json:"username,omitempty"`
+		PingID   string  `json:"ping_id"`
 		Image    *string `json:"image" format:"uri"`
 		Nickname string  `json:"nickname"`
 	}
@@ -259,7 +299,7 @@ type discoverOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.4.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.5.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -272,12 +312,16 @@ func newDocument() (*DocumentModel, error) {
 
 	public := []map[string][]string{{}}
 	bearer := []map[string][]string{{"bearerAuth": {}}}
-	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username and password are accepted only here.", 201, public))
+	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username is optional and unique when supplied; signup returns device-bound tokens.", 201, public))
 	register[usernameInput, usernameOutput](api, operation(http.MethodPost, "/v1/auth/verify-username", "verifyUsername", "Auth", "Check whether a username is available.", 200, public))
 	register[passwordLoginInput, passwordLoginOutput](api, operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username or email plus a password. Email is optional at signup.", 200, public))
 	register[loginStartInput, loginStartOutput](api, operation(http.MethodPost, "/v1/auth/login/start", "startLogin", "Auth", "Start passwordless email login.", 202, public))
 	register[loginVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/verify", "verifyLogin", "Auth", "Verify a passwordless login code and create a session.", 200, public))
 	register[refreshInput, refreshOutput](api, operation(http.MethodPost, "/v1/auth/refresh", "refreshSession", "Auth", "Rotate a refresh token.", 200, public))
+	register[passwordRecoveryStartInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/start", "startPasswordRecovery", "Auth", "Start privacy-preserving password recovery by username, ping ID, email, or phone.", 202, public))
+	register[passwordChallengeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/complete", "completePasswordRecovery", "Auth", "Complete password recovery with a one-time code.", 200, public))
+	register[passwordChangeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change", "changePassword", "Auth", "Change a password; verified contacts require a step-up code.", 200, bearer))
+	register[passwordChangeVerifyInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change/verify", "verifyPasswordChange", "Auth", "Complete contact step-up for a password change.", 200, bearer))
 	register[challengeInput, challengeOutput](api, operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email verification or step-up challenge.", 202, public))
 	register[verifyInput, verifyOutput](api, operation(http.MethodPost, "/v1/mfa/verify", "verifyMFAChallenge", "MFA", "Verify a non-login MFA challenge.", 200, public))
 	register[loginMFAVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/mfa/verify", "verifyLoginMFA", "Auth", "Complete one enabled MFA factor before creating a login session.", 200, public))
@@ -293,6 +337,7 @@ func newDocument() (*DocumentModel, error) {
 	register[struct{}, openIMChallengeOutput](api, operation(http.MethodPost, "/v1/openim/token/challenge", "createOpenIMTokenChallenge", "OpenIM", "Create a session-bound device-proof challenge.", 201, bearer))
 	register[issueOpenIMTokenInput, issueOpenIMTokenOutput](api, operation(http.MethodPost, "/v1/openim/token/issue", "issueOpenIMToken", "OpenIM", "Verify the signed device proof and issue an OpenIM token for this device.", 200, bearer))
 	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile asset URL.", 200, bearer))
+	register[usernameInput, usernameUpdateOutput](api, operation(http.MethodPatch, "/v1/profile/username", "updateUsername", "Profile", "Set or change the optional unique username.", 200, bearer))
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)

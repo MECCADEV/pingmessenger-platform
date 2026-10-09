@@ -19,6 +19,10 @@ type CreateUserParams struct {
 	ContactKind, ContactValue            *string
 }
 
+type CreatedUser struct {
+	ID, PingID string
+}
+
 // PasswordLogin is the minimum account record needed to authenticate a direct
 // username/password login. The Argon2id verifier never leaves this package.
 type PasswordLogin struct {
@@ -181,6 +185,92 @@ func (r *UserRepository) RecordPendingLoginFailure(ctx context.Context, id strin
 type Contact struct {
 	ID, UserID, Kind, Value string
 	Verified                bool
+}
+
+type PasswordChallenge struct {
+	ID, UserID, Purpose, CodeHash string
+	Attempts                      int
+	ExpiresAt                     time.Time
+	Consumed                      bool
+}
+
+func (r *UserRepository) LookupRecoveryUser(ctx context.Context, kind, value string) (string, error) {
+	var userID string
+	switch kind {
+	case "username":
+		err := r.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE username=$1 AND deleted_at IS NULL AND status <> 'disabled'`, value).Scan(&userID)
+		return userID, err
+	case "ping_id":
+		err := r.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE ping_id=$1 AND deleted_at IS NULL AND status <> 'disabled'`, value).Scan(&userID)
+		return userID, err
+	case "email", "phone":
+		err := r.pool.QueryRow(ctx, `SELECT u.id::text FROM users u JOIN user_contacts c ON c.user_id=u.id WHERE c.kind=$1::contact_kind AND c.value_normalized=$2 AND c.verified_at IS NOT NULL AND u.deleted_at IS NULL AND u.status <> 'disabled'`, kind, value).Scan(&userID)
+		return userID, err
+	default:
+		return "", fmt.Errorf("unsupported recovery identifier")
+	}
+}
+
+func (r *UserRepository) VerifiedContacts(ctx context.Context, userID string) ([]*Contact, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id::text,user_id::text,kind::text,value_normalized,true FROM user_contacts WHERE user_id=$1 AND verified_at IS NOT NULL AND kind IN ('email','phone') ORDER BY kind,id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var contacts []*Contact
+	for rows.Next() {
+		c := new(Contact)
+		if err = rows.Scan(&c.ID, &c.UserID, &c.Kind, &c.Value, &c.Verified); err != nil {
+			return nil, err
+		}
+		contacts = append(contacts, c)
+	}
+	return contacts, rows.Err()
+}
+
+func (r *UserRepository) CreatePasswordChallenge(ctx context.Context, userID, purpose, codeHash string, expiresAt time.Time) (string, error) {
+	var id string
+	err := r.pool.QueryRow(ctx, `WITH old AS (UPDATE password_challenges SET consumed_at=now() WHERE user_id=$1 AND purpose=$2::password_challenge_purpose AND consumed_at IS NULL) INSERT INTO password_challenges(user_id,purpose,code_hash,expires_at) VALUES($1,$2::password_challenge_purpose,$3,$4) RETURNING id::text`, userID, purpose, codeHash, expiresAt).Scan(&id)
+	return id, err
+}
+
+func (r *UserRepository) PasswordChallenge(ctx context.Context, id string) (*PasswordChallenge, error) {
+	c := new(PasswordChallenge)
+	var consumed *time.Time
+	err := r.pool.QueryRow(ctx, `SELECT id::text,user_id::text,purpose::text,code_hash,attempts,expires_at,consumed_at FROM password_challenges WHERE id=$1`, id).Scan(&c.ID, &c.UserID, &c.Purpose, &c.CodeHash, &c.Attempts, &c.ExpiresAt, &consumed)
+	c.Consumed = consumed != nil
+	return c, err
+}
+
+func (r *UserRepository) ConsumePasswordChallenge(ctx context.Context, id string) error {
+	result, err := r.pool.Exec(ctx, `UPDATE password_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL AND expires_at>now() AND attempts<5`, id)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("password challenge unavailable")
+	}
+	return nil
+}
+
+func (r *UserRepository) RecordPasswordChallengeFailure(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE password_challenges SET attempts=attempts+1 WHERE id=$1 AND consumed_at IS NULL`, id)
+	return err
+}
+
+func (r *UserRepository) ChangePassword(ctx context.Context, userID, passwordHash string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, userID, passwordHash); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE device_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *UserRepository) FindContact(ctx context.Context, kind, value string) (*Contact, error) {
@@ -427,16 +517,16 @@ func (r *UserRepository) ProfilePath(ctx context.Context, userID string) (string
 }
 
 type Profile struct {
-	Nickname string
-	Image    *string
+	Username, PingID, Nickname string
+	Image                      *string
 }
 
 func (r *UserRepository) Profile(ctx context.Context, userID string) (*Profile, error) {
 	p := new(Profile)
-	err := r.pool.QueryRow(ctx, `SELECT u.nickname, (
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(u.username,''),u.ping_id,u.nickname, (
 		SELECT public_path FROM profile_assets
 		WHERE user_id=u.id AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1
-	) FROM users u WHERE u.id=$1 AND u.deleted_at IS NULL`, userID).Scan(&p.Nickname, &p.Image)
+	) FROM users u WHERE u.id=$1 AND u.deleted_at IS NULL`, userID).Scan(&p.Username, &p.PingID, &p.Nickname, &p.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -445,6 +535,17 @@ func (r *UserRepository) Profile(ctx context.Context, userID string) (*Profile, 
 
 func (r *UserRepository) UpdateNickname(ctx context.Context, userID, nickname string) error {
 	result, err := r.pool.Exec(ctx, `UPDATE users SET nickname=$2, updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, userID, nickname)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func (r *UserRepository) UpdateUsername(ctx context.Context, userID, username string) error {
+	result, err := r.pool.Exec(ctx, `UPDATE users SET username=NULLIF($2,''), updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, userID, username)
 	if err != nil {
 		return err
 	}
@@ -506,27 +607,27 @@ func (r *UserRepository) ReplaceRecoveryCodes(ctx context.Context, userID string
 
 // Create executes parameterized PostgreSQL queries through raw pgx. It accepts
 // an already-derived Argon2id hash; callers must never pass plaintext passwords.
-func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (string, error) {
+func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (*CreatedUser, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	var id string
-	err = tx.QueryRow(ctx, `INSERT INTO users (username, password_hash, nickname, openim_user_id, status) VALUES ($1, $2, $3, NULLIF($4, ''), 'active') RETURNING id::text`, p.Username, p.PasswordHash, p.Nickname, p.OpenIMUserID).Scan(&id)
+	created := new(CreatedUser)
+	err = tx.QueryRow(ctx, `INSERT INTO users (username, password_hash, nickname, openim_user_id, status) VALUES (NULLIF($1,''), $2, $3, NULLIF($4, ''), 'active') RETURNING id::text,ping_id`, p.Username, p.PasswordHash, p.Nickname, p.OpenIMUserID).Scan(&created.ID, &created.PingID)
 	if err != nil {
-		return "", fmt.Errorf("insert user: %w", err)
+		return nil, fmt.Errorf("insert user: %w", err)
 	}
 	if p.ContactKind != nil && p.ContactValue != nil {
-		_, err = tx.Exec(ctx, `INSERT INTO user_contacts (user_id, kind, value_normalized, is_primary) VALUES ($1, $2::contact_kind, $3, true)`, id, *p.ContactKind, *p.ContactValue)
+		_, err = tx.Exec(ctx, `INSERT INTO user_contacts (user_id, kind, value_normalized, is_primary) VALUES ($1, $2::contact_kind, $3, true)`, created.ID, *p.ContactKind, *p.ContactValue)
 		if err != nil {
-			return "", fmt.Errorf("insert user contact: %w", err)
+			return nil, fmt.Errorf("insert user contact: %w", err)
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return "", err
+		return nil, err
 	}
-	return id, nil
+	return created, nil
 }
 
 func (r *UserRepository) PasswordLogin(ctx context.Context, username string) (*PasswordLogin, error) {
@@ -547,6 +648,12 @@ func (r *UserRepository) PasswordLoginByEmail(ctx context.Context, email string)
 		return nil, err
 	}
 	return account, nil
+}
+
+func (r *UserRepository) PasswordLoginByID(ctx context.Context, userID string) (*PasswordLogin, error) {
+	account := new(PasswordLogin)
+	err := r.pool.QueryRow(ctx, `SELECT id::text,password_hash FROM users WHERE id=$1 AND deleted_at IS NULL AND status <> 'disabled'`, userID).Scan(&account.UserID, &account.PasswordHash)
+	return account, err
 }
 
 func (r *UserRepository) UsernameAvailable(ctx context.Context, username string) (bool, error) {

@@ -47,7 +47,7 @@ func TestProductionAuthContract(t *testing.T) {
 		t.Fatalf("username %q was unexpectedly unavailable: %#v", name, available)
 	}
 	created := postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","email":%q}`, name, email), http.StatusCreated)
-	if created["openim_sync"] != "complete" || created["status"] != "pending_contact_verification" {
+	if created["openim_sync"] != "complete" || created["status"] != "active" || created["ping_id"] == "" || created["access_token"] == "" || created["refresh_token"] == "" {
 		t.Fatalf("signup did not complete OpenIM provisioning: %#v", created)
 	}
 	post(t, client, base+"/v1/auth/verify-username", fmt.Sprintf(`{"username":%q}`, name), http.StatusOK)

@@ -221,22 +221,28 @@ func (a *API) loginVerify(ctx *fasthttp.RequestCtx) {
 }
 
 func (a *API) issueLoginSession(ctx *fasthttp.RequestCtx, userID, platform, deviceName, deviceID string) {
-	refresh, hash, err := a.tokens.NewRefresh()
+	tokens, err := a.newSession(userID, platform, deviceName, deviceID)
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
+	}
+	writeJSON(ctx, http.StatusOK, tokens)
+}
+
+func (a *API) newSession(userID, platform, deviceName, deviceID string) (map[string]string, error) {
+	refresh, hash, err := a.tokens.NewRefresh()
+	if err != nil {
+		return nil, err
 	}
 	session, err := a.users.CreateSession(context.Background(), userID, hash, platform, deviceName, deviceID, time.Now().Add(a.tokens.RefreshTTL()))
 	if err != nil {
-		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
-		return
+		return nil, err
 	}
 	access, _, err := a.tokens.IssueAccess(userID, session.ID)
 	if err != nil {
-		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not issue access token"})
-		return
+		return nil, err
 	}
-	writeJSON(ctx, http.StatusOK, map[string]string{"access_token": access, "refresh_token": refresh, "session_id": session.ID})
+	return map[string]string{"access_token": access, "refresh_token": refresh, "session_id": session.ID}, nil
 }
 
 type refreshRequest struct {

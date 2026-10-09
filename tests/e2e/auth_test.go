@@ -24,7 +24,7 @@ import (
 func TestProductionTOTPLoginMFA(t *testing.T) {
 	base := os.Getenv("E2E_BASE_URL")
 	if base == "" {
-		t.Fatal("E2E_BASE_URL is required")
+		t.Skip("E2E_BASE_URL is not configured")
 	}
 	c := &http.Client{Timeout: 15 * time.Second}
 	user := fmt.Sprintf("totp-%d", time.Now().UnixNano())
@@ -59,7 +59,7 @@ func totpCode(secret string, now time.Time) string {
 func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	baseURL := os.Getenv("E2E_BASE_URL")
 	if baseURL == "" {
-		t.Fatal("E2E_BASE_URL is required")
+		t.Skip("E2E_BASE_URL is not configured")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	get(t, client, baseURL+"/healthz", http.StatusOK)
@@ -70,6 +70,12 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	created := postJSON(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","nickname":"Display Name","email":%q}`, username, email), http.StatusCreated)
 	if created["status"] != "active" {
 		t.Fatalf("signup status=%v", created["status"])
+	}
+	if pingID, ok := created["ping_id"].(string); !ok || len(pingID) != 12 {
+		t.Fatalf("signup did not return a 12-digit ping_id: %#v", created)
+	}
+	if created["access_token"] == "" || created["refresh_token"] == "" {
+		t.Fatalf("signup did not return device tokens: %#v", created)
 	}
 	post(t, client, baseURL+"/v1/auth/verify-username", fmt.Sprintf(`{"username":%q}`, username), http.StatusOK)
 	post(t, client, baseURL+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, username), http.StatusConflict)
@@ -89,7 +95,7 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 func TestMFAAndPasswordlessLoginAgainstDeployedAPI(t *testing.T) {
 	base, mailpit := os.Getenv("E2E_BASE_URL"), os.Getenv("E2E_MAILPIT_URL")
 	if base == "" || mailpit == "" {
-		t.Fatal("E2E_BASE_URL and E2E_MAILPIT_URL are required")
+		t.Skip("E2E_BASE_URL and E2E_MAILPIT_URL are not configured")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	user := fmt.Sprintf("otp-%d", time.Now().UnixNano())
@@ -210,7 +216,7 @@ func mailCode(t *testing.T, c *http.Client, base, email string) string {
 func TestConcurrentUsernameClaimsAgainstDeployedAPI(t *testing.T) {
 	baseURL := os.Getenv("E2E_BASE_URL")
 	if baseURL == "" {
-		t.Fatal("E2E_BASE_URL is required")
+		t.Skip("E2E_BASE_URL is not configured")
 	}
 	username := fmt.Sprintf("race-%d", time.Now().UnixNano())
 	const workers = 12
@@ -250,10 +256,40 @@ func TestConcurrentUsernameClaimsAgainstDeployedAPI(t *testing.T) {
 	}
 }
 
+func TestPasswordChangeWithoutContactAgainstDeployedAPI(t *testing.T) {
+	base := os.Getenv("E2E_BASE_URL")
+	if base == "" {
+		t.Skip("E2E_BASE_URL is not configured")
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	name := fmt.Sprintf("password-change-%d", time.Now().UnixNano())
+	oldPassword, newPassword := "correct-horse-battery-staple", "correct-battery-staple-horse"
+	created := postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, oldPassword), http.StatusCreated)
+	access := created["access_token"].(string)
+	postAuthenticatedJSON(t, client, base+"/v1/auth/password/change", access, fmt.Sprintf(`{"current_password":%q,"new_password":%q}`, oldPassword, newPassword), http.StatusOK)
+	assertStatus(t, client, http.MethodPost, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, oldPassword), http.StatusUnauthorized, "old password after change")
+	newTokens := postJSON(t, client, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, newPassword), http.StatusOK)
+	if newTokens["access_token"] == "" || newTokens["refresh_token"] == "" {
+		t.Fatalf("new password did not create a session: %#v", newTokens)
+	}
+}
+
+func TestPasswordRecoveryEnumerationAgainstDeployedAPI(t *testing.T) {
+	base := os.Getenv("E2E_BASE_URL")
+	if base == "" {
+		t.Skip("E2E_BASE_URL is not configured")
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	unknown := postJSON(t, client, base+"/v1/auth/password/recovery/start", fmt.Sprintf(`{"username":"unknown-recovery-%d"}`, time.Now().UnixNano()), http.StatusAccepted)
+	if unknown["status"] != "if eligible, a recovery code was sent" {
+		t.Fatalf("recovery response leaks account state: %#v", unknown)
+	}
+}
+
 func TestSecurityAndDiscoveryProtocolsAgainstDeployedAPI(t *testing.T) {
 	base, mailpit := os.Getenv("E2E_BASE_URL"), os.Getenv("E2E_MAILPIT_URL")
 	if base == "" || mailpit == "" {
-		t.Fatal("E2E_BASE_URL and E2E_MAILPIT_URL are required")
+		t.Skip("E2E_BASE_URL and E2E_MAILPIT_URL are not configured")
 	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	user := fmt.Sprintf("security-%d", time.Now().UnixNano())

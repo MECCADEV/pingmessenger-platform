@@ -46,6 +46,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	r.GET("/healthz", a.health)
 	r.GET("/openapi.json", a.openAPIDocument)
 	a.registerAuthRoutes(r)
+	a.registerPasswordRoutes(r)
 	a.registerMFARoutes(r)
 	a.registerSecurityRoutes(r)
 	a.registerProfileRoutes(r)
@@ -73,11 +74,14 @@ func (a *API) openAPIDocument(ctx *fasthttp.RequestCtx) {
 }
 
 type signupRequest struct {
-	Username string `json:"username" validate:"required,min=3,max=64"`
-	Password string `json:"password" validate:"required,min=12,max=256"`
-	Nickname string `json:"nickname" validate:"omitempty,max=128"`
-	Email    string `json:"email" validate:"omitempty,email,max=254"`
-	Phone    string `json:"phone" validate:"omitempty,max=32"`
+	Username   string `json:"username" validate:"omitempty,min=3,max=64"`
+	Password   string `json:"password" validate:"required,min=12,max=256"`
+	Nickname   string `json:"nickname" validate:"omitempty,max=128"`
+	Email      string `json:"email" validate:"omitempty,email,max=254"`
+	Phone      string `json:"phone" validate:"omitempty,max=32"`
+	PlatformID string `json:"platform_id" validate:"omitempty,max=64"`
+	DeviceName string `json:"device_name" validate:"omitempty,max=128"`
+	DeviceID   string `json:"device_id" validate:"omitempty,max=128"`
 }
 type usernameRequest struct {
 	Username string `json:"username" validate:"required,min=3,max=64"`
@@ -91,6 +95,15 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 	}
 	if request.Email != "" && request.Phone != "" {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "provide at most one contact during signup"})
+		return
+	}
+	platform := request.PlatformID
+	if platform == "" {
+		platform = "web"
+	}
+	platform, ok := auth.NormalizePlatform(platform)
+	if !ok {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "unsupported platform_id"})
 		return
 	}
 	username := strings.ToLower(strings.TrimSpace(request.Username))
@@ -109,7 +122,7 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 		kind, value = &k, &v
 	}
 	nickname := strings.TrimSpace(request.Nickname)
-	id, err := a.users.Create(context.Background(), &auth.CreateUserParams{Username: username, PasswordHash: passwordHash, Nickname: nickname, ContactKind: kind, ContactValue: value})
+	created, err := a.users.Create(context.Background(), &auth.CreateUserParams{Username: username, PasswordHash: passwordHash, Nickname: nickname, ContactKind: kind, ContactValue: value})
 	if err != nil {
 		var pgError *pgconn.PgError
 		if strings.Contains(err.Error(), "duplicate key") || (errors.As(err, &pgError) && pgError.Code == "23505") {
@@ -123,15 +136,27 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 	// platform UUID as the database identity, and derive a stable safe OpenIM
 	// identity from it rather than sending UUID hyphens to OpenIM.
 	sync := "complete"
-	openIMUserID := "pm" + strings.ReplaceAll(id, "-", "")
+	openIMUserID := "pm" + strings.ReplaceAll(created.ID, "-", "")
 	openIMNickname := nickname
 	if openIMNickname == "" {
 		openIMNickname = username
+		if openIMNickname == "" {
+			openIMNickname = created.PingID
+		}
 	}
-	if _, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: openIMUserID, Nickname: openIMNickname}); provisionErr != nil || a.users.SetOpenIMUserID(context.Background(), id, openIMUserID) != nil {
+	if _, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: openIMUserID, Nickname: openIMNickname}); provisionErr != nil || a.users.SetOpenIMUserID(context.Background(), created.ID, openIMUserID) != nil {
 		sync = "pending"
 	}
-	writeJSON(ctx, http.StatusCreated, map[string]string{"user_id": id, "status": "active", "openim_sync": sync})
+	tokens, err := a.newSession(created.ID, platform, request.DeviceName, request.DeviceID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "account created but could not issue session"})
+		return
+	}
+	tokens["user_id"] = created.ID
+	tokens["ping_id"] = created.PingID
+	tokens["status"] = "active"
+	tokens["openim_sync"] = sync
+	writeJSON(ctx, http.StatusCreated, tokens)
 }
 
 func (a *API) verifyUsername(ctx *fasthttp.RequestCtx) {

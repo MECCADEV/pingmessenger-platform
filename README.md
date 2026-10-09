@@ -25,19 +25,25 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
+The current contract version is `0.5.0`. Cluster E2E coverage is in
+`tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
+SES delivery with a test mirror, password recovery, and OpenIM interoperability.
+
 ## Account authentication
 
-`username` is required at signup and is case-insensitively unique among active
-accounts. Clients may preflight it with `POST /v1/auth/verify-username`:
+`username` is optional at signup. When supplied it is case-insensitively unique
+among active accounts. Clients may preflight it with `POST /v1/auth/verify-username`:
 
 ```json
 {"username":"alice"}
 ```
 
 The database unique index remains the authority, so clients must still handle
-`409 Conflict` on a concurrent signup. `email` and `phone` are optional contact
-methods; neither is required to create an account or to sign in. The primary
-sign-in route is `POST /v1/auth/login`:
+`409 Conflict` on a concurrent signup. Every signup returns a 12-digit numeric
+`ping_id` plus access, refresh, and device-session tokens. `platform_id` defaults
+to `web`; clients should send their device name/ID when available. `email` and
+`phone` are optional contact methods; neither is required to create an account
+or to sign in. The primary sign-in route is `POST /v1/auth/login`:
 
 ```json
 {"email":"alice@example.com","password":"correct-horse-battery-staple","platform_id":"android","device_name":"Pixel"}
@@ -47,9 +53,24 @@ Supply exactly one of `username` or an attached `email`; it returns the normal
 access token, refresh token, and device session. The
 legacy `/v1/auth/login/start` and `/v1/auth/login/verify` routes remain for
 optional email-OTP login. A signup may include `nickname`; it is a non-unique
-display name stored in PostgreSQL. Read it with `GET /v1/profile/` and update
-it (with or without an image) through authenticated multipart
-`POST /v1/profile/update` using the `nickname` form field.
+display name stored in PostgreSQL. Read it (along with `username` and `ping_id`)
+with `GET /v1/profile/`. Change the optional username with authenticated
+`PATCH /v1/profile/username`; change the nickname (with or without an image)
+through multipart `POST /v1/profile/update` using the `nickname` form field.
+
+Password recovery starts at `POST /v1/auth/password/recovery/start` with exactly
+one `username`, `ping_id`, `email`, or `phone`. A valid account receives the same
+one-time code at every verified email/phone contact; complete it with
+`POST /v1/auth/password/recovery/complete`. Responses deliberately do not reveal
+whether an identifier exists. Authenticated users use
+`POST /v1/auth/password/change`; accounts with verified contacts complete the
+returned step-up challenge at `/v1/auth/password/change/verify`, while accounts
+without a verified contact can change the password with the current password.
+
+MFA and recovery email use AWS SES directly in production (`EMAIL_PROVIDER=ses`,
+sender `AWS_SES_FROM_EMAIL`) and SMTP/Mailpit locally. SNS is not the recipient
+inbox path. `EMAIL_MIRROR_SMTP_ADDRESS` is an explicit test-only mirror and must
+remain unset in production.
 
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to

@@ -6,7 +6,7 @@ import (
 	"net/smtp"
 )
 
-// SMTP is used only for local development/e2e with Mailpit; production uses SNS.
+// SMTP is used for local development/e2e with Mailpit; production uses SES.
 type SMTP struct{ address, from string }
 
 func NewSMTP(address, from string) *SMTP { return &SMTP{address: address, from: from} }
