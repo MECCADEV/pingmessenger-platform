@@ -304,8 +304,88 @@ type discoverOutput struct {
 	}
 }
 
+type paymentCreateBody struct {
+	PaymentID     string `json:"payment_id" minLength:"1" maxLength:"128"`
+	ToUserID      string `json:"to_user_id" format:"uuid"`
+	PaymentType   string `json:"payment_type" enum:"direct,fund_campaign"`
+	ChainID       string `json:"chain_id" maxLength:"64"`
+	TransactionID string `json:"transaction_id" maxLength:"256"`
+	Asset         string `json:"asset,omitempty" maxLength:"64"`
+	AmountAtomic  string `json:"amount_atomic" pattern:"^[0-9]+$"`
+	ExpiresInSec  int    `json:"expires_in_seconds,omitempty" minimum:"30" maximum:"86400"`
+}
+type paymentCreateInput struct {
+	ConversationID string `path:"conversationID" maxLength:"128"`
+	Body           paymentCreateBody
+}
+type payment struct {
+	PaymentID      string `json:"payment_id"`
+	ConversationID string `json:"conversation_id"`
+	FromUserID     string `json:"from_user_id" format:"uuid"`
+	ToUserID       string `json:"to_user_id" format:"uuid"`
+	PaymentType    string `json:"payment_type"`
+	Status         string `json:"status"`
+	ChainID        string `json:"chain_id"`
+	TransactionID  string `json:"transaction_id"`
+	BlockID        string `json:"block_id,omitempty"`
+	Asset          string `json:"asset,omitempty"`
+	AmountAtomic   string `json:"amount_atomic"`
+	Version        int64  `json:"version"`
+	ExpiresAt      string `json:"expires_at" format:"date-time"`
+	CreatedAt      string `json:"created_at" format:"date-time"`
+	UpdatedAt      string `json:"updated_at" format:"date-time"`
+}
+type paymentCreateOutput struct {
+	Body struct {
+		Payment     payment `json:"payment"`
+		WatchStatus string  `json:"watch_status"`
+	}
+}
+type paymentListOutput struct {
+	Body struct {
+		Payments []*payment `json:"payments"`
+		NextTo   string     `json:"next_to,omitempty"`
+	}
+}
+type paymentWebSocketOutput struct {
+	Body struct {
+		Description string `json:"description"`
+	}
+}
+type paymentListInput struct {
+	ConversationID string `path:"conversationID" maxLength:"128"`
+	Query          struct {
+		To                 string `query:"to" doc:"latest or a payment ID"`
+		LastKnownPaymentID string `query:"last_known_payment_id"`
+		LastBlockID        string `query:"last_block_id"`
+		Limit              int    `query:"limit" minimum:"1" maximum:"100"`
+	}
+}
+type paymentWebSocketInput struct {
+	ConversationID string `path:"conversationID" maxLength:"128"`
+}
+type paymentEventInput struct {
+	Signature string `header:"X-PingPay-Signature" required:"true"`
+	Body      struct {
+		EventID       string `json:"event_id"`
+		PaymentID     string `json:"payment_id"`
+		ChainID       string `json:"chain_id"`
+		TransactionID string `json:"transaction_id"`
+		Status        string `json:"status"`
+		BlockID       string `json:"block_id,omitempty"`
+		AmountAtomic  string `json:"amount_atomic,omitempty"`
+		Version       int64  `json:"version"`
+		OccurredAt    string `json:"occurred_at" format:"date-time"`
+	}
+}
+type paymentEventOutput struct {
+	Body struct {
+		Payment payment `json:"payment"`
+	}
+}
+
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.6.2")
+	config := huma.DefaultConfig("PingMessenger API", "0.7.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -349,6 +429,10 @@ func newDocument() (*DocumentModel, error) {
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
 	register[discoverInput, discoverOutput](api, operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover registered contacts from supplied email addresses or phone numbers.", 200, bearer))
+	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))
+	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments", "listPayments", "Payments", "List visible payments newest-first with cursor pagination.", 200, bearer))
+	register[paymentWebSocketInput, paymentWebSocketOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments/ws", "paymentWebSocket", "Payments", "Upgrade to a WebSocket for payment.updated events; HTTP remains the recovery source of truth.", 101, bearer))
+	register[paymentEventInput, paymentEventOutput](api, operation(http.MethodPost, "/v1/internal/payments/events", "applyPaymentEvent", "Internal", "Apply a signed PingPay-user transaction update to the platform ledger.", 200, public))
 
 	return api.OpenAPI(), nil
 }

@@ -1,0 +1,19 @@
+version: 0.7.0
+summary: Add platform-owned payment ledger and OpenIM payment message contract.
+changes:
+  - type: added
+    endpoint: POST /v1/conversations/{conversationID}/payments
+    description: Create an idempotent pending payment record.
+  - type: added
+    endpoint: GET /v1/conversations/{conversationID}/payments
+    description: List visible payments newest-first with cursor pagination.
+  - type: added
+    endpoint: GET /v1/conversations/{conversationID}/payments/ws
+    description: Stream payment.updated events over an authenticated WebSocket.
+  - type: added
+    endpoint: POST /v1/internal/payments/events
+    description: Apply HMAC-authenticated PingPay-user transaction updates.
+  - type: protocol
+    description: OpenIM CustomElem now carries pingmessenger.payment.v1 messages with monotonic versions.
+  - type: deferred
+    description: PingPay-user watcher transport remains an internal adapter until its service delivery is available.

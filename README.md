@@ -25,7 +25,7 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.6.2`. Cluster E2E coverage is in
+The current contract version is `0.7.0`. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
 SES delivery with a test mirror, password recovery, and OpenIM interoperability.
 
@@ -147,3 +147,23 @@ auth tokens, emails, phone numbers, and other personal data from attributes.
 `otel.meainternal.com` remains a planned hostname: no OTLP Collector is
 currently deployed or publicly routed. A future Collector must authenticate
 and rate-limit requests before forwarding logs to the private Loki service.
+
+## Payments
+
+The platform owns the payment ledger and exposes it as an authenticated
+conversation API. Create a pending record with
+`POST /v1/conversations/{conversationID}/payments`, then retrieve it newest
+first with `GET /v1/conversations/{conversationID}/payments?to=latest&limit=50`.
+Use `last_known_payment_id` as the exclusive lower cursor. The optional
+WebSocket endpoint is
+`wss://api-platform-pingmessenger.meainternal.com/v1/conversations/{conversationID}/payments/ws`;
+it emits `payment.updated` frames and clients must recover missed events from
+the HTTP list endpoint.
+
+Payment records are idempotent by `payment_id`, begin as `pending`, and carry a
+monotonically increasing version. PingPay-user transaction updates will enter
+through a private watcher adapter; it does not own conversation history or
+client delivery. OpenIM carries the resulting `pingmessenger.payment.v1`
+JSON envelope in its existing CustomElem message type. The private callback is
+`POST /v1/internal/payments/events` with an `X-PingPay-Signature` HMAC-SHA256
+header over the exact request body; configure its key as `PINGPAY_EVENT_SECRET`.

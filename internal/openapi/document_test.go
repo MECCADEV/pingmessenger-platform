@@ -10,13 +10,14 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if doc.OpenAPI != "3.1.0" {
 		t.Fatalf("OpenAPI version = %q", doc.OpenAPI)
 	}
-	if doc.Info.Version != "0.6.2" {
+	if doc.Info.Version != "0.7.0" {
 		t.Fatalf("API version = %q", doc.Info.Version)
 	}
 	for _, path := range []string{
 		"/v1/auth/signup", "/v1/auth/verify-username", "/v1/auth/login", "/v1/auth/login/start", "/v1/auth/login/verify", "/v1/auth/refresh",
 		"/v1/mfa/challenge", "/v1/mfa/verify", "/v1/security/backup-codes", "/v1/security/backup-codes/regenerate",
 		"/v1/security/activity", "/v1/security/revoke", "/v1/profile/", "/v1/profile/update", "/v1/friends/discover-network",
+		"/v1/conversations/{conversationID}/payments", "/v1/conversations/{conversationID}/payments/ws",
 	} {
 		if doc.Paths[path] == nil {
 			t.Errorf("missing documented path %s", path)

@@ -19,26 +19,29 @@ import (
 	"pingmessenger/internal/notify"
 	"pingmessenger/internal/openapi"
 	"pingmessenger/internal/openim"
+	"pingmessenger/internal/payments"
 	"pingmessenger/internal/storage"
 )
 
 type API struct {
-	db                Pinger
-	openIM            openim.Client
-	users             *auth.UserRepository
-	email             notify.EmailSender
-	sms               notify.SMSSender
-	otpSecret         string
-	tokens            *auth.TokenManager
-	deviceTokenCipher *auth.DeviceTokenCipher
-	objects           storage.ObjectStore
-	assetBase         string
-	validate          *validator.Validate
+	db                 Pinger
+	openIM             openim.Client
+	payments           *payments.Service
+	users              *auth.UserRepository
+	email              notify.EmailSender
+	sms                notify.SMSSender
+	otpSecret          string
+	tokens             *auth.TokenManager
+	deviceTokenCipher  *auth.DeviceTokenCipher
+	objects            storage.ObjectStore
+	assetBase          string
+	paymentEventSecret string
+	validate           *validator.Validate
 }
 type Pinger interface{ Ping(context.Context) error }
 
-func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase string) *API {
-	return &API{db: pool, openIM: openIM, users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, validate: validator.New()}
+func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase, paymentEventSecret string) *API {
+	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, validate: validator.New()}
 }
 
 func (a *API) Router() fasthttp.RequestHandler {
@@ -53,6 +56,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	a.registerProfileRoutes(r)
 	a.registerFriendRoutes(r)
 	a.registerOpenIMRoutes(r)
+	a.registerPaymentRoutes(r)
 	return r.Handler
 }
 

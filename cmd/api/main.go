@@ -50,7 +50,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &fasthttp.Server{Handler: httpapi.New(pool, openIM, email, sms, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, cfg.S3PublicBaseURL).Router(), Name: "pingmessenger-api"}
+	server := &fasthttp.Server{Handler: httpapi.New(pool, openIM, email, sms, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, cfg.S3PublicBaseURL, cfg.PingPayEventSecret).Router(), Name: "pingmessenger-api"}
 	log.Printf("PingMessenger API listening on %s (%s)", cfg.HTTPAddr, cfg.AppEnv)
 	if err := server.ListenAndServe(cfg.HTTPAddr); err != nil {
 		log.Printf("server stopped: %v", err)
