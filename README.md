@@ -25,7 +25,7 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.7.0`. Cluster E2E coverage is in
+The current contract version is `0.7.1`. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
 SES delivery with a test mirror, password recovery, and OpenIM interoperability.
 
@@ -82,6 +82,24 @@ Username endpoints:
   The response is `{ "type":"username_availability", "request_id":"r1", "username":"alice", "available":true }`.
   The socket accepts at most 60 checks and never returns account metadata.
 
+## User directory search
+
+Authenticated clients can call `POST /v1/friends/search` with exactly one
+search field:
+
+```json
+{"query":"ali","field":"username","limit":20}
+```
+
+`username` is a case-insensitive partial match. `email`, `phone`, and
+`ping_id` are exact matches; email and phone results require a verified
+contact. The response is `{ "results": [...], "total": n }` with OpenIM-shaped
+`userID`, `nickname`, `faceURL`, `remark`, and `relationship` fields, plus
+`username` and `ping_id`. `relationship` is `-1` because this is a global
+platform directory lookup and does not evaluate the caller's local OpenIM
+friend/blacklist graph. Contact values are never returned, and the requester
+is excluded from results.
+
 Phone verification uses `POST /v1/mfa/challenge` with
 `{ "phone":"+...", "purpose":"signup_contact_verification" }`, then
 `POST /v1/mfa/verify`. Production sends through AWS SNS transactional SMS;
@@ -118,6 +136,29 @@ Its MongoDB (three members), Kafka (two brokers, replication factor two), and
 shared Redis dependency are cluster-private. Avatar/object writes use the private S3 bucket
 `pingmessenger-openim-403048695675-ap-south-1` through IRSA; do not add AWS
 credentials to Helm values or application environment files.
+
+## Stories
+
+Stories are owned by Platform/PostgreSQL and are delivered only to users who
+have a one-to-one OpenIM conversation with the author. `POST /v1/stories` is a
+multipart upload (`media`, optional `caption`, `visibility=contacts|allow|exclude`,
+optional JSON-array `user_ids`, and optional `expires_in_seconds`); expiry
+defaults to 24 hours and media is limited to 10 MiB. A story deletion or
+expiry is a durable `deleted` event, so offline clients do not retain stale
+stories. `POST /v1/stories/{storyID}/view` records an idempotent view/reaction;
+the owner can read those records from `GET /v1/stories/{storyID}/views`.
+
+Clients consume `/v1/stories/ws` with `sync` and `ack` frames. The server
+returns monotonic `event_id` cursors globally and per story owner, and rejects
+acknowledgements that move either cursor backwards.
+
+The initial conversation graph snapshot is fetched over OpenIM's native
+conversation gRPC service (`OPENIM_CONVERSATION_GRPC_TARGET`). To enable
+push-based conversation-graph refresh, configure OpenIM's
+`webhooks.yml` with `transport: grpc`, `grpcTarget: <platform-service>:9090`,
+and enable the friend/conversation after-callbacks. HTTP callbacks remain the
+available by setting `transport: http` when a deployment does not run the
+Platform gRPC receiver.
 
 ## Mobile app telemetry
 

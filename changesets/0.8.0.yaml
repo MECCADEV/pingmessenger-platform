@@ -1,0 +1,78 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.7.1
+  next: 0.8.0
+  bump: minor
+  compatibility: additive
+releaseDate: 2026-10-12
+summary: >-
+  Adds Platform-owned expiring stories with OpenIM conversation-graph delivery,
+  durable WebSocket cursors, viewed-by reactions, and native OpenIM gRPC
+  integration for graph snapshots and webhooks.
+changes:
+  - id: stories-create
+    type: endpoint
+    method: POST
+    path: /v1/stories
+    description: >-
+      Creates an image or video story for the authenticated user. Visibility
+      supports all contacts, an allow-list, or an exclude-list. Expiry defaults
+      to 24 hours and may be configured from 60 seconds through 7 days.
+    limits:
+      mediaBytes: 10485760
+      captionCharacters: 4096
+  - id: stories-viewed-by
+    type: endpoint
+    method: POST
+    path: /v1/stories/{storyID}/view
+    description: Records an idempotent view with viewed_at and an optional emoji/text reaction.
+  - id: stories-list-views
+    type: endpoint
+    method: GET
+    path: /v1/stories/{storyID}/views
+    description: Returns viewed-by records to the story owner.
+  - id: stories-delete
+    type: endpoint
+    method: DELETE
+    path: /v1/stories/{storyID}
+    description: Deletes a story and emits a durable deleted delivery event.
+  - id: stories-sync-websocket
+    type: websocket
+    method: GET
+    path: /v1/stories/ws
+    description: >-
+      Delivers batched created/deleted story events using global and per-owner
+      monotonic cursors. Acknowledgements that move a cursor backwards are
+      rejected.
+  - id: stories-recipient-graph
+    type: protocol
+    description: >-
+      Story recipients are limited to users with an existing one-to-one OpenIM
+      conversation. Platform resolves the initial graph over OpenIM native
+      conversation gRPC and refreshes the in-memory graph from webhook events.
+  - id: openim-webhook-grpc
+    type: protocol
+    description: >-
+      OpenIM callbacks can use the Platform gRPC webhook receiver with HTTP
+      remaining available as a deployment fallback.
+  - id: stories-storage-expiry
+    type: migration
+    description: >-
+      Adds story, recipient, view, event, and cursor tables. A background job
+      marks expired stories deleted, removes their S3 objects, and emits delete
+      events for offline clients.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:20261012-storygrpc-e5
+  openimConversationImage: registry.meainternal.com/pingmessenger/openim-rpc-conversation:20261012-storygrpc2
+  helmChart:
+    path: deploy/helm/pingmessenger
+    appVersion: 0.8.0
+verification:
+  - go test ./...
+  - go vet ./...
+  - go test ./...
+  - go test -tags=e2e ./tests/e2e -run 'TestStoryContractAgainstDeployedAPI|TestProfileUploadLimitAgainstDeployedAPI'
+  - live native OpenIM conversation gRPC probe
+  - live story create/view/reaction/delete WebSocket contract
+  - live 10 MiB story and 5 MiB profile upload rejection

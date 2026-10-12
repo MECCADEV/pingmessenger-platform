@@ -129,6 +129,10 @@ func TestProductionCompleteAuthFlow(t *testing.T) {
 	inbox.drain(t)
 	peerSignup := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, peerEmail), http.StatusAccepted)
 	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, peerSignup["challenge_id"], inbox.otp(t)), http.StatusOK)
+	byEmail := postAuthenticatedJSON(t, client, base+"/v1/friends/search", access, fmt.Sprintf(`{"query":%q,"field":"email"}`, peerEmail), http.StatusOK)
+	if total, ok := byEmail["total"].(float64); !ok || total != 1 {
+		t.Fatalf("verified email directory search = %#v", byEmail)
+	}
 	inbox.drain(t)
 	peerLogin := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, peerEmail), http.StatusAccepted)
 	peerTokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"web","device_name":"production-e2e-peer"}`, peerLogin["challenge_id"], inbox.otp(t)), http.StatusOK)

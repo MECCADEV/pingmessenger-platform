@@ -9,31 +9,33 @@ import (
 )
 
 type Config struct {
-	AppEnv                   string
-	HTTPAddr                 string
-	DatabaseURL              string
-	JWTSigningSecret         string
-	JWTIssuer                string
-	AccessTokenTTL           time.Duration
-	RefreshTokenTTL          time.Duration
-	S3PublicBaseURL          string
-	S3Bucket                 string
-	S3Endpoint               string
-	OpenIMAPIBaseURL         string
-	OpenIMAPIToken           string
-	OpenIMSharedSecret       string
-	OpenIMAdminUserID        string
-	DeviceTokenEncryptionKey string
-	EmailProvider            string
-	SMTPAddress              string
-	SMTPFrom                 string
-	EmailMirrorSMTPAddress   string
-	EmailMirrorFrom          string
-	AWSRegion                string
-	AWSSNSTopicARN           string
-	AWSSESFromEmail          string
-	SMSMirrorTopicARN        string
-	PingPayEventSecret       string
+	AppEnv                       string
+	HTTPAddr                     string
+	DatabaseURL                  string
+	JWTSigningSecret             string
+	JWTIssuer                    string
+	AccessTokenTTL               time.Duration
+	RefreshTokenTTL              time.Duration
+	S3PublicBaseURL              string
+	S3Bucket                     string
+	S3Endpoint                   string
+	OpenIMAPIBaseURL             string
+	OpenIMConversationGRPCTarget string
+	OpenIMAPIToken               string
+	OpenIMSharedSecret           string
+	OpenIMAdminUserID            string
+	OpenIMWebhookGRPCAddr        string
+	DeviceTokenEncryptionKey     string
+	EmailProvider                string
+	SMTPAddress                  string
+	SMTPFrom                     string
+	EmailMirrorSMTPAddress       string
+	EmailMirrorFrom              string
+	AWSRegion                    string
+	AWSSNSTopicARN               string
+	AWSSESFromEmail              string
+	SMSMirrorTopicARN            string
+	PingPayEventSecret           string
 }
 
 func Load() (Config, error) {
@@ -51,9 +53,9 @@ func Load() (Config, error) {
 		AppEnv: value("APP_ENV", "development"), HTTPAddr: value("HTTP_ADDR", ":8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"), JWTSigningSecret: os.Getenv("JWT_SIGNING_SECRET"),
 		JWTIssuer: value("JWT_ISSUER", "pingmessenger"), AccessTokenTTL: accessTTL, RefreshTokenTTL: refreshTTL,
-		S3PublicBaseURL: os.Getenv("S3_PUBLIC_BASE_URL"), OpenIMAPIBaseURL: os.Getenv("OPENIM_API_BASE_URL"),
+		S3PublicBaseURL: os.Getenv("S3_PUBLIC_BASE_URL"), OpenIMAPIBaseURL: os.Getenv("OPENIM_API_BASE_URL"), OpenIMConversationGRPCTarget: os.Getenv("OPENIM_CONVERSATION_GRPC_TARGET"),
 		S3Bucket: os.Getenv("S3_BUCKET"), S3Endpoint: os.Getenv("S3_ENDPOINT"),
-		OpenIMAPIToken: os.Getenv("OPENIM_API_TOKEN"), OpenIMSharedSecret: os.Getenv("OPENIM_SHARED_SECRET"), OpenIMAdminUserID: value("OPENIM_ADMIN_USER_ID", "imAdmin"),
+		OpenIMAPIToken: os.Getenv("OPENIM_API_TOKEN"), OpenIMSharedSecret: os.Getenv("OPENIM_SHARED_SECRET"), OpenIMAdminUserID: value("OPENIM_ADMIN_USER_ID", "imAdmin"), OpenIMWebhookGRPCAddr: value("OPENIM_WEBHOOK_GRPC_ADDR", ":9090"),
 		DeviceTokenEncryptionKey: os.Getenv("DEVICE_TOKEN_ENCRYPTION_KEY"),
 		EmailProvider:            value("EMAIL_PROVIDER", "smtp"), SMTPAddress: os.Getenv("SMTP_ADDRESS"), SMTPFrom: os.Getenv("SMTP_FROM"), EmailMirrorSMTPAddress: os.Getenv("EMAIL_MIRROR_SMTP_ADDRESS"), EmailMirrorFrom: value("EMAIL_MIRROR_FROM", "e2e-mirror@pingmessenger.local"), AWSRegion: os.Getenv("AWS_REGION"), AWSSNSTopicARN: os.Getenv("AWS_SNS_TOPIC_ARN"), AWSSESFromEmail: os.Getenv("AWS_SES_FROM_EMAIL"), SMSMirrorTopicARN: os.Getenv("SMS_MIRROR_TOPIC_ARN"), PingPayEventSecret: os.Getenv("PINGPAY_EVENT_SECRET"),
 	}

@@ -14,18 +14,24 @@ import (
 	"time"
 
 	json "github.com/goccy/go-json"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"pingmessenger/internal/openim/conversationpb"
 )
 
 // HTTPClient owns reusable, concurrency-safe HTTP connections. Construct it
 // once at startup and inject Client into services; never make one per request.
 type HTTPClient struct {
-	baseURL      *url.URL
-	token        string
-	sharedSecret string
-	adminUserID  string
-	tokenExpiry  time.Time
-	mu           sync.Mutex
-	http         *http.Client
+	baseURL          *url.URL
+	token            string
+	sharedSecret     string
+	adminUserID      string
+	tokenExpiry      time.Time
+	mu               sync.Mutex
+	http             *http.Client
+	conversation     conversationpb.ConversationClient
+	conversationConn *grpc.ClientConn
 }
 
 // NewHTTPClientWithSharedSecret obtains a signed OpenIM admin token with the
@@ -40,6 +46,26 @@ func NewHTTPClientWithSharedSecret(baseURL, token, sharedSecret, adminUserID str
 	return c, nil
 }
 
+// NewHTTPClientWithSharedSecretAndConversationGRPC keeps the Platform's
+// existing HTTP OpenIM boundary for user/auth operations, while resolving the
+// story recipient graph through OpenIM's native conversation gRPC service.
+func NewHTTPClientWithSharedSecretAndConversationGRPC(baseURL, token, sharedSecret, adminUserID, conversationTarget string) (*HTTPClient, error) {
+	c, err := NewHTTPClientWithSharedSecret(baseURL, token, sharedSecret, adminUserID)
+	if err != nil {
+		return nil, err
+	}
+	if conversationTarget == "" {
+		return c, nil
+	}
+	conn, err := grpc.Dial(conversationTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return nil, fmt.Errorf("dial OpenIM conversation gRPC: %w", err)
+	}
+	c.conversationConn = conn
+	c.conversation = conversationpb.NewConversationClient(conn)
+	return c, nil
+}
+
 func NewHTTPClient(baseURL, token string) (*HTTPClient, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
@@ -47,7 +73,12 @@ func NewHTTPClient(baseURL, token string) (*HTTPClient, error) {
 	}
 	return &HTTPClient{baseURL: u, token: token, http: &http.Client{Timeout: 10 * time.Second}}, nil
 }
-func (c *HTTPClient) Close() { c.http.CloseIdleConnections() }
+func (c *HTTPClient) Close() {
+	c.http.CloseIdleConnections()
+	if c.conversationConn != nil {
+		_ = c.conversationConn.Close()
+	}
+}
 
 func (c *HTTPClient) ProvisionUser(ctx context.Context, request *ProvisionUserRequest) (*ProvisionUserResponse, error) {
 	response := new(ProvisionUserResponse)
@@ -89,6 +120,51 @@ func (c *HTTPClient) DiscoverUsers(ctx context.Context, request *DiscoverUsersRe
 		return nil, err
 	}
 	return response, nil
+}
+func (c *HTTPClient) ListFriendIDs(ctx context.Context, request *ListFriendIDsRequest) ([]string, error) {
+	response := struct {
+		FriendIDs []string `json:"friendIDs"`
+	}{}
+	if err := c.call(ctx, "friend/get_friend_id", request, &response); err != nil {
+		return nil, err
+	}
+	return response.FriendIDs, nil
+}
+func (c *HTTPClient) ListConversationUserIDs(ctx context.Context, request *ListConversationUserIDsRequest) ([]string, error) {
+	if c.conversation != nil {
+		operationID := make([]byte, 12)
+		if _, err := rand.Read(operationID); err != nil {
+			return nil, fmt.Errorf("create OpenIM operation ID: %w", err)
+		}
+		ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs("operationID", hex.EncodeToString(operationID), "opUserID", c.adminUserID, "platform", "platform"))
+		response, err := c.conversation.GetAllConversations(ctx, &conversationpb.GetAllConversationsReq{OwnerUserID: request.UserID})
+		if err != nil {
+			return nil, fmt.Errorf("call OpenIM conversation gRPC: %w", err)
+		}
+		ids := make([]string, 0, len(response.GetConversations()))
+		for _, item := range response.GetConversations() {
+			if item.GetConversationType() == 1 && item.GetUserID() != "" {
+				ids = append(ids, item.GetUserID())
+			}
+		}
+		return ids, nil
+	}
+	response := struct {
+		Conversations []struct {
+			UserID           string `json:"userID"`
+			ConversationType int32  `json:"conversationType"`
+		} `json:"conversations"`
+	}{}
+	if err := c.call(ctx, "conversation/get_all_conversations", request, &response); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(response.Conversations))
+	for _, conversation := range response.Conversations {
+		if conversation.ConversationType == 1 && conversation.UserID != "" {
+			ids = append(ids, conversation.UserID)
+		}
+	}
+	return ids, nil
 }
 func (c *HTTPClient) GetUserToken(ctx context.Context, request *GetUserTokenRequest) (*GetUserTokenResponse, error) {
 	response := new(GetUserTokenResponse)

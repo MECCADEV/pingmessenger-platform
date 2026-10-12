@@ -3,11 +3,26 @@ package openim
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc"
+	"pingmessenger/internal/openim/conversationpb"
 )
+
+type conversationGRPCTestServer struct {
+	conversationpb.UnimplementedConversationServer
+}
+
+func (conversationGRPCTestServer) GetAllConversations(context.Context, *conversationpb.GetAllConversationsReq) (*conversationpb.GetAllConversationsResp, error) {
+	return &conversationpb.GetAllConversationsResp{Conversations: []*conversationpb.Conversation{
+		{UserID: "u2", ConversationType: 1},
+		{UserID: "group-1", ConversationType: 3},
+	}}, nil
+}
 
 func TestListSessionsUsesSharedClientAndPlatformAuth(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,5 +85,50 @@ func TestProvisionAndProfileUsePinnedOpenIMContract(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("requests = %d", requests)
+	}
+}
+
+func TestListConversationUserIDsFiltersGroupConversations(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/conversation/get_all_conversations" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{"conversations":[{"userID":"u2","conversationType":1},{"userID":"g1","conversationType":3}]}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := client.ListConversationUserIDs(context.Background(), &ListConversationUserIDsRequest{UserID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "u2" {
+		t.Fatalf("ids = %#v", ids)
+	}
+}
+
+func TestListConversationUserIDsUsesConversationGRPC(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer()
+	conversationpb.RegisterConversationServer(server, conversationGRPCTestServer{})
+	go server.Serve(listener)
+	defer server.Stop()
+
+	client, err := NewHTTPClientWithSharedSecretAndConversationGRPC("http://127.0.0.1:1", "", "", "imAdmin", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ids, err := client.ListConversationUserIDs(context.Background(), &ListConversationUserIDsRequest{UserID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "u2" {
+		t.Fatalf("ids = %#v", ids)
 	}
 }

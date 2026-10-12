@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package openim.conversation;
+
+option go_package = "pingmessenger/internal/openim/conversationpb";
+
+// Wire-compatible subset of OpenIM's conversation gRPC contract.
+message Conversation {
+  string ownerUserID = 1;
+  string conversationID = 2;
+  int32 conversationType = 4;
+  string userID = 5;
+}
+
+message GetAllConversationsReq { string ownerUserID = 1; }
+message GetAllConversationsResp { repeated Conversation conversations = 2; }
+
+service conversation {
+  rpc GetAllConversations(GetAllConversationsReq) returns (GetAllConversationsResp);
+}

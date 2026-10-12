@@ -1,0 +1,19 @@
+syntax = "proto3";
+package openim.webhook;
+
+option go_package = "pingmessenger/internal/webhookgrpc/pb";
+
+message CallbackRequest {
+  string command = 1;
+  bytes payload = 2;
+  string operation_id = 3;
+  bytes query_json = 4;
+}
+message CallbackResponse {
+  bytes payload = 1;
+  int32 err_code = 2;
+  string err_msg = 3;
+}
+service Webhook {
+  rpc Call(CallbackRequest) returns (CallbackResponse);
+}

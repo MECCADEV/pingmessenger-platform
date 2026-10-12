@@ -14,6 +14,7 @@ import (
 
 type ObjectStore interface {
 	Put(context.Context, string, string, []byte) error
+	Delete(context.Context, string) error
 }
 type S3 struct {
 	client *s3.Client
@@ -38,6 +39,10 @@ func NewS3(ctx context.Context, c config.Config) (*S3, error) {
 }
 func (s *S3) Put(ctx context.Context, key, contentType string, data []byte) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{Bucket: &s.bucket, Key: &key, ContentType: &contentType, Body: bytes.NewReader(data)})
+	return err
+}
+func (s *S3) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &key})
 	return err
 }
 func ReadLimited(r io.Reader, n int64) ([]byte, error) {

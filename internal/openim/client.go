@@ -11,6 +11,8 @@ type Client interface {
 	ListSessions(context.Context, *ListSessionsRequest) ([]*Session, error)
 	RevokeSessions(context.Context, *RevokeSessionsRequest) error
 	DiscoverUsers(context.Context, *DiscoverUsersRequest) (*DiscoverUsersResponse, error)
+	ListFriendIDs(context.Context, *ListFriendIDsRequest) ([]string, error)
+	ListConversationUserIDs(context.Context, *ListConversationUserIDsRequest) ([]string, error)
 	GetUserToken(context.Context, *GetUserTokenRequest) (*GetUserTokenResponse, error)
 	KickTokens(context.Context, []string) error
 }
@@ -39,6 +41,12 @@ type RevokeSessionsRequest struct {
 }
 type DiscoverUsersRequest struct{ UserIDs []string }
 type DiscoverUsersResponse struct{ UserIDs []string }
+type ListFriendIDsRequest struct {
+	UserID string `json:"userID"`
+}
+type ListConversationUserIDsRequest struct {
+	UserID string `json:"ownerUserID"`
+}
 type GetUserTokenRequest struct {
 	UserID     string `json:"userID"`
 	PlatformID int32  `json:"platformID"`

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/fasthttp/router"
 	"github.com/go-playground/validator/v10"
@@ -21,6 +22,7 @@ import (
 	"pingmessenger/internal/openim"
 	"pingmessenger/internal/payments"
 	"pingmessenger/internal/storage"
+	"pingmessenger/internal/stories"
 )
 
 type API struct {
@@ -36,12 +38,15 @@ type API struct {
 	objects            storage.ObjectStore
 	assetBase          string
 	paymentEventSecret string
+	stories            *stories.Repository
+	storyGraphMu       sync.RWMutex
+	storyGraph         map[string]map[string]struct{}
 	validate           *validator.Validate
 }
 type Pinger interface{ Ping(context.Context) error }
 
 func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase, paymentEventSecret string) *API {
-	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, validate: validator.New()}
+	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), storyGraph: make(map[string]map[string]struct{}), validate: validator.New()}
 }
 
 func (a *API) Router() fasthttp.RequestHandler {
@@ -57,6 +62,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	a.registerFriendRoutes(r)
 	a.registerOpenIMRoutes(r)
 	a.registerPaymentRoutes(r)
+	a.registerStoryRoutes(r)
 	return r.Handler
 }
 

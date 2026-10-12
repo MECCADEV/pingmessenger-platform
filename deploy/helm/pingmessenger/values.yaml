@@ -11,6 +11,7 @@ auth:
   jwtSigningSecret: development-only-change-before-any-shared-deployment-1234
   # Existing local MicroK8s OpenIM Platform API service (namespace-qualified).
   openIMAPIBaseURL: http://openimserver-openim-api.openim.svc.cluster.local
+  openIMConversationGRPCTarget: openimserver-openim-rpc-conversation.openim.svc.cluster.local:80
   openIMAPIToken: ""
 email:
   provider: smtp

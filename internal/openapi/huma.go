@@ -293,6 +293,73 @@ type profileUpdateOutput struct {
 		Sync     string  `json:"sync" enum:"complete,pending"`
 	}
 }
+type story struct {
+	ID          string  `json:"id" format:"uuid"`
+	OwnerID     string  `json:"owner_id" format:"uuid"`
+	MediaType   string  `json:"media_type" enum:"image,video"`
+	MediaURL    string  `json:"media_url" format:"uri"`
+	ContentType string  `json:"content_type"`
+	ByteSize    int64   `json:"byte_size"`
+	Caption     string  `json:"caption"`
+	Visibility  string  `json:"visibility" enum:"contacts,allow,exclude"`
+	ExpiresAt   string  `json:"expires_at" format:"date-time"`
+	DeletedAt   *string `json:"deleted_at,omitempty" format:"date-time"`
+	CreatedAt   string  `json:"created_at" format:"date-time"`
+}
+type storyCreateInput struct {
+	RawBody huma.MultipartFormFiles[struct {
+		Media            huma.FormFile `form:"media" contentType:"image/*,video/*"`
+		Caption          string        `form:"caption" maxLength:"4096"`
+		Visibility       string        `form:"visibility" enum:"contacts,allow,exclude"`
+		UserIDs          string        `form:"user_ids"`
+		ExpiresInSeconds int           `form:"expires_in_seconds" minimum:"60" maximum:"604800"`
+	}]
+}
+type storyCreateOutput struct {
+	Body struct {
+		Story story `json:"story"`
+	}
+}
+type storyDeleteOutput struct {
+	Body struct {
+		Story story `json:"story"`
+	}
+}
+type storyViewInput struct {
+	StoryID string `path:"storyID" format:"uuid"`
+	Body    struct {
+		Reaction string `json:"reaction,omitempty" maxLength:"64"`
+	}
+}
+type storyViewOutput struct {
+	Body struct {
+		View struct {
+			UserID   string `json:"user_id" format:"uuid"`
+			ViewedAt string `json:"viewed_at" format:"date-time"`
+			Reaction string `json:"reaction"`
+		} `json:"view"`
+	}
+}
+type storyViewsInput struct {
+	StoryID string `path:"storyID" format:"uuid"`
+}
+type storyViewsOutput struct {
+	Body struct {
+		Views []struct {
+			UserID   string `json:"user_id" format:"uuid"`
+			ViewedAt string `json:"viewed_at" format:"date-time"`
+			Reaction string `json:"reaction"`
+		} `json:"views"`
+	}
+}
+type storyDeleteInput struct {
+	StoryID string `path:"storyID" format:"uuid"`
+}
+type storyWebSocketOutput struct {
+	Body struct {
+		Description string `json:"description"`
+	}
+}
 type discoverBody struct {
 	Emails   []string `json:"emails,omitempty" maxItems:"100" items:"email"`
 	MobileNo []string `json:"mobile_no,omitempty" maxItems:"100"`
@@ -301,6 +368,27 @@ type discoverInput struct{ Body discoverBody }
 type discoverOutput struct {
 	Body struct {
 		OpenIMUserIDs []string `json:"open_im_user_ids"`
+	}
+}
+type friendSearchBody struct {
+	Query string `json:"query" minLength:"1" maxLength:"254" doc:"Username fragment, exact email/phone, or exact 12-digit PingID."`
+	Field string `json:"field" enum:"username,email,ping_id,phone"`
+	Limit int    `json:"limit,omitempty" minimum:"1" maximum:"50" default:"20"`
+}
+type friendSearchInput struct{ Body friendSearchBody }
+type friendSearchItem struct {
+	UserID       string  `json:"userID" doc:"OpenIM user identity."`
+	Nickname     string  `json:"nickname"`
+	FaceURL      *string `json:"faceURL,omitempty" format:"uri"`
+	Remark       string  `json:"remark"`
+	Relationship int     `json:"relationship" doc:"-1 means the platform directory did not evaluate OpenIM friendship or blacklist state."`
+	Username     string  `json:"username"`
+	PingID       string  `json:"ping_id" pattern:"^[0-9]{12}$"`
+}
+type friendSearchOutput struct {
+	Body struct {
+		Results []*friendSearchItem `json:"results"`
+		Total   int                 `json:"total" minimum:"0"`
 	}
 }
 
@@ -385,7 +473,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.7.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.7.1")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -428,7 +516,15 @@ func newDocument() (*DocumentModel, error) {
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
+	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an expiring image or video story.", 201, bearer)
+	storyCreate.MaxBodyBytes = 10 << 20
+	register[storyCreateInput, storyCreateOutput](api, storyCreate)
+	register[storyDeleteInput, storyDeleteOutput](api, operation(http.MethodDelete, "/v1/stories/{storyID}", "deleteStory", "Stories", "Delete one of the authenticated user's stories.", 200, bearer))
+	register[storyViewInput, storyViewOutput](api, operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Record a view and optional reaction.", 200, bearer))
+	register[storyViewsInput, storyViewsOutput](api, operation(http.MethodGet, "/v1/stories/{storyID}/views", "listStoryViews", "Stories", "List views and reactions for the authenticated owner's story.", 200, bearer))
+	register[struct{}, storyWebSocketOutput](api, operation(http.MethodGet, "/v1/stories/ws", "storyWebSocket", "Stories", "Upgrade to the story sync/ack WebSocket protocol.", 101, bearer))
 	register[discoverInput, discoverOutput](api, operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover registered contacts from supplied email addresses or phone numbers.", 200, bearer))
+	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))
 	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments", "listPayments", "Payments", "List visible payments newest-first with cursor pagination.", 200, bearer))
 	register[paymentWebSocketInput, paymentWebSocketOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments/ws", "paymentWebSocket", "Payments", "Upgrade to a WebSocket for payment.updated events; HTTP remains the recovery source of truth.", 101, bearer))
