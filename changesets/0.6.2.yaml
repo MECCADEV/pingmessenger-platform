@@ -1,0 +1,60 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.6.1
+  next: 0.6.2
+  bump: patch
+  compatibility: additive
+releaseDate: 2026-10-12
+summary: >-
+  Adds ping_id plus password as a supported direct-login credential while
+  preserving username plus password and email plus password login.
+changes:
+  - id: auth-ping-id-password-login
+    type: endpoint
+    method: POST
+    path: /v1/auth/login
+    description: >-
+      Accepts exactly one of username, email, or the twelve-digit ping_id with
+      a password. The existing device-session, access-token, refresh-token, and
+      configured MFA behavior is unchanged.
+    request:
+      oneOf:
+        - username: string
+          password: string
+          platform_id: string
+        - email: string
+          password: string
+          platform_id: string
+        - ping_id: twelve-digit numeric string
+          password: string
+          platform_id: string
+    errors:
+      - 422 when zero or more than one identifier is supplied
+      - 422 when ping_id is not exactly twelve numeric digits
+      - 401 when the identifier/password pair is invalid
+  - id: auth-ping-id-repository-lookup
+    type: protocol
+    description: >-
+      Resolves ping_id directly against the active users table and uses the
+      same Argon2id password verification and session issuance path as the
+      username and email variants.
+  - id: openapi-ping-id-schema
+    type: schema
+    description: >-
+      Adds ping_id to the password-login request schema and updates the
+      endpoint description in the generated OpenAPI 3.1 document.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:20261012-identity-api062
+  helmChart:
+    path: deploy/helm/pingmessenger
+    appVersion: 0.6.2
+verification:
+  - go test ./...
+  - go vet ./...
+  - go test -tags=e2e ./tests/e2e
+  - helm lint deploy/helm/pingmessenger
+  - live username/password login
+  - live email/password login
+  - live ping_id/password login
+  - live rejection of multiple identifiers

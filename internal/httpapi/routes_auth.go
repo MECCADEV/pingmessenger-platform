@@ -27,6 +27,7 @@ func (a *API) registerAuthRoutes(r *router.Router) {
 type passwordLoginRequest struct {
 	Username   string `json:"username" validate:"omitempty,min=3,max=64"`
 	Email      string `json:"email" validate:"omitempty,email,max=254"`
+	PingID     string `json:"ping_id" validate:"omitempty,len=12,numeric"`
 	Password   string `json:"password" validate:"required,min=12,max=256"`
 	PlatformID string `json:"platform_id" validate:"required,max=64"`
 	DeviceName string `json:"device_name" validate:"omitempty,max=128"`
@@ -48,16 +49,29 @@ func (a *API) loginPassword(ctx *fasthttp.RequestCtx) {
 	}
 	username := strings.ToLower(strings.TrimSpace(req.Username))
 	email := strings.ToLower(strings.TrimSpace(req.Email))
-	if (username == "") == (email == "") {
-		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "provide exactly one of username or email"})
+	pingID := strings.TrimSpace(req.PingID)
+	identifiers := 0
+	if username != "" {
+		identifiers++
+	}
+	if email != "" {
+		identifiers++
+	}
+	if pingID != "" {
+		identifiers++
+	}
+	if identifiers != 1 {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "provide exactly one of username, email, or ping_id"})
 		return
 	}
 	var account *auth.PasswordLogin
 	var err error
 	if username != "" {
 		account, err = a.users.PasswordLogin(context.Background(), username)
-	} else {
+	} else if email != "" {
 		account, err = a.users.PasswordLoginByEmail(context.Background(), email)
+	} else {
+		account, err = a.users.PasswordLoginByPingID(context.Background(), pingID)
 	}
 	if err != nil || !auth.VerifyPassword(req.Password, account.PasswordHash) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})

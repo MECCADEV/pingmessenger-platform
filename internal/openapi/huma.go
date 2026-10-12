@@ -68,8 +68,9 @@ type usernameAvailabilityWSOutput struct {
 }
 
 type passwordLoginBody struct {
-	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Use exactly one of username or email."`
-	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Use exactly one of username or email."`
+	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Use exactly one of username, email, or ping_id."`
+	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Use exactly one of username, email, or ping_id."`
+	PingID     string `json:"ping_id,omitempty" pattern:"^[0-9]{12}$" doc:"Use exactly one of username, email, or ping_id."`
 	Password   string `json:"password" minLength:"12" maxLength:"256"`
 	PlatformID string `json:"platform_id" maxLength:"64"`
 	DeviceName string `json:"device_name,omitempty" maxLength:"128"`
@@ -304,7 +305,7 @@ type discoverOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.6.1")
+	config := huma.DefaultConfig("PingMessenger API", "0.6.2")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -320,7 +321,7 @@ func newDocument() (*DocumentModel, error) {
 	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username is optional and unique when supplied; signup returns device-bound tokens.", 201, public))
 	register[usernameInput, usernameOutput](api, operation(http.MethodPost, "/v1/auth/verify-username", "verifyUsername", "Auth", "Check whether a username is available.", 200, public))
 	register[struct{}, usernameAvailabilityWSOutput](api, operation(http.MethodGet, "/v1/auth/username/availability", "usernameAvailabilityWebSocket", "Auth", "Upgrade to a WebSocket and send check_username JSON frames for availability results.", 101, public))
-	register[passwordLoginInput, passwordLoginOutput](api, operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username or email plus a password. Email is optional at signup.", 200, public))
+	register[passwordLoginInput, passwordLoginOutput](api, operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username, email, or ping_id plus a password. Email is optional at signup.", 200, public))
 	register[loginStartInput, loginStartOutput](api, operation(http.MethodPost, "/v1/auth/login/start", "startLogin", "Auth", "Start passwordless email login.", 202, public))
 	register[loginVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/verify", "verifyLogin", "Auth", "Verify a passwordless login code and create a session.", 200, public))
 	register[refreshInput, refreshOutput](api, operation(http.MethodPost, "/v1/auth/refresh", "refreshSession", "Auth", "Rotate a refresh token.", 200, public))

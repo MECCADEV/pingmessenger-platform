@@ -90,6 +90,12 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	if emailTokens["access_token"] == "" || emailTokens["refresh_token"] == "" {
 		t.Fatalf("email password login did not return tokens: %#v", emailTokens)
 	}
+	pingIDTokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"ping_id":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-ping-id"}`, created["ping_id"]), http.StatusOK)
+	if pingIDTokens["access_token"] == "" || pingIDTokens["refresh_token"] == "" {
+		t.Fatalf("ping_id password login did not return tokens: %#v", pingIDTokens)
+	}
+	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"email":%q,"password":"correct-horse-battery-staple","platform_id":"web"}`, username, email), http.StatusUnprocessableEntity, "multiple login identifiers")
+	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", `{"ping_id":"not-a-ping-id","password":"correct-horse-battery-staple","platform_id":"web"}`, http.StatusUnprocessableEntity, "invalid ping_id")
 }
 
 func TestMFAAndPasswordlessLoginAgainstDeployedAPI(t *testing.T) {

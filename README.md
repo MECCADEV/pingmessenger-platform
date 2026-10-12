@@ -25,7 +25,7 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.6.1`. Cluster E2E coverage is in
+The current contract version is `0.6.2`. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
 SES delivery with a test mirror, password recovery, and OpenIM interoperability.
 
@@ -49,8 +49,8 @@ or to sign in. The primary sign-in route is `POST /v1/auth/login`:
 {"email":"alice@example.com","password":"correct-horse-battery-staple","platform_id":"android","device_name":"Pixel"}
 ```
 
-Supply exactly one of `username` or an attached `email`; it returns the normal
-access token, refresh token, and device session. The
+Supply exactly one of `username`, `ping_id`, or an attached `email`; it returns
+the normal access token, refresh token, and device session. The
 legacy `/v1/auth/login/start` and `/v1/auth/login/verify` routes remain for
 optional email-OTP login. A signup may include `nickname`; it is a non-unique
 display name stored in PostgreSQL. Read it (along with `username` and `ping_id`)

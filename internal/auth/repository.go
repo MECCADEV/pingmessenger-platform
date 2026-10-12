@@ -650,6 +650,17 @@ func (r *UserRepository) PasswordLoginByEmail(ctx context.Context, email string)
 	return account, nil
 }
 
+func (r *UserRepository) PasswordLoginByPingID(ctx context.Context, pingID string) (*PasswordLogin, error) {
+	account := new(PasswordLogin)
+	err := r.pool.QueryRow(ctx, `SELECT id::text, password_hash
+		FROM users
+		WHERE ping_id=$1 AND deleted_at IS NULL AND status <> 'disabled'`, pingID).Scan(&account.UserID, &account.PasswordHash)
+	if err != nil {
+		return nil, err
+	}
+	return account, nil
+}
+
 func (r *UserRepository) PasswordLoginByID(ctx context.Context, userID string) (*PasswordLogin, error) {
 	account := new(PasswordLogin)
 	err := r.pool.QueryRow(ctx, `SELECT id::text,password_hash FROM users WHERE id=$1 AND deleted_at IS NULL AND status <> 'disabled'`, userID).Scan(&account.UserID, &account.PasswordHash)
