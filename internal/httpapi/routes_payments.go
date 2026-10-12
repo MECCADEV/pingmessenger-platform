@@ -112,9 +112,7 @@ func (a *API) applyPaymentEvent(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	signature, err := hex.DecodeString(strings.TrimSpace(string(ctx.Request.Header.Peek("X-PingPay-Signature"))))
-	mac := hmac.New(sha256.New, []byte(a.paymentEventSecret))
-	mac.Write(ctx.PostBody())
-	if err != nil || !hmac.Equal(signature, mac.Sum(nil)) {
+	if err != nil || !validPaymentEventSignature(ctx.PostBody(), signature, a.paymentEventSecret) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid payment event signature"})
 		return
 	}
@@ -140,6 +138,12 @@ func (a *API) applyPaymentEvent(ctx *fasthttp.RequestCtx) {
 	}
 }
 
+func validPaymentEventSignature(body, signature []byte, secret string) bool {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write(body)
+	return hmac.Equal(signature, mac.Sum(nil))
+}
+
 func (a *API) paymentWebSocket(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
@@ -161,8 +165,29 @@ func (a *API) paymentWebSocket(ctx *fasthttp.RequestCtx) {
 	}}
 	if err := upgrader.Upgrade(ctx, func(conn *websocket.Conn) {
 		defer conn.Close()
+		conn.SetReadLimit(4096)
 		updates, unsubscribe := a.payments.Subscribe(conversation)
 		defer unsubscribe()
+		// Subscribe before taking the snapshot so an update that races the
+		// snapshot is queued and cannot be lost. Clients deduplicate by version.
+		if snapshot, listErr := a.payments.List(context.Background(), conversation, userID, "", "", 100); listErr == nil {
+			for _, payment := range snapshot {
+				if err := conn.WriteJSON(map[string]any{"type": "payment.updated", "payment": payment}); err != nil {
+					return
+				}
+			}
+		}
+		closed := make(chan struct{})
+		go func() {
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					close(closed)
+					return
+				}
+			}
+		}()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case p, open := <-updates:
@@ -172,10 +197,12 @@ func (a *API) paymentWebSocket(ctx *fasthttp.RequestCtx) {
 				if err := conn.WriteJSON(map[string]any{"type": "payment.updated", "payment": p}); err != nil {
 					return
 				}
-			case <-time.After(30 * time.Second):
-				if err := conn.WriteJSON(map[string]string{"type": "ping"}); err != nil {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 					return
 				}
+			case <-closed:
+				return
 			}
 		}
 	}); err != nil {

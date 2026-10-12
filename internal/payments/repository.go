@@ -8,6 +8,7 @@ import (
 
 	json "github.com/goccy/go-json"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,6 +32,10 @@ func (r *Repository) Create(ctx context.Context, req CreateRequest) (*Payment, e
 		return &p, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		var pgError *pgconn.PgError
+		if errors.As(err, &pgError) && pgError.Code == "23505" {
+			return nil, ErrConflict
+		}
 		return nil, err
 	}
 	// An existing payment ID is idempotent only when it represents the same
@@ -119,11 +124,15 @@ func (r *Repository) ApplyUpdate(ctx context.Context, update PaymentUpdate) (*Pa
 		return &p, ErrConflict
 	}
 	var duplicate bool
-	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM payment_events WHERE event_id=$1)`, update.EventID).Scan(&duplicate)
+	var duplicatePaymentID string
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM payment_events WHERE event_id=$1), COALESCE((SELECT p.payment_id FROM payment_events e JOIN payments p ON p.id=e.payment_id WHERE e.event_id=$1),'')`, update.EventID).Scan(&duplicate, &duplicatePaymentID)
 	if err != nil {
 		return nil, err
 	}
 	if duplicate {
+		if duplicatePaymentID != update.PaymentID {
+			return &p, ErrConflict
+		}
 		if err = tx.Commit(ctx); err != nil {
 			return nil, err
 		}
@@ -182,6 +191,13 @@ func validateCreate(req CreateRequest) error {
 func validateUpdate(update PaymentUpdate) error {
 	if update.EventID == "" || update.PaymentID == "" || update.Version < 1 || update.OccurredAt.IsZero() || statusRank(update.Status) == 0 {
 		return ErrInvalidRequest
+	}
+	if update.AmountAtomic != "" {
+		for _, c := range update.AmountAtomic {
+			if c < '0' || c > '9' {
+				return ErrInvalidRequest
+			}
+		}
 	}
 	return nil
 }
