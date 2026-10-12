@@ -1,0 +1,57 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.7.0
+  next: 0.7.1
+  bump: patch
+  compatibility: additive
+releaseDate: 2026-10-12
+summary: >-
+  Adds an authenticated global user-directory search compatible with OpenIM
+  friend-search identity fields.
+changes:
+  - id: friends-global-search
+    type: endpoint
+    method: POST
+    path: /v1/friends/search
+    description: >-
+      Searches active OpenIM-provisioned accounts by partial username or exact
+      verified email, phone, or twelve-digit ping_id.
+    request:
+      query: string
+      field: username | email | phone | ping_id
+      limit: integer, 1..50, default 20
+    response:
+      results:
+        - userID: OpenIM user identity
+          nickname: display fallback
+          faceURL: nullable public profile image URL
+          remark: empty platform placeholder
+          relationship: -1 (global directory state)
+          username: optional account username
+          ping_id: twelve-digit numeric account ID
+      total: integer
+    privacy:
+      - requester is excluded
+      - email and phone are searchable only after verification
+      - raw contact values are never returned
+  - id: friends-search-openim-shape
+    type: schema
+    description: >-
+      Adds OpenIM-compatible userID, nickname, faceURL, remark, and
+      relationship fields while retaining platform username and ping_id.
+  - id: friends-search-username-index
+    type: migration
+    description: >-
+      Adds a partial pg_trgm GIN index for active usernames so partial
+      directory searches remain bounded as the account table grows.
+deployment:
+  helmChart:
+    path: deploy/helm/pingmessenger
+    appVersion: 0.7.1
+verification:
+  - go test ./...
+  - go vet ./...
+  - go run ./cmd/openapi -output openapi/openapi.json
+  - go test -tags=e2e ./tests/e2e
+  - live authenticated partial-username search
