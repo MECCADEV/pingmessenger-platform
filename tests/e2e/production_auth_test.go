@@ -22,6 +22,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fasthttp/websocket"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 const productionE2EQueueURL = "https://sqs.ap-south-1.amazonaws.com/403048695675/pingmessenger-auth-e2e"
@@ -143,6 +146,175 @@ func TestProductionCompleteAuthFlow(t *testing.T) {
 	peerOpenIMToken := testProductionDeviceOpenIMBridge(t, client, base, peerTokens["access_token"].(string), peerOpenIMID)
 	testOpenIMFriendInteroperability(t, client, base, primaryOpenIMToken, peerOpenIMToken, primaryOpenIMID, peerOpenIMID)
 	postAuthenticatedJSON(t, client, base+"/v1/security/revoke", access, `{"all":true}`, http.StatusNoContent)
+}
+
+// TestProductionOpenIMMessageBetweenTwoUsers exercises the actual client
+// protocol from outside the cluster. It keeps one receiver WebSocket open,
+// sends a protobuf MsgData frame from a second user, and verifies both the
+// sender response and the receiver push. This catches RPC/service-port and
+// message-gateway discovery failures that friend HTTP calls cannot detect.
+func TestProductionOpenIMMessageBetweenTwoUsers(t *testing.T) {
+	base := productionBaseURL(t)
+	client := &http.Client{Timeout: 20 * time.Second}
+	password := "correct-horse-battery-staple"
+
+	newUser := func(prefix string) (string, string) {
+		name := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+		created := postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, name, password), http.StatusCreated)
+		access, ok := created["access_token"].(string)
+		if !ok || access == "" {
+			t.Fatalf("signup did not return an access token: %#v", created)
+		}
+		return openIMUserID(t, created), issueDeviceOpenIMTokenForE2E(t, client, base, access)
+	}
+
+	senderID, senderToken := newUser("prod-msg-sender")
+	receiverID, receiverToken := newUser("prod-msg-receiver")
+	receiver := dialOpenIMClient(t, base, receiverToken, receiverID)
+	defer receiver.Close()
+
+	clientMsg := fmt.Sprintf("production-rpc-e2e-%d", time.Now().UnixNano())
+	sender := dialOpenIMClient(t, base, senderToken, senderID)
+	defer sender.Close()
+	// The gateway publishes online status through Redis and the push service
+	// consumes it asynchronously. Give that cache propagation a bounded window
+	// before sending, otherwise a valid receiver can be treated as offline.
+	time.Sleep(2 * time.Second)
+
+	msgData := encodeE2EMessageData(senderID, receiverID, clientMsg)
+	operationID := fmt.Sprintf("prod-msg-%d", time.Now().UnixNano())
+	request := map[string]any{
+		"reqIdentifier": 1003,
+		"token":         senderToken,
+		"sendID":        senderID,
+		"operationID":   operationID,
+		"msgIncr":       senderID + "_" + operationID,
+		"data":          msgData,
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sender.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatalf("write sender message: %v", err)
+	}
+	senderReply := readOpenIMJSONFrame(t, sender, 20*time.Second)
+	if senderReply["reqIdentifier"] != float64(1003) || senderReply["errCode"] != float64(0) {
+		t.Fatalf("OpenIM sender response failed: %#v", senderReply)
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for receiver push")
+		}
+		push := readOpenIMJSONFrame(t, receiver, time.Until(deadline))
+		if push["reqIdentifier"] != float64(2001) {
+			continue
+		}
+		encoded, ok := push["data"].(string)
+		if !ok {
+			t.Fatalf("receiver push has no data: %#v", push)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatalf("decode receiver push: %v", err)
+		}
+		if !bytes.Contains(decoded, []byte(clientMsg)) {
+			t.Fatalf("receiver push did not contain message %q", clientMsg)
+		}
+		return
+	}
+}
+
+func issueDeviceOpenIMTokenForE2E(t *testing.T, client *http.Client, base, access string) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x, y := key.PublicKey.X.FillBytes(make([]byte, 32)), key.PublicKey.Y.FillBytes(make([]byte, 32))
+	registered := postAuthenticatedJSON(t, client, base+"/v1/openim/device-key", access, fmt.Sprintf(`{"public_key":{"kty":"EC","crv":"P-256","x":%q,"y":%q}}`, base64.RawURLEncoding.EncodeToString(x), base64.RawURLEncoding.EncodeToString(y)), http.StatusOK)
+	fingerprint := registered["fingerprint"].(string)
+	challenge := postAuthenticatedJSON(t, client, base+"/v1/openim/token/challenge", access, `{}`, http.StatusCreated)
+	id, nonce, audience := challenge["challenge_id"].(string), challenge["nonce"].(string), challenge["audience"].(string)
+	digest := sha256.Sum256([]byte("v1|" + id + "|" + nonce + "|" + sessionIDFromAccess(t, access) + "|" + audience))
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
+	issued := postAuthenticatedJSON(t, client, base+"/v1/openim/token/issue", access, fmt.Sprintf(`{"challenge_id":%q,"nonce":%q,"signature":%q,"fingerprint":%q}`, id, nonce, base64.RawURLEncoding.EncodeToString(signature), fingerprint), http.StatusOK)
+	token, ok := issued["token"].(string)
+	if !ok || token == "" {
+		t.Fatalf("OpenIM token issue returned no token: %#v", issued)
+	}
+	return token
+}
+
+func dialOpenIMClient(t *testing.T, base, token, userID string) *websocket.Conn {
+	t.Helper()
+	wsURL := strings.Replace(base, "https://", "wss://", 1) + "/openim/ws?" + url.Values{
+		"token":        {token},
+		"sendID":       {userID},
+		"platformID":   {"5"},
+		"operationID":  {fmt.Sprintf("prod-ws-%d", time.Now().UnixNano())},
+		"isBackground": {"false"},
+		"isMsgResp":    {"true"},
+		"sdkType":      {"js"},
+		"sdkVersion":   {"e2e"},
+	}.Encode()
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial OpenIM WebSocket: %v", err)
+	}
+	handshake := readOpenIMJSONFrame(t, conn, 20*time.Second)
+	if handshake["errCode"] != nil && handshake["errCode"] != float64(0) {
+		conn.Close()
+		t.Fatalf("OpenIM WebSocket handshake failed: %#v", handshake)
+	}
+	return conn
+}
+
+func readOpenIMJSONFrame(t *testing.T, conn *websocket.Conn, timeout time.Duration) map[string]any {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatal(err)
+	}
+	_, frame, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read OpenIM WebSocket frame: %v", err)
+	}
+	var result map[string]any
+	if err = json.Unmarshal(frame, &result); err != nil {
+		t.Fatalf("decode OpenIM WebSocket frame: %v (raw=%q)", err, frame)
+	}
+	return result
+}
+
+// encodeE2EMessageData emits the protobuf sdkws.MsgData fields consumed by
+// the message gateway. Keeping the test independent of a generated SDK lets
+// it validate the wire protocol used by JS/Flutter clients as well.
+func encodeE2EMessageData(senderID, receiverID, content string) []byte {
+	var data []byte
+	appendString := func(number protowire.Number, value string) {
+		data = protowire.AppendTag(data, number, protowire.BytesType)
+		data = protowire.AppendString(data, value)
+	}
+	appendVarint := func(number protowire.Number, value uint64) {
+		data = protowire.AppendTag(data, number, protowire.VarintType)
+		data = protowire.AppendVarint(data, value)
+	}
+	appendString(1, senderID)
+	appendString(2, receiverID)
+	appendString(4, "e2e-client-message")
+	appendVarint(6, 5)
+	appendVarint(9, 1)
+	appendVarint(10, 100)
+	appendVarint(11, 101)
+	appendString(12, content)
+	appendVarint(15, uint64(time.Now().UnixMilli()))
+	return data
 }
 
 func TestProductionEmailFactorGatesPasswordLogin(t *testing.T) {
