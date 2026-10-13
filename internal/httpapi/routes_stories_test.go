@@ -19,3 +19,23 @@ func TestParseStoryIDsRejectsMalformedIDs(t *testing.T) {
 		t.Fatal("expected invalid ID error")
 	}
 }
+
+func TestStoryMediaTypeAcceptsImagesAndVideosOnly(t *testing.T) {
+	tests := []struct {
+		contentType string
+		want        string
+		ok          bool
+	}{
+		{contentType: "image/png", want: "image", ok: true},
+		{contentType: "VIDEO/MP4", want: "video", ok: true},
+		{contentType: "image/", ok: false},
+		{contentType: "application/octet-stream", ok: false},
+		{contentType: "", ok: false},
+	}
+	for _, tt := range tests {
+		got, ok := storyMediaType(tt.contentType)
+		if ok != tt.ok || string(got) != tt.want {
+			t.Errorf("storyMediaType(%q)=(%q,%v), want (%q,%v)", tt.contentType, got, ok, tt.want, tt.ok)
+		}
+	}
+}

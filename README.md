@@ -25,7 +25,9 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.7.1`. Cluster E2E coverage is in
+The current contract version is `0.8.0`. Story uploads accept image/video MIME
+types up to 10 MiB and are capped at 10 active stories per user; deleted or
+expired media is removed from S3 with retryable cleanup. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
 SES delivery with a test mirror, password recovery, and OpenIM interoperability.
 

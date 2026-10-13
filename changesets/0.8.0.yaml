@@ -22,6 +22,7 @@ changes:
     limits:
       mediaBytes: 10485760
       captionCharacters: 4096
+      activeStoriesPerUser: 10
   - id: stories-viewed-by
     type: endpoint
     method: POST
@@ -60,8 +61,8 @@ changes:
     type: migration
     description: >-
       Adds story, recipient, view, event, and cursor tables. A background job
-      marks expired stories deleted, removes their S3 objects, and emits delete
-      events for offline clients.
+      marks expired stories deleted, removes their S3 objects with retryable
+      cleanup markers, and emits delete events for offline clients.
 deployment:
   image: registry.meainternal.com/pingmessenger/platform:20261012-storygrpc-0.8.0
   openimConversationImage: registry.meainternal.com/pingmessenger/openim-rpc-conversation:20261012-storygrpc2

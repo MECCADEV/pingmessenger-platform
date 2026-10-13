@@ -56,10 +56,8 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	contentType := strings.ToLower(strings.TrimSpace(file.Header.Get("Content-Type")))
-	mediaType := stories.MediaImage
-	if strings.HasPrefix(contentType, "video/") {
-		mediaType = stories.MediaVideo
-	} else if !strings.HasPrefix(contentType, "image/") {
+	mediaType, validMediaType := storyMediaType(contentType)
+	if !validMediaType {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "media must be an image or video"})
 		return
 	}
@@ -155,10 +153,26 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 	story, err := a.stories.Create(context.Background(), stories.CreateParams{OwnerID: userID, MediaType: string(mediaType), StorageKey: key, MediaURL: storage.PublicPath(a.assetBase, key), ContentType: contentType, ByteSize: int64(len(data)), Caption: caption, Visibility: visibility, ExpiresAt: time.Now().Add(expires), Recipients: recipients, VisibilityUsers: ids})
 	if err != nil {
 		_ = a.objects.Delete(context.Background(), key)
+		if errors.Is(err, stories.ErrActiveLimit) {
+			writeJSON(ctx, http.StatusTooManyRequests, map[string]string{"error": "maximum of 10 active stories per user reached"})
+			return
+		}
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not persist story"})
 		return
 	}
 	writeJSON(ctx, http.StatusCreated, map[string]any{"story": story})
+}
+
+func storyMediaType(contentType string) (stories.MediaType, bool) {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	switch {
+	case strings.HasPrefix(contentType, "image/") && len(contentType) > len("image/"):
+		return stories.MediaImage, true
+	case strings.HasPrefix(contentType, "video/") && len(contentType) > len("video/"):
+		return stories.MediaVideo, true
+	default:
+		return "", false
+	}
 }
 
 // storyFriends keeps the hot path in memory while retaining a lazy OpenIM
@@ -318,7 +332,7 @@ func (a *API) deleteStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not delete story"})
 		return
 	}
-	_ = a.objects.Delete(context.Background(), story.StorageKey)
+	a.deleteStoryMedia(context.Background(), story.ID, story.StorageKey)
 	writeJSON(ctx, http.StatusOK, map[string]any{"story": story})
 }
 
@@ -438,10 +452,32 @@ func (a *API) RunStoryExpiry(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			expired, _ := a.stories.Expire(ctx)
+			expired, err := a.stories.Expire(ctx)
+			if err != nil {
+				log.Printf("story expiry sweep failed: %v", err)
+				continue
+			}
 			for _, story := range expired {
-				_ = a.objects.Delete(ctx, story.StorageKey)
+				a.deleteStoryMedia(ctx, story.ID, story.StorageKey)
+			}
+			pending, err := a.stories.PendingMediaCleanup(ctx, 100)
+			if err != nil {
+				log.Printf("story media cleanup lookup failed: %v", err)
+				continue
+			}
+			for _, story := range pending {
+				a.deleteStoryMedia(ctx, story.ID, story.StorageKey)
 			}
 		}
+	}
+}
+
+func (a *API) deleteStoryMedia(ctx context.Context, storyID, storageKey string) {
+	if err := a.objects.Delete(ctx, storageKey); err != nil {
+		log.Printf("story media delete failed for %s: %v", storyID, err)
+		return
+	}
+	if err := a.stories.MarkMediaDeleted(ctx, storyID); err != nil {
+		log.Printf("story media cleanup marker failed for %s: %v", storyID, err)
 	}
 }

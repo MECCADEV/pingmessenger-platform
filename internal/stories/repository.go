@@ -14,6 +14,7 @@ import (
 var ErrCursorRegression = errors.New("story cursor cannot move backwards")
 var ErrNotFound = errors.New("story not found")
 var ErrForbidden = errors.New("story is not available to this user")
+var ErrActiveLimit = errors.New("maximum active stories reached")
 
 type Repository struct{ pool *pgxpool.Pool }
 
@@ -38,6 +39,20 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error)
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+	// Serialize creates for this owner so concurrent requests cannot exceed the
+	// active-story limit. Expired rows do not count even if the cleanup ticker
+	// has not marked them deleted yet.
+	var lockedOwner string
+	if err = tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR UPDATE`, p.OwnerID).Scan(&lockedOwner); err != nil {
+		return nil, err
+	}
+	var active int
+	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM stories WHERE owner_id=$1 AND deleted_at IS NULL AND expires_at>now()`, p.OwnerID).Scan(&active); err != nil {
+		return nil, err
+	}
+	if active >= MaxActiveStories {
+		return nil, ErrActiveLimit
+	}
 	var s Story
 	err = tx.QueryRow(ctx, `INSERT INTO stories (owner_id,media_type,storage_key,media_url,content_type,byte_size,caption,visibility,expires_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -280,4 +295,32 @@ func (r *Repository) Expire(ctx context.Context) ([]Expired, error) {
 		return nil, err
 	}
 	return expired, nil
+}
+
+// PendingMediaCleanup returns soft-deleted stories whose object-store delete
+// has not yet been recorded as successful. The API retries these keys on each
+// expiry sweep, making S3 cleanup resilient to transient outages.
+func (r *Repository) PendingMediaCleanup(ctx context.Context, limit int) ([]Expired, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id::text,storage_key FROM stories WHERE deleted_at IS NOT NULL AND media_deleted_at IS NULL ORDER BY deleted_at LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]Expired, 0)
+	for rows.Next() {
+		var item Expired
+		if err = rows.Scan(&item.ID, &item.StorageKey); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) MarkMediaDeleted(ctx context.Context, storyID string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE stories SET media_deleted_at=COALESCE(media_deleted_at,now()),updated_at=now() WHERE id=$1`, storyID)
+	return err
 }

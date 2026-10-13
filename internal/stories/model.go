@@ -2,6 +2,8 @@ package stories
 
 import "time"
 
+const MaxActiveStories = 10
+
 type Visibility string
 
 const (

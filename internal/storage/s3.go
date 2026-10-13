@@ -51,7 +51,7 @@ func ReadLimited(r io.Reader, n int64) ([]byte, error) {
 		return nil, err
 	}
 	if int64(len(b)) > n {
-		return nil, fmt.Errorf("image exceeds %d byte limit", n)
+		return nil, fmt.Errorf("media exceeds %d byte limit", n)
 	}
 	return b, nil
 }

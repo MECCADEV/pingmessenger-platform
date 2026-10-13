@@ -516,8 +516,9 @@ func newDocument() (*DocumentModel, error) {
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
-	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an expiring image or video story.", 201, bearer)
+	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an image or video story (maximum 10 MiB per upload and 10 active stories per user). Expiry defaults to 24 hours.", 201, bearer)
 	storyCreate.MaxBodyBytes = 10 << 20
+	storyCreate.Errors = append(storyCreate.Errors, http.StatusTooManyRequests)
 	register[storyCreateInput, storyCreateOutput](api, storyCreate)
 	register[storyDeleteInput, storyDeleteOutput](api, operation(http.MethodDelete, "/v1/stories/{storyID}", "deleteStory", "Stories", "Delete one of the authenticated user's stories.", 200, bearer))
 	register[storyViewInput, storyViewOutput](api, operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Record a view and optional reaction.", 200, bearer))

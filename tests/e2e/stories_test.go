@@ -29,6 +29,7 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 	access := created["access_token"].(string)
 
 	postStory(t, c, base, access, "application/octet-stream", []byte("not-media"), nil, http.StatusUnprocessableEntity)
+	postStory(t, c, base, access, "image/png", bytes.Repeat([]byte("x"), 10<<20+1), nil, http.StatusRequestEntityTooLarge)
 	postStory(t, c, base, access, "video/mp4", bytes.Repeat([]byte("x"), 10<<20+1), nil, http.StatusRequestEntityTooLarge)
 	postStory(t, c, base, access, "image/png", []byte("bad-visibility"), map[string]string{"visibility": "public"}, http.StatusUnprocessableEntity)
 
@@ -144,6 +145,16 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 		t.Fatalf("delete batch=%#v", deleted)
 	}
 	deleteStory(t, c, base, access, shortID, http.StatusOK)
+
+	activeIDs := make([]string, 0, 10)
+	for i := 0; i < 10; i++ {
+		active := postStory(t, c, base, access, "image/png", []byte("active"), nil, http.StatusCreated)
+		activeIDs = append(activeIDs, active["story"].(map[string]any)["id"].(string))
+	}
+	postStory(t, c, base, access, "video/mp4", []byte("eleventh"), nil, http.StatusTooManyRequests)
+	for _, id := range activeIDs {
+		deleteStory(t, c, base, access, id, http.StatusOK)
+	}
 }
 
 func postStory(t *testing.T, c *http.Client, base, access, contentType string, media []byte, fields map[string]string, want int) map[string]any {
