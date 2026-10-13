@@ -65,7 +65,7 @@ changes:
       cleanup markers, and emits delete events for offline clients.
 deployment:
   image: registry.meainternal.com/pingmessenger/platform:20261013-story-limits
-  openimConversationImage: registry.meainternal.com/pingmessenger/openim-rpc-conversation:20261012-storygrpc2
+  openimConversationImage: registry.meainternal.com/pingmessenger/openim-rpc-conversation:20261013-rpc-ports-prodconfig-1722
   helmChart:
     path: deploy/helm/pingmessenger
     appVersion: 0.8.0
