@@ -67,7 +67,7 @@ changes:
       cleanup markers, emits delete events for offline clients, and removes
       soft-deleted rows after 24 hours.
 deployment:
-  image: registry.meainternal.com/pingmessenger/platform:20261013-story-limits
+  image: registry.meainternal.com/pingmessenger/platform:20261013-story-live3
   openimConversationImage: registry.meainternal.com/pingmessenger/openim-rpc-conversation:20261013-rpc-ports-prodconfig-1722
   helmChart:
     path: deploy/helm/pingmessenger
@@ -76,7 +76,7 @@ verification:
   - go test ./...
   - go vet ./...
   - go test ./...
-  - go test -tags=e2e ./tests/e2e -run 'TestStoryContractAgainstDeployedAPI|TestProfileUploadLimitAgainstDeployedAPI'
+  - go test -tags=e2e ./tests/e2e -run 'TestStoryContractAgainstDeployedAPI|TestStoryLiveFanoutAgainstDeployedAPI|TestStoryRetainedRowLimitAgainstDeployedAPI|TestProfileUploadLimitAgainstDeployedAPI'
   - live native OpenIM conversation gRPC probe
   - live story create/view/reaction/delete WebSocket contract
   - live 10 MiB story and 5 MiB profile upload rejection

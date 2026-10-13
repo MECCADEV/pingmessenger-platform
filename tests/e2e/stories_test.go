@@ -25,6 +25,7 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 		t.Skip("E2E_BASE_URL is not configured")
 	}
 	c := &http.Client{Timeout: 30 * time.Second}
+	get(t, c, base+"/v1/stories/00000000-0000-0000-0000-000000000000/views", http.StatusUnauthorized)
 	created := postJSON(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, fmt.Sprintf("story-contract-%d", time.Now().UnixNano())), http.StatusCreated)
 	access := created["access_token"].(string)
 
@@ -125,23 +126,31 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 	if err = ws.WriteJSON(map[string]any{"type": "sync", "global_cursor": batch.GlobalCursor, "user_cursors": map[string]int64{created["user_id"].(string): batch.GlobalCursor}, "limit": 100}); err != nil {
 		t.Fatal(err)
 	}
-	var deleted struct {
-		Type   string `json:"type"`
-		Events []struct {
-			Type    string `json:"type"`
-			StoryID string `json:"story_id"`
-		} `json:"events"`
+	var deleted map[string]any
+	for {
+		deleted = make(map[string]any)
+		if err = ws.ReadJSON(&deleted); err != nil {
+			t.Fatal(err)
+		}
+		if deleted["type"] != "stories.event" {
+			break
+		}
 	}
-	if err = ws.ReadJSON(&deleted); err != nil {
-		t.Fatal(err)
+	if deleted["type"] != "stories.batch" {
+		t.Fatalf("delete response=%#v", deleted)
+	}
+	events, ok := deleted["events"].([]any)
+	if !ok {
+		t.Fatalf("delete response events=%#v", deleted)
 	}
 	foundDeleted := false
-	for _, event := range deleted.Events {
-		if event.StoryID == storyID && event.Type == "deleted" {
+	for _, item := range events {
+		event := item.(map[string]any)
+		if event["story_id"] == storyID && event["type"] == "deleted" {
 			foundDeleted = true
 		}
 	}
-	if deleted.Type != "stories.batch" || !foundDeleted {
+	if !foundDeleted {
 		t.Fatalf("delete batch=%#v", deleted)
 	}
 	deleteStory(t, c, base, access, shortID, http.StatusOK)
