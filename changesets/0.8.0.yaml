@@ -64,7 +64,7 @@ changes:
       marks expired stories deleted, removes their S3 objects with retryable
       cleanup markers, and emits delete events for offline clients.
 deployment:
-  image: registry.meainternal.com/pingmessenger/platform:20261012-storygrpc-0.8.0
+  image: registry.meainternal.com/pingmessenger/platform:20261013-story-limits
   openimConversationImage: registry.meainternal.com/pingmessenger/openim-rpc-conversation:20261012-storygrpc2
   helmChart:
     path: deploy/helm/pingmessenger
