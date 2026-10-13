@@ -128,22 +128,25 @@ func (r *Repository) Delete(ctx context.Context, ownerID, storyID string) (*Stor
 	if err != nil {
 		return nil, err
 	}
+	eventIDs := make([]int64, 0)
 	for rows.Next() {
 		var eventID int64
 		if err = rows.Scan(&eventID); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
-			rows.Close()
-			return nil, err
-		}
+		eventIDs = append(eventIDs, eventID)
 	}
 	if err = rows.Err(); err != nil {
 		rows.Close()
 		return nil, err
 	}
 	rows.Close()
+	for _, eventID := range eventIDs {
+		if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
+			return nil, err
+		}
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -326,22 +329,25 @@ func (r *Repository) Expire(ctx context.Context) ([]Expired, error) {
 		if err != nil {
 			return nil, err
 		}
+		eventIDs := make([]int64, 0)
 		for rows.Next() {
 			var eventID int64
 			if err = rows.Scan(&eventID); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
-				rows.Close()
-				return nil, err
-			}
+			eventIDs = append(eventIDs, eventID)
 		}
 		if err = rows.Err(); err != nil {
 			rows.Close()
 			return nil, err
 		}
 		rows.Close()
+		for _, eventID := range eventIDs {
+			if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
