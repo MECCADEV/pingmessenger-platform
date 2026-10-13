@@ -23,6 +23,7 @@ changes:
       mediaBytes: 10485760
       captionCharacters: 4096
       activeStoriesPerUser: 10
+      retainedStoryRowsPerUser: 40
   - id: stories-viewed-by
     type: endpoint
     method: POST
@@ -44,8 +45,9 @@ changes:
     path: /v1/stories/ws
     description: >-
       Delivers batched created/deleted story events using global and per-owner
-      monotonic cursors. Acknowledgements that move a cursor backwards are
-      rejected.
+      monotonic cursors. Connected clients are subscribed by default and
+      receive live stories.event frames; sync/get queries recover missed events.
+      Acknowledgements that move a cursor backwards are rejected.
   - id: stories-recipient-graph
     type: protocol
     description: >-
@@ -62,7 +64,8 @@ changes:
     description: >-
       Adds story, recipient, view, event, and cursor tables. A background job
       marks expired stories deleted, removes their S3 objects with retryable
-      cleanup markers, and emits delete events for offline clients.
+      cleanup markers, emits delete events for offline clients, and removes
+      soft-deleted rows after 24 hours.
 deployment:
   image: registry.meainternal.com/pingmessenger/platform:20261013-story-limits
   openimConversationImage: registry.meainternal.com/pingmessenger/openim-rpc-conversation:20261013-rpc-ports-prodconfig-1722

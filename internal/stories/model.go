@@ -2,7 +2,10 @@ package stories
 
 import "time"
 
-const MaxActiveStories = 10
+const (
+	MaxActiveStories = 10
+	MaxTotalStories  = 40
+)
 
 type Visibility string
 

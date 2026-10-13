@@ -66,6 +66,7 @@ func main() {
 		}
 	}()
 	go api.RunStoryExpiry(context.Background())
+	go api.RunStoryEvents(context.Background())
 	// Leave room for multipart headers while allowing the story/profile handlers
 	// to enforce their own 10 MiB and 5 MiB media limits with a 413 response.
 	server := &fasthttp.Server{Handler: api.Router(), Name: "pingmessenger-api", MaxRequestBodySize: 16 << 20}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ var ErrCursorRegression = errors.New("story cursor cannot move backwards")
 var ErrNotFound = errors.New("story not found")
 var ErrForbidden = errors.New("story is not available to this user")
 var ErrActiveLimit = errors.New("maximum active stories reached")
+var ErrTotalLimit = errors.New("maximum retained stories reached")
 
 type Repository struct{ pool *pgxpool.Pool }
 
@@ -31,6 +33,11 @@ type CreateParams struct {
 type Expired struct {
 	ID         string
 	StorageKey string
+}
+
+type Delivery struct {
+	RecipientID string
+	Event       *Event
 }
 
 func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error) {
@@ -52,6 +59,13 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error)
 	}
 	if active >= MaxActiveStories {
 		return nil, ErrActiveLimit
+	}
+	var total int
+	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM stories WHERE owner_id=$1`, p.OwnerID).Scan(&total); err != nil {
+		return nil, err
+	}
+	if total >= MaxTotalStories {
+		return nil, ErrTotalLimit
 	}
 	var s Story
 	err = tx.QueryRow(ctx, `INSERT INTO stories (owner_id,media_type,storage_key,media_url,content_type,byte_size,caption,visibility,expires_at)
@@ -76,7 +90,11 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error)
 		if _, err = tx.Exec(ctx, `INSERT INTO story_recipients (story_id,recipient_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, s.ID, id); err != nil {
 			return nil, err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO story_events (story_id,owner_id,recipient_id,event_type) VALUES ($1,$2,$3,'created')`, s.ID, p.OwnerID, id); err != nil {
+		var eventID int64
+		if err = tx.QueryRow(ctx, `INSERT INTO story_events (story_id,owner_id,recipient_id,event_type) VALUES ($1,$2,$3,'created') RETURNING event_id`, s.ID, p.OwnerID, id).Scan(&eventID); err != nil {
+			return nil, err
+		}
+		if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
 			return nil, err
 		}
 	}
@@ -105,10 +123,27 @@ func (r *Repository) Delete(ctx context.Context, ownerID, storyID string) (*Stor
 		return nil, err
 	}
 	s.DeletedAt = &deletedAt
-	if _, err = tx.Exec(ctx, `INSERT INTO story_events (story_id,owner_id,recipient_id,event_type)
-		SELECT sr.story_id,s.owner_id,sr.recipient_id,'deleted' FROM story_recipients sr JOIN stories s ON s.id=sr.story_id WHERE sr.story_id=$1`, storyID); err != nil {
+	rows, err := tx.Query(ctx, `INSERT INTO story_events (story_id,owner_id,recipient_id,event_type)
+		SELECT sr.story_id,s.owner_id,sr.recipient_id,'deleted' FROM story_recipients sr JOIN stories s ON s.id=sr.story_id WHERE sr.story_id=$1 RETURNING event_id`, storyID)
+	if err != nil {
 		return nil, err
 	}
+	for rows.Next() {
+		var eventID int64
+		if err = rows.Scan(&eventID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -287,14 +322,95 @@ func (r *Repository) Expire(ctx context.Context) ([]Expired, error) {
 	}
 	rows.Close()
 	for _, item := range expired {
-		if _, err = tx.Exec(ctx, `INSERT INTO story_events(story_id,owner_id,recipient_id,event_type) SELECT sr.story_id,s.owner_id,sr.recipient_id,'deleted' FROM story_recipients sr JOIN stories s ON s.id=sr.story_id WHERE sr.story_id=$1`, item.ID); err != nil {
+		rows, err = tx.Query(ctx, `INSERT INTO story_events(story_id,owner_id,recipient_id,event_type) SELECT sr.story_id,s.owner_id,sr.recipient_id,'deleted' FROM story_recipients sr JOIN stories s ON s.id=sr.story_id WHERE sr.story_id=$1 RETURNING event_id`, item.ID)
+		if err != nil {
 			return nil, err
 		}
+		for rows.Next() {
+			var eventID int64
+			if err = rows.Scan(&eventID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
+				rows.Close()
+				return nil, err
+			}
+		}
+		if err = rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return expired, nil
+}
+
+func notifyStoryEvent(ctx context.Context, tx pgx.Tx, eventID int64) error {
+	_, err := tx.Exec(ctx, `SELECT pg_notify('story_events',$1)`, strconv.FormatInt(eventID, 10))
+	return err
+}
+
+func (r *Repository) EventDelivery(ctx context.Context, eventID int64) (*Delivery, error) {
+	var d Delivery
+	var typ, storyID, owner string
+	var mediaType, mediaURL, contentType, caption, visibility *string
+	var size *int64
+	var expires, deleted, storyCreated *time.Time
+	var eventCreated time.Time
+	err := r.pool.QueryRow(ctx, `SELECT e.recipient_id::text,e.event_type,e.story_id::text,e.owner_id::text,e.created_at,
+		s.media_type::text,s.media_url,s.content_type,s.byte_size,s.caption,s.visibility::text,s.expires_at,s.deleted_at,s.created_at
+		FROM story_events e LEFT JOIN stories s ON s.id=e.story_id WHERE e.event_id=$1`, eventID).Scan(
+		&d.RecipientID, &typ, &storyID, &owner, &eventCreated, &mediaType, &mediaURL, &contentType, &size, &caption, &visibility, &expires, &deleted, &storyCreated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	d.Event = &Event{EventID: eventID, Type: typ, StoryID: storyID, OwnerID: owner, CreatedAt: eventCreated, DeletedAt: deleted}
+	if typ == "created" && mediaURL != nil {
+		d.Event.Story = &Story{ID: storyID, OwnerID: owner, MediaType: MediaType(*mediaType), MediaURL: *mediaURL, ContentType: *contentType, ByteSize: *size, Caption: *caption, Visibility: Visibility(*visibility), ExpiresAt: *expires, DeletedAt: deleted, CreatedAt: *storyCreated}
+	}
+	return &d, nil
+}
+
+func (r *Repository) ListenStoryEvents(ctx context.Context, handler func(context.Context, int64)) error {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err = conn.Exec(ctx, `LISTEN story_events`); err != nil {
+		return err
+	}
+	for {
+		notification, err := conn.Conn().WaitForNotification(ctx)
+		if err != nil {
+			return err
+		}
+		eventID, err := strconv.ParseInt(notification.Payload, 10, 64)
+		if err != nil || eventID <= 0 {
+			continue
+		}
+		handler(ctx, eventID)
+	}
+}
+
+func (r *Repository) CleanupDeleted(ctx context.Context, before time.Time, limit int) (int64, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	result, err := r.pool.Exec(ctx, `WITH doomed AS (
+		SELECT id FROM stories WHERE deleted_at IS NOT NULL AND deleted_at<$1 AND media_deleted_at IS NOT NULL ORDER BY deleted_at LIMIT $2
+	) DELETE FROM stories s USING doomed WHERE s.id=doomed.id`, before, limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 // PendingMediaCleanup returns soft-deleted stories whose object-store delete

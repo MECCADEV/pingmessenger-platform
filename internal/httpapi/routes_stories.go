@@ -157,6 +157,10 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 			writeJSON(ctx, http.StatusTooManyRequests, map[string]string{"error": "maximum of 10 active stories per user reached"})
 			return
 		}
+		if errors.Is(err, stories.ErrTotalLimit) {
+			writeJSON(ctx, http.StatusTooManyRequests, map[string]string{"error": "maximum of 40 retained stories per user reached"})
+			return
+		}
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not persist story"})
 		return
 	}
@@ -397,6 +401,9 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 		return origin == "" || strings.Contains(origin, string(c.Host()))
 	}}
 	if err := upgrader.Upgrade(ctx, func(conn *websocket.Conn) {
+		subscription := &storySubscription{userID: userID, conn: conn}
+		a.addStorySubscription(subscription)
+		defer a.removeStorySubscription(subscription)
 		defer conn.Close()
 		conn.SetReadLimit(64 << 10)
 		for {
@@ -408,11 +415,11 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 			dec := json.NewDecoder(bytes.NewReader(payload))
 			dec.DisallowUnknownFields()
 			if err = dec.Decode(&msg); err != nil {
-				_ = conn.WriteJSON(map[string]any{"type": "error", "code": "invalid_request"})
+				_ = subscription.send(map[string]any{"type": "error", "code": "invalid_request"})
 				continue
 			}
 			switch msg.Type {
-			case "sync":
+			case "get", "sync":
 				result, e := a.stories.Sync(context.Background(), userID, msg.GlobalCursor, msg.UserCursors, msg.Limit)
 				if e != nil {
 					log.Printf("story sync failed for user %s: %v", userID, e)
@@ -420,10 +427,10 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 					if errors.Is(e, stories.ErrCursorRegression) {
 						code = "cursor_regression"
 					}
-					_ = conn.WriteJSON(map[string]any{"type": "error", "code": code})
+					_ = subscription.send(map[string]any{"type": "error", "code": code})
 					continue
 				}
-				_ = conn.WriteJSON(map[string]any{"type": "stories.batch", "events": result.Events, "global_cursor": result.GlobalCursor, "user_cursors": result.UserCursors, "has_more": result.HasMore})
+				_ = subscription.send(map[string]any{"type": "stories.batch", "events": result.Events, "global_cursor": result.GlobalCursor, "user_cursors": result.UserCursors, "has_more": result.HasMore})
 			case "ack":
 				if e := a.stories.Ack(context.Background(), userID, msg.GlobalCursor, msg.UserCursors); e != nil {
 					log.Printf("story ack failed for user %s: %v", userID, e)
@@ -431,12 +438,12 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 					if errors.Is(e, stories.ErrCursorRegression) {
 						code = "cursor_regression"
 					}
-					_ = conn.WriteJSON(map[string]any{"type": "error", "code": code})
+					_ = subscription.send(map[string]any{"type": "error", "code": code})
 					continue
 				}
-				_ = conn.WriteJSON(map[string]any{"type": "stories.ack", "global_cursor": msg.GlobalCursor, "user_cursors": msg.UserCursors})
+				_ = subscription.send(map[string]any{"type": "stories.ack", "global_cursor": msg.GlobalCursor, "user_cursors": msg.UserCursors})
 			default:
-				_ = conn.WriteJSON(map[string]any{"type": "error", "code": "invalid_type"})
+				_ = subscription.send(map[string]any{"type": "error", "code": "invalid_type"})
 			}
 		}
 	}); err != nil {
@@ -467,6 +474,11 @@ func (a *API) RunStoryExpiry(ctx context.Context) {
 			}
 			for _, story := range pending {
 				a.deleteStoryMedia(ctx, story.ID, story.StorageKey)
+			}
+			if removed, err := a.stories.CleanupDeleted(ctx, time.Now().Add(-24*time.Hour), 500); err != nil {
+				log.Printf("story row cleanup failed: %v", err)
+			} else if removed > 0 {
+				log.Printf("removed %d story rows older than 24 hours", removed)
 			}
 		}
 	}

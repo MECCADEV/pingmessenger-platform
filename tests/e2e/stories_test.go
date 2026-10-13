@@ -75,7 +75,7 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 
 	ws := dialStoryWS(t, base, access)
 	defer ws.Close()
-	if err = ws.WriteJSON(map[string]any{"type": "sync", "global_cursor": 0, "user_cursors": map[string]int64{}, "limit": 100}); err != nil {
+	if err = ws.WriteJSON(map[string]any{"type": "get", "global_cursor": 0, "user_cursors": map[string]int64{}, "limit": 100}); err != nil {
 		t.Fatal(err)
 	}
 	var batch struct {
@@ -154,6 +154,101 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 	postStory(t, c, base, access, "video/mp4", []byte("eleventh"), nil, http.StatusTooManyRequests)
 	for _, id := range activeIDs {
 		deleteStory(t, c, base, access, id, http.StatusOK)
+	}
+}
+
+func TestStoryLiveFanoutAgainstDeployedAPI(t *testing.T) {
+	base := os.Getenv("E2E_BASE_URL")
+	if base == "" {
+		t.Skip("E2E_BASE_URL is not configured")
+	}
+	c := &http.Client{Timeout: 30 * time.Second}
+	password := "correct-horse-battery-staple"
+	sender := postJSON(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, fmt.Sprintf("story-live-sender-%d", time.Now().UnixNano()), password), http.StatusCreated)
+	receiver := postJSON(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, fmt.Sprintf("story-live-receiver-%d", time.Now().UnixNano()), password), http.StatusCreated)
+	senderAccess, receiverAccess := sender["access_token"].(string), receiver["access_token"].(string)
+	senderOpenIMID, receiverOpenIMID := openIMUserID(t, sender), openIMUserID(t, receiver)
+	senderOpenIMToken := issueDeviceOpenIMTokenForE2E(t, c, base, senderAccess)
+	receiverOpenIMToken := issueDeviceOpenIMTokenForE2E(t, c, base, receiverAccess)
+	testOpenIMFriendInteroperability(t, c, base, senderOpenIMToken, receiverOpenIMToken, senderOpenIMID, receiverOpenIMID)
+	sendOpenIMStoryProbe(t, base, senderOpenIMToken, senderOpenIMID, receiverOpenIMID)
+
+	receiverWS := dialStoryWS(t, base, receiverAccess)
+	defer receiverWS.Close()
+	created := postStory(t, c, base, senderAccess, "image/png", []byte("live-story-image"), nil, http.StatusCreated)
+	storyID := created["story"].(map[string]any)["id"].(string)
+	var live struct {
+		Type  string `json:"type"`
+		Event struct {
+			EventID int64  `json:"event_id"`
+			Type    string `json:"type"`
+			StoryID string `json:"story_id"`
+		} `json:"event"`
+	}
+	if err := receiverWS.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiverWS.ReadJSON(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Type != "stories.event" || live.Event.Type != "created" || live.Event.StoryID != storyID || live.Event.EventID == 0 {
+		t.Fatalf("live create event=%#v", live)
+	}
+
+	postAuthenticatedJSON(t, c, base+"/v1/stories/"+storyID+"/view", receiverAccess, `{"reaction":"🔥"}`, http.StatusOK)
+	views := getAuthenticatedJSON(t, c, base+"/v1/stories/"+storyID+"/views", senderAccess, http.StatusOK)
+	if len(views["views"].([]any)) != 1 {
+		t.Fatalf("viewed-by=%#v", views)
+	}
+	deleteStory(t, c, base, senderAccess, storyID, http.StatusOK)
+	if err := receiverWS.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiverWS.ReadJSON(&live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Type != "stories.event" || live.Event.Type != "deleted" || live.Event.StoryID != storyID {
+		t.Fatalf("live delete event=%#v", live)
+	}
+}
+
+func TestStoryRetainedRowLimitAgainstDeployedAPI(t *testing.T) {
+	base := os.Getenv("E2E_BASE_URL")
+	if base == "" {
+		t.Skip("E2E_BASE_URL is not configured")
+	}
+	c := &http.Client{Timeout: 30 * time.Second}
+	created := postJSON(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, fmt.Sprintf("story-retained-limit-%d", time.Now().UnixNano())), http.StatusCreated)
+	access := created["access_token"].(string)
+	for i := 0; i < 40; i++ {
+		story := postStory(t, c, base, access, "video/mp4", []byte("retained"), nil, http.StatusCreated)
+		deleteStory(t, c, base, access, story["story"].(map[string]any)["id"].(string), http.StatusOK)
+	}
+	postStory(t, c, base, access, "image/png", []byte("forty-first"), nil, http.StatusTooManyRequests)
+}
+
+func sendOpenIMStoryProbe(t *testing.T, base, token, senderID, receiverID string) {
+	t.Helper()
+	conn := dialOpenIMClient(t, base, token, senderID)
+	defer conn.Close()
+	operationID := fmt.Sprintf("story-live-probe-%d", time.Now().UnixNano())
+	payload, err := json.Marshal(map[string]any{
+		"reqIdentifier": 1003,
+		"token":         token,
+		"sendID":        senderID,
+		"operationID":   operationID,
+		"msgIncr":       senderID + "_" + operationID,
+		"data":          encodeE2EMessageData(senderID, receiverID, "story-live-probe"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatal(err)
+	}
+	reply := readOpenIMJSONFrame(t, conn, 20*time.Second)
+	if reply["reqIdentifier"] != float64(1003) || reply["errCode"] != float64(0) {
+		t.Fatalf("story OpenIM probe failed: %#v", reply)
 	}
 }
 
