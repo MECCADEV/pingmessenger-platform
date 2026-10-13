@@ -155,7 +155,15 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 			openIMNickname = created.PingID
 		}
 	}
-	if _, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: openIMUserID, Nickname: openIMNickname}); provisionErr != nil || a.users.SetOpenIMUserID(context.Background(), created.ID, openIMUserID) != nil {
+	// Keep the upstream provision result explicit. Only persist the mapping once
+	// OpenIM accepted the user; a failed provision remains repairable by the
+	// token-issue path instead of leaving a false local mapping behind.
+	_, provisionErr := a.openIM.ProvisionUser(context.Background(), &openim.ProvisionUserRequest{UserID: openIMUserID, Nickname: openIMNickname})
+	var mapErr error
+	if provisionErr == nil || strings.Contains(strings.ToLower(provisionErr.Error()), "already") {
+		mapErr = a.users.SetOpenIMUserID(context.Background(), created.ID, openIMUserID)
+	}
+	if (provisionErr != nil && !strings.Contains(strings.ToLower(provisionErr.Error()), "already")) || mapErr != nil {
 		sync = "pending"
 	}
 	tokens, err := a.newSession(created.ID, platform, request.DeviceName, request.DeviceID)

@@ -8,10 +8,49 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"pingmessenger/internal/openim/conversationpb"
 )
+
+func TestSharedClientRefreshesRejectedAdminToken(t *testing.T) {
+	adminRequests := 0
+	operationRequests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/auth/get_admin_token":
+			adminRequests++
+			_, _ = w.Write([]byte(`{"errCode":0,"data":{"token":"fresh-admin","expireTimeSeconds":3600}}`))
+		case "/auth/kick_tokens":
+			operationRequests++
+			if r.Header.Get("token") != "fresh-admin" {
+				_, _ = w.Write([]byte(`{"errCode":401,"errMsg":"invalid admin token"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"errCode":0}`))
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewHTTPClientWithSharedSecret(server.URL, "", "shared-secret", "imAdmin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a token that was valid before OpenIM restarted. The retry must
+	// discard it and obtain a new admin token before kicking the prior token.
+	client.token = "stale-admin"
+	client.tokenExpiry = time.Now().Add(time.Hour)
+	if err := client.KickTokens(context.Background(), []string{"prior-token"}); err != nil {
+		t.Fatal(err)
+	}
+	if adminRequests != 1 || operationRequests != 2 {
+		t.Fatalf("admin requests=%d operation requests=%d; want 1 and 2", adminRequests, operationRequests)
+	}
+}
 
 type conversationGRPCTestServer struct {
 	conversationpb.UnimplementedConversationServer

@@ -187,7 +187,13 @@ func (a *API) issueOpenIMToken(ctx *fasthttp.RequestCtx) {
 	// encrypted at rest and never returned by a read endpoint.
 	if current, err := a.users.ActiveOpenIMDeviceToken(context.Background(), sessionID); err == nil {
 		plain, err := a.deviceTokenCipher.Decrypt(current.Ciphertext)
-		if err != nil || a.openIM.KickTokens(context.Background(), []string{plain}) != nil {
+		if err != nil {
+			log.Printf("openim decrypt prior device token failed: %v", err)
+			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not invalidate previous OpenIM token"})
+			return
+		}
+		if err := a.openIM.KickTokens(context.Background(), []string{plain}); err != nil {
+			log.Printf("openim exact-token kick failed: %v", err)
 			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not invalidate previous OpenIM token"})
 			return
 		}
@@ -198,11 +204,15 @@ func (a *API) issueOpenIMToken(ctx *fasthttp.RequestCtx) {
 	}
 	openIMUserID, err := a.openIMIdentity(context.Background(), userID)
 	if err != nil {
+		log.Printf("openim identity preparation failed user=%s: %v", userID, err)
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not prepare OpenIM account"})
 		return
 	}
 	issued, err := a.openIM.GetUserToken(context.Background(), &openim.GetUserTokenRequest{UserID: openIMUserID, PlatformID: platformID})
 	if err != nil || issued.Token == "" {
+		if err != nil {
+			log.Printf("openim get user token failed user=%s platform=%d: %v", openIMUserID, platformID, err)
+		}
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not issue OpenIM token"})
 		return
 	}

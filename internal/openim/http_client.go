@@ -183,9 +183,25 @@ func (c *HTTPClient) KickTokens(ctx context.Context, tokens []string) error {
 }
 
 func (c *HTTPClient) call(ctx context.Context, operation string, request, response any) error {
-	if err := c.ensureAdminToken(ctx); err != nil {
-		return err
+	// An OpenIM restart or signing-key rotation can invalidate a cached admin
+	// token before its advertised expiry. Retry once with a fresh token. The
+	// operations crossing this boundary are idempotent, and successful calls are
+	// never retried.
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := c.ensureAdminToken(ctx); err != nil {
+			return err
+		}
+		lastErr = c.callOnce(ctx, operation, request, response)
+		if lastErr == nil || c.sharedSecret == "" || attempt == 1 {
+			return lastErr
+		}
+		c.invalidateAdminToken()
 	}
+	return lastErr
+}
+
+func (c *HTTPClient) callOnce(ctx context.Context, operation string, request, response any) error {
 	body, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("marshal OpenIM request: %w", err)
@@ -204,10 +220,10 @@ func (c *HTTPClient) call(ctx context.Context, operation string, request, respon
 		return fmt.Errorf("create OpenIM operation ID: %w", err)
 	}
 	httpRequest.Header.Set("operationID", hex.EncodeToString(operationID))
-	if c.token != "" {
+	if token := c.currentToken(); token != "" {
 		// OpenIM's Gin middleware reads the lower-case platform header named
 		// "token"; it does not use HTTP Authorization/Bearer.
-		httpRequest.Header.Set("token", c.token)
+		httpRequest.Header.Set("token", token)
 	}
 	httpResponse, err := c.http.Do(httpRequest)
 	if err != nil {
@@ -235,6 +251,19 @@ func (c *HTTPClient) call(ctx context.Context, operation string, request, respon
 		}
 	}
 	return nil
+}
+
+func (c *HTTPClient) invalidateAdminToken() {
+	c.mu.Lock()
+	c.token = ""
+	c.tokenExpiry = time.Time{}
+	c.mu.Unlock()
+}
+
+func (c *HTTPClient) currentToken() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.token
 }
 
 func (c *HTTPClient) ensureAdminToken(ctx context.Context) error {
