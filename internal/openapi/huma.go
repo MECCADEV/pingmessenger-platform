@@ -516,14 +516,14 @@ func newDocument() (*DocumentModel, error) {
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
-	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an image or video story (maximum 10 MiB per upload and 10 active stories per user). Expiry defaults to 24 hours.", 201, bearer)
+	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an image or video story (maximum 10 MiB per upload, 10 active stories, and 40 retained rows per user). Expiry defaults to 24 hours.", 201, bearer)
 	storyCreate.MaxBodyBytes = 10 << 20
 	storyCreate.Errors = append(storyCreate.Errors, http.StatusTooManyRequests)
 	register[storyCreateInput, storyCreateOutput](api, storyCreate)
 	register[storyDeleteInput, storyDeleteOutput](api, operation(http.MethodDelete, "/v1/stories/{storyID}", "deleteStory", "Stories", "Delete one of the authenticated user's stories.", 200, bearer))
 	register[storyViewInput, storyViewOutput](api, operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Record a view and optional reaction.", 200, bearer))
 	register[storyViewsInput, storyViewsOutput](api, operation(http.MethodGet, "/v1/stories/{storyID}/views", "listStoryViews", "Stories", "List views and reactions for the authenticated owner's story.", 200, bearer))
-	register[struct{}, storyWebSocketOutput](api, operation(http.MethodGet, "/v1/stories/ws", "storyWebSocket", "Stories", "Upgrade to the story sync/ack WebSocket protocol.", 101, bearer))
+	register[struct{}, storyWebSocketOutput](api, operation(http.MethodGet, "/v1/stories/ws", "storyWebSocket", "Stories", "Upgrade to the authenticated, default-subscribed story WebSocket. Live create/delete events are pushed to eligible network users; send a sync or get query for replay and acknowledge durable cursors.", 101, bearer))
 	register[discoverInput, discoverOutput](api, operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover registered contacts from supplied email addresses or phone numbers.", 200, bearer))
 	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))
