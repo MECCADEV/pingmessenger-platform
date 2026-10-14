@@ -190,7 +190,7 @@ jobs:
           kubectl apply -f deploy/k8s/openim-client-api.yaml
           for _ in $(seq 1 30); do
             conditions=$(kubectl -n openim get httproute openim-client-api \
-              -o jsonpath='{.status.parents[0].conditions}')
+              -o json | jq -c '.status.parents[0].conditions // []')
             accepted=$(jq -r 'map(select(.type == "Accepted" and .status == "True")) | length' <<<"$conditions")
             resolved=$(jq -r 'map(select(.type == "ResolvedRefs" and .status == "True")) | length' <<<"$conditions")
             if [[ "$accepted" = 1 && "$resolved" = 1 ]]; then
