@@ -4,6 +4,11 @@ This record is the source of truth for the AWS and Kubernetes changes required
 by PingMessenger document messages. It deliberately contains names and policy
 templates, never credentials.
 
+The production resources in this record were provisioned in account
+`403048695675`, region `ap-south-1`, on 2026-10-14. Re-running the commands is
+safe; IAM policies are applied with `put-role-policy` and bucket settings are
+declarative.
+
 ## Resources
 
 | Resource | Production value | Owner |
@@ -19,7 +24,9 @@ templates, never credentials.
 
 The document bucket must remain separate from the OpenIM object bucket. The
 platform cleanup worker is the only component responsible for deleting message
-document objects; OpenIM does not own document retention metadata.
+document objects immediately after a document is deleted or expires. The
+document bucket also has a seven-day S3 lifecycle rule as a defense-in-depth
+cleanup for abandoned objects; OpenIM does not own document retention metadata.
 
 ## Platform role policy
 
@@ -31,6 +38,12 @@ ARN is intentionally explicit and the object permissions are limited to the
 {
   "Version": "2012-10-17",
   "Statement": [
+    {
+      "Sid": "GetDocumentBucketLocation",
+      "Effect": "Allow",
+      "Action": "s3:GetBucketLocation",
+      "Resource": "arn:aws:s3:::pingmessenger-message-documents-production"
+    },
     {
       "Sid": "ListDocumentPrefix",
       "Effect": "Allow",
@@ -52,6 +65,10 @@ The application does not need `s3:CreateBucket`, `s3:PutBucketPolicy`, ACL
 permissions, or public-read permissions. Keep Block Public Access enabled and
 use the platform's SigV4 URLs for `fileElem.sourceUrl`.
 
+The existing `pingmessenger-private-s3` policy on the platform role is retained
+for legacy avatar/story media in the OpenIM bucket. It is not used by document
+messages and does not grant the document bucket outside the policy above.
+
 ## OpenIM role policy
 
 The OpenIM role is separate and applies only to the existing OpenIM object
@@ -62,18 +79,57 @@ bucket. Its policy must not grant access to the document bucket:
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "OpenIMBucketMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetBucketLocation",
+        "s3:ListBucket",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": "arn:aws:s3:::pingmessenger-openim-403048695675-ap-south-1"
+    },
+    {
       "Sid": "ManageOpenIMObjects",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
       "Resource": "arn:aws:s3:::pingmessenger-openim-403048695675-ap-south-1/*"
     }
   ]
 }
 ```
 
-If the OpenIM adapter requires bucket listing during startup, add a separate
-`s3:ListBucket` statement for that bucket only. Do not reuse the platform
-document policy.
+The `OpenIMBucketMetadata` statement also grants `s3:GetBucketLocation`,
+`s3:ListBucket`, and `s3:ListBucketMultipartUploads` on that bucket because the
+OpenIM adapter uses multipart uploads. Do not reuse the platform document
+policy.
+
+The role trust policy is restricted to the EKS OIDC provider and the
+`system:serviceaccount:openim:openim-rpc-third` subject:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::403048695675:oidc-provider/oidc.eks.ap-south-1.amazonaws.com/id/F8040131F608B63A5A931CA13CB30C0A"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "oidc.eks.ap-south-1.amazonaws.com/id/F8040131F608B63A5A931CA13CB30C0A:aud": "sts.amazonaws.com",
+        "oidc.eks.ap-south-1.amazonaws.com/id/F8040131F608B63A5A931CA13CB30C0A:sub": "system:serviceaccount:openim:openim-rpc-third"
+      }
+    }
+  }]
+}
+```
 
 ## Apply order
 
@@ -109,19 +165,36 @@ aws s3api put-public-access-block \
 aws s3api put-bucket-encryption \
   --bucket pingmessenger-message-documents-production \
   --server-side-encryption-configuration \
-  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+  '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"},"BucketKeyEnabled":true}]}'
+
+aws s3api put-bucket-ownership-controls \
+  --bucket pingmessenger-message-documents-production \
+  --ownership-controls 'Rules=[{ObjectOwnership=BucketOwnerEnforced}]'
+
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket pingmessenger-message-documents-production \
+  --lifecycle-configuration \
+  '{"Rules":[{"ID":"expire-message-documents","Status":"Enabled","Filter":{"Prefix":"message-documents/"},"Expiration":{"Days":7}},{"ID":"abort-incomplete-multipart","Status":"Enabled","Filter":{},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
 ```
 
 ## Verification
 
 ```bash
 aws s3api head-bucket --bucket pingmessenger-message-documents-production
+aws iam get-role-policy --role-name shark-pingmessenger-api \
+  --policy-name pingmessenger-message-documents
+aws iam get-role-policy --role-name shark-openim-rpc-third \
+  --policy-name pingmessenger-openim-s3
 kubectl -n pingmessenger get sa pingmessenger-api \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'
+kubectl -n openim get sa openim-rpc-third \
   -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}{"\n"}'
 kubectl -n openim get deploy openimserver-openim-rpc-third \
   -o jsonpath='{.spec.template.spec.serviceAccountName}{"\n"}'
 ```
 
-After deployment, upload a small allowed document, confirm the returned
-`fileElem.sourceUrl` downloads successfully, delete it, and verify the object
-is absent from S3 while the `message_documents` row remains as a tombstone.
+The applied IRSA probes successfully assumed both roles and performed
+put/head/delete against their respective buckets. After the Helm deployment,
+upload a small allowed document, confirm the returned `fileElem.sourceUrl`
+downloads successfully, delete it, and verify the object is absent from S3
+while the `message_documents` row remains as a tombstone.
