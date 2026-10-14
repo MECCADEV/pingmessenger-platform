@@ -13,6 +13,7 @@ import (
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/chainindex"
 	"pingmessenger/internal/config"
+	"pingmessenger/internal/documents"
 	"pingmessenger/internal/httpapi"
 	"pingmessenger/internal/notify"
 	"pingmessenger/internal/openim"
@@ -55,7 +56,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	api := httpapi.New(pool, openIM, email, sms, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, cfg.S3PublicBaseURL, cfg.PingPayEventSecret)
+	documentObjects, err := storage.NewS3WithBucket(context.Background(), cfg, cfg.DocumentS3Bucket)
+	if err != nil {
+		log.Fatal(err)
+	}
+	documentPolicy := documents.NewPolicy(cfg.DocumentMaxBytes, cfg.DocumentMaxCount, cfg.DocumentMaxBytes24h, cfg.DocumentRetention, cfg.DocumentAllowedMIMEs)
+	api := httpapi.NewWithDocuments(pool, openIM, email, sms, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, documentObjects, cfg.S3PublicBaseURL, cfg.PingPayEventSecret, documentPolicy)
 	if cfg.SolanaRPCURL != "" {
 		chainRepo := chainindex.NewRepository(pool)
 		chainRPC := &chainindex.SolanaRPC{Endpoint: cfg.SolanaRPCURL, Client: &http.Client{Timeout: cfg.SolanaRPCTimeout}}
@@ -75,9 +81,10 @@ func main() {
 	go api.RunStoryExpiry(context.Background())
 	go api.RunStoryEvents(context.Background())
 	go api.RunPaymentExpiry(context.Background())
+	go api.RunDocumentCleanup(context.Background())
 	// Leave room for multipart headers while allowing the story/profile handlers
 	// to enforce their own 10 MiB and 5 MiB media limits with a 413 response.
-	server := &fasthttp.Server{Handler: api.Router(), Name: "pingmessenger-api", MaxRequestBodySize: 16 << 20}
+	server := &fasthttp.Server{Handler: api.Router(), Name: "pingmessenger-api", MaxRequestBodySize: int(cfg.DocumentMaxBytes + 1<<20)}
 	log.Printf("PingMessenger API listening on %s (%s)", cfg.HTTPAddr, cfg.AppEnv)
 	if err := server.ListenAndServe(cfg.HTTPAddr); err != nil {
 		log.Printf("server stopped: %v", err)

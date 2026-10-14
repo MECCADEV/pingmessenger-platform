@@ -32,6 +32,7 @@ storage:
   # "minio" is for local MicroK8s. For AWS S3 set provider: aws and endpoint: "".
   provider: minio
   bucket: openim
+  documentBucket: pingmessenger-message-documents
   endpoint: http://im-minio.openim.svc.cluster.local:9000
   publicBaseURL: http://im-minio.openim.svc.cluster.local:9000/openim
   credentials:
@@ -48,6 +49,12 @@ serviceAccount:
   annotations: {}
 service:
   port: 8080
+documentPolicy:
+  maxBytes: 104857600
+  maxCount: 20
+  maxBytes24h: 1073741824
+  retention: 168h
+  allowedMIMEs: application/pdf,application/rtf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/csv,application/zip
 chain:
   # Set a private/provider RPC URL in shared deployments. Empty disables
   # asynchronous chain observation while payment intents remain available.

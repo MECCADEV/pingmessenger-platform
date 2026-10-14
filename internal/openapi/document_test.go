@@ -21,6 +21,7 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		"/v1/conversations/{conversationID}/payments", "/v1/conversations/{conversationID}/payments/ws",
 		"/v1/payments/{paymentID}/chain",
 		"/v1/stories", "/v1/stories/{storyID}", "/v1/stories/{storyID}/view", "/v1/stories/{storyID}/views", "/v1/stories/ws",
+		"/v1/documents", "/v1/documents/{documentID}",
 	} {
 		if doc.Paths[path] == nil {
 			t.Errorf("missing documented path %s", path)
@@ -35,6 +36,10 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	}
 	if profile.Schema.Properties["nickname"] == nil {
 		t.Fatal("profile update must document the nickname field")
+	}
+	document := doc.Paths["/v1/documents"].Post.RequestBody.Content["multipart/form-data"]
+	if document == nil || document.Schema == nil || document.Schema.Properties["document"] == nil {
+		t.Fatal("document upload must be documented as a multipart document field")
 	}
 	if doc.Paths["/openapi.json"] != nil || doc.Paths["/docs"] != nil {
 		t.Fatal("schema-only generation must not add Huma HTTP routes")

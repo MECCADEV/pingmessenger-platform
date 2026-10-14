@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "document message support execution",
+  "plan": "document-message-support",
+  "plan_doc": "00-plan.md",
+  "source_task": "Add client document message support with limits, rolling quota, S3 deletion, seven-day retention, public OpenIM object routing, and production storage configuration.",
+  "status": "completed",
+  "updated": "2026-10-14",
+  "completed": [
+    {"phase":"platform_schema","order":1,"tier":3,"status":"completed","description":"Add document metadata schema, configuration, storage policy, upload/delete APIs, and cleanup worker.","implementation_evidence":"0017_message_documents.sql, internal/documents, /v1/documents, dedicated S3 bucket, signed URLs, and cleanup ticker.","verified":[{"description":"go test ./... and go vet ./... pass","verdict":"PASS"}]},
+    {"phase":"openim_gateway","order":2,"tier":2,"status":"completed","description":"Expose /openim/object/* through gateway and align OpenIM object API configuration with S3/IRSA.","implementation_evidence":"OpenIM ingress rewrite, Helm object route, AWS object config, and IRSA service-account annotations.","verified":[{"description":"OpenIM targeted Go tests and Helm lint pass","verdict":"PASS"}]},
+    {"phase":"contract_docs","order":3,"tier":1,"status":"completed","description":"Document the client upload-to-WebSocket flow and generated OpenAPI contract.","implementation_evidence":"README, production deployment runbook, generated openapi.json, and schema assertions.","verified":[{"description":"go run ./cmd/openapi and OpenAPI tests pass","verdict":"PASS"}]},
+    {"phase":"review_gate","order":4,"tier":"review_gate","status":"completed","description":"Audit touched files for policy, security, and cleanup correctness.","implementation_evidence":"Reviewed ownership checks, MIME/size limits, quota reservation, tombstone cleanup, signed URL lifetime, and IRSA-only production configuration."},
+    {"phase":"verification_gate","order":5,"tier":"verification_gate","status":"completed","description":"Verify implementation against this plan and resolve misalignments.","implementation_evidence":"All planned paths are implemented and the full platform plus targeted OpenIM/Helm verification passes.","misalignments":[]}
+  ],
+  "pending": [],
+  "open_risks_ref": "00-plan.md"
+}

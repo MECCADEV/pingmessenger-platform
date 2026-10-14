@@ -375,6 +375,39 @@ type storyWebSocketOutput struct {
 		Description string `json:"description"`
 	}
 }
+type document struct {
+	ID          string `json:"id" format:"uuid"`
+	FileName    string `json:"file_name"`
+	ContentType string `json:"content_type"`
+	FileSize    int64  `json:"file_size"`
+	SourceURL   string `json:"source_url" format:"uri"`
+	CreatedAt   string `json:"created_at" format:"date-time"`
+	ExpiresAt   string `json:"expires_at" format:"date-time"`
+}
+type documentUploadInput struct {
+	RawBody huma.MultipartFormFiles[struct {
+		Document huma.FormFile `form:"document" contentType:"application/pdf,application/rtf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/csv,application/zip"`
+	}]
+}
+type documentUploadOutput struct {
+	Body struct {
+		Document document `json:"document"`
+		FileElem struct {
+			SourceURL string `json:"sourceUrl" format:"uri"`
+			FileName  string `json:"fileName"`
+			FileSize  int64  `json:"fileSize"`
+			UUID      string `json:"uuid" format:"uuid"`
+		} `json:"fileElem"`
+	}
+}
+type documentPathInput struct {
+	DocumentID string `path:"documentID" format:"uuid"`
+}
+type documentGetOutput struct {
+	Body struct {
+		Document document `json:"document"`
+	}
+}
 type discoverBody struct {
 	Emails   []string `json:"emails,omitempty" maxItems:"100" items:"email"`
 	MobileNo []string `json:"mobile_no,omitempty" maxItems:"100"`
@@ -618,6 +651,12 @@ func newDocument() (*DocumentModel, error) {
 	register[storyViewInput, storyViewOutput](api, operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Record a view and optional reaction.", 200, bearer))
 	register[storyViewsInput, storyViewsOutput](api, operation(http.MethodGet, "/v1/stories/{storyID}/views", "listStoryViews", "Stories", "List views and reactions for the authenticated owner's story.", 200, bearer))
 	register[struct{}, storyWebSocketOutput](api, operation(http.MethodGet, "/v1/stories/ws", "storyWebSocket", "Stories", "Upgrade to the authenticated, default-subscribed story WebSocket. Live create/delete events are pushed to eligible network users; send a sync or get query for replay and acknowledge durable cursors.", 101, bearer))
+	documentUpload := operation(http.MethodPost, "/v1/documents", "uploadDocument", "Documents", "Upload a document for a normal OpenIM contentType=105 file message. The response includes a retention-bound signed sourceUrl and fileElem metadata. Default policy is 100 MiB per file, 20 retained documents, 1 GiB per rolling 24 hours, and seven-day retention.", 201, bearer)
+	documentUpload.MaxBodyBytes = 101 << 20
+	documentUpload.Errors = append(documentUpload.Errors, http.StatusTooManyRequests, http.StatusUnsupportedMediaType, http.StatusRequestEntityTooLarge)
+	register[documentUploadInput, documentUploadOutput](api, documentUpload)
+	register[documentPathInput, documentGetOutput](api, operation(http.MethodGet, "/v1/documents/{documentID}", "getDocument", "Documents", "Get document metadata and a fresh retention-bound sourceUrl while the object is retained.", 200, bearer))
+	register[documentPathInput, struct{}](api, operation(http.MethodDelete, "/v1/documents/{documentID}", "deleteDocument", "Documents", "Delete the S3 object while retaining a tombstone for message history. Expired objects are removed automatically after seven days.", 204, bearer))
 	register[discoverInput, discoverOutput](api, operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover registered contacts from supplied email addresses or phone numbers.", 200, bearer))
 	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))

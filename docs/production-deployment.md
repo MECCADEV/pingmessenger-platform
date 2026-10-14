@@ -58,3 +58,25 @@ renewable, replace the GitHub environment secret before the next deployment.
 
 The workflow does not print application or registry secret values and does not
 recreate the production database or application Secret.
+
+## Document message storage
+
+The platform document API uses a dedicated private S3 bucket (for example
+`pingmessenger-message-documents-production`) and a pod workload identity/IRSA
+role. OpenIM's `openim-rpc-third` object service keeps its existing separate
+OpenIM object bucket and has its own IRSA role. Grant the Platform role only
+`s3:PutObject`, `s3:GetObject`, and `s3:DeleteObject` on the document bucket
+prefix; grant the OpenIM role the equivalent access only to its OpenIM bucket.
+Set `DOCUMENT_S3_BUCKET` and the document policy variables in the runtime
+Secret or Helm values; do not add AWS access keys to either pod.
+
+The public OpenIM gateway must include this exact rewrite route:
+
+```text
+/openim/object(/|$)(.*)  ->  openim-api /object/$2
+```
+
+Keep `/openim/msg/send_msg` private: clients upload through `POST
+/v1/documents`, then send the returned `fileElem` over their authenticated
+OpenIM WebSocket. Platform cleanup deletes document objects at seven days or
+when the owner explicitly deletes them while retaining message history.

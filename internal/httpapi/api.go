@@ -19,6 +19,7 @@ import (
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/chainindex"
 	"pingmessenger/internal/disappearing"
+	"pingmessenger/internal/documents"
 	"pingmessenger/internal/notify"
 	"pingmessenger/internal/openapi"
 	"pingmessenger/internal/openim"
@@ -41,10 +42,13 @@ type API struct {
 	tokens             *auth.TokenManager
 	deviceTokenCipher  *auth.DeviceTokenCipher
 	objects            storage.ObjectStore
+	documentObjects    storage.ObjectStore
 	assetBase          string
 	paymentEventSecret string
 	chainIndexer       *chainindex.IndexerService
 	stories            *stories.Repository
+	documents          *documents.Repository
+	documentPolicy     documents.Policy
 	storyGraphMu       sync.RWMutex
 	storyGraph         map[string]map[string]struct{}
 	storySubsMu        sync.RWMutex
@@ -59,7 +63,11 @@ func (a *API) ConfigureChainIndexer(indexer *chainindex.IndexerService) { a.chai
 type Pinger interface{ Ping(context.Context) error }
 
 func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase, paymentEventSecret string) *API {
-	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), storyGraph: make(map[string]map[string]struct{}), storySubs: make(map[string]map[*storySubscription]struct{}), validate: validator.New()}
+	return NewWithDocuments(pool, openIM, email, sms, otpSecret, tokens, deviceTokenCipher, objects, objects, assetBase, paymentEventSecret, documents.DefaultPolicy())
+}
+
+func NewWithDocuments(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects, documentObjects storage.ObjectStore, assetBase, paymentEventSecret string, documentPolicy documents.Policy) *API {
+	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, documentObjects: documentObjects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), documents: documents.NewRepository(pool), documentPolicy: documentPolicy, storyGraph: make(map[string]map[string]struct{}), storySubs: make(map[string]map[*storySubscription]struct{}), validate: validator.New()}
 }
 
 func (a *API) Router() fasthttp.RequestHandler {
@@ -77,6 +85,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	a.registerPaymentRoutes(r)
 	a.registerDisappearingRoutes(r)
 	a.registerStoryRoutes(r)
+	a.registerDocumentRoutes(r)
 	return r.Handler
 }
 

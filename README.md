@@ -170,6 +170,26 @@ Clients consume `/v1/stories/ws` with `sync` and `ack` frames. The server
 returns monotonic `event_id` cursors globally and per story owner, and rejects
 acknowledgements that move either cursor backwards.
 
+## Document messages
+
+Clients upload a document with authenticated multipart `POST /v1/documents`
+(field `document`). The default policy is 100 MiB per file, 20 retained
+documents per user, 1 GiB of uploaded bytes in any rolling 24-hour window, and
+seven-day retention. MIME types are allowlisted by `DOCUMENT_ALLOWED_MIMES`.
+The response contains a retention-bound signed `fileElem` object; send it through the
+normal OpenIM WebSocket as a file message with `contentType: 105`:
+
+```json
+{"contentType":105,"fileElem":{"sourceUrl":"signed-url","fileName":"report.pdf","fileSize":123456,"uuid":"document-id"}}
+```
+
+`DELETE /v1/documents/{documentID}` removes the object from the dedicated
+`DOCUMENT_S3_BUCKET` and keeps a database tombstone so the OpenIM message
+history remains. A platform cleanup worker retries failed deletes and removes
+objects automatically at expiry even when nobody downloads them. The OpenIM
+object API is also exposed at `/openim/object/*`; clients should prefer the
+platform endpoint because it enforces PingMessenger policy and ownership.
+
 The initial conversation graph snapshot is fetched over OpenIM's native
 conversation gRPC service (`OPENIM_CONVERSATION_GRPC_TARGET`). To enable
 push-based conversation-graph refresh, configure OpenIM's
