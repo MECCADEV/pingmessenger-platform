@@ -72,13 +72,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "vault_token_present=$([[ -n \"${VAULT_TOKEN}\" ]] && echo true || echo false)"
-          echo "vault_token_length=${#VAULT_TOKEN}"
-          lookup_status=$(curl --silent --show-error --output /tmp/vault-token-lookup \
+          lookup_status=$(curl --silent --show-error --output /dev/null \
             --write-out '%{http_code}' \
             --header "X-Vault-Token: ${VAULT_TOKEN}" \
             https://vault.meainternal.com/v1/auth/token/lookup-self)
-          kv_status=$(curl --silent --show-error --output /tmp/vault-deploy-config \
+          kv_status=$(curl --silent --show-error --output /dev/null \
             --write-out '%{http_code}' \
             --header "X-Vault-Token: ${VAULT_TOKEN}" \
             https://vault.meainternal.com/v1/secret/data/pingmessenger/platform/deploy)
