@@ -86,10 +86,7 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	if tokens["access_token"] == "" || tokens["refresh_token"] == "" {
 		t.Fatalf("direct password login did not return tokens: %#v", tokens)
 	}
-	emailTokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-email"}`, email), http.StatusOK)
-	if emailTokens["access_token"] == "" || emailTokens["refresh_token"] == "" {
-		t.Fatalf("email password login did not return tokens: %#v", emailTokens)
-	}
+	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-email"}`, email), http.StatusUnauthorized, "unverified email password login")
 	pingIDTokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"ping_id":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-ping-id"}`, created["ping_id"]), http.StatusOK)
 	if pingIDTokens["access_token"] == "" || pingIDTokens["refresh_token"] == "" {
 		t.Fatalf("ping_id password login did not return tokens: %#v", pingIDTokens)
@@ -110,6 +107,10 @@ func TestMFAAndPasswordlessLoginAgainstDeployedAPI(t *testing.T) {
 	challenge := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, email), http.StatusAccepted)["challenge_id"].(string)
 	code := mailCode(t, client, mailpit, email)
 	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, challenge, code), http.StatusOK)
+	emailTokens := postJSON(t, client, base+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-email"}`, email), http.StatusOK)
+	if emailTokens["access_token"] == "" || emailTokens["refresh_token"] == "" {
+		t.Fatalf("verified email password login did not return tokens: %#v", emailTokens)
+	}
 	login := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, email), http.StatusAccepted)["challenge_id"].(string)
 	code = mailCode(t, client, mailpit, email)
 	tokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"web","device_name":"e2e"}`, login, code), http.StatusOK)

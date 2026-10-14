@@ -3,9 +3,12 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -283,6 +286,105 @@ func (r *UserRepository) FindContact(ctx context.Context, kind, value string) (*
 	c.Verified = verifiedAt != nil
 	return c, nil
 }
+
+const (
+	mfaChallengeCooldown    = time.Minute
+	mfaChallengeWindow      = time.Hour
+	mfaChallengeHourlyLimit = 5
+)
+
+// ReserveMFAChallenge atomically reserves one challenge issuance for a
+// normalized contact and requester IP. The advisory locks serialize requests
+// for the same keys across API replicas without holding locks on the whole
+// rate-limit table. A non-zero return value is the minimum Retry-After delay.
+// A consumed challenge clears the contact cooldown so a legitimate user can
+// complete one flow and immediately start another; the hourly limit remains.
+func (r *UserRepository) ReserveMFAChallenge(ctx context.Context, contactID, contactKey, ipKey string, now time.Time) (time.Duration, error) {
+	type rateKey struct{ scope, key string }
+	keys := []rateKey{{scope: "contact", key: contactKey}, {scope: "ip", key: ipKey}}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].scope == keys[j].scope {
+			return keys[i].key < keys[j].key
+		}
+		return keys[i].scope < keys[j].scope
+	})
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	for _, key := range keys {
+		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, key.scope+":"+key.key); err != nil {
+			return 0, err
+		}
+	}
+
+	type state struct {
+		key                         rateKey
+		exists                      bool
+		windowStartedAt, lastIssued time.Time
+		issuedCount                 int
+	}
+	states := make([]state, len(keys))
+	var retryAfter time.Duration
+	var latestChallengeConsumed bool
+	latestChallengeExists := true
+	if err = tx.QueryRow(ctx, `SELECT consumed_at IS NOT NULL FROM mfa_challenges WHERE contact_id=$1 ORDER BY created_at DESC LIMIT 1`, contactID).Scan(&latestChallengeConsumed); errors.Is(err, pgx.ErrNoRows) {
+		latestChallengeExists = false
+	} else if err != nil {
+		return 0, err
+	}
+	for i, key := range keys {
+		states[i].key = key
+		err = tx.QueryRow(ctx, `SELECT window_started_at,last_issued_at,issued_count FROM mfa_challenge_rate_limits WHERE scope=$1 AND key=$2 FOR UPDATE`, key.scope, key.key).Scan(&states[i].windowStartedAt, &states[i].lastIssued, &states[i].issuedCount)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		states[i].exists = true
+		cooldownApplies := key.scope == "ip" || (states[i].exists && (!latestChallengeExists || !latestChallengeConsumed))
+		if cooldownApplies {
+			if elapsed := now.Sub(states[i].lastIssued); elapsed < mfaChallengeCooldown {
+				if wait := mfaChallengeCooldown - elapsed; wait > retryAfter {
+					retryAfter = wait
+				}
+			}
+		}
+		if now.Sub(states[i].windowStartedAt) < mfaChallengeWindow && states[i].issuedCount >= mfaChallengeHourlyLimit {
+			if wait := states[i].windowStartedAt.Add(mfaChallengeWindow).Sub(now); wait > retryAfter {
+				retryAfter = wait
+			}
+		}
+	}
+	if retryAfter > 0 {
+		return retryAfter, nil
+	}
+
+	for _, current := range states {
+		if !current.exists {
+			if _, err = tx.Exec(ctx, `INSERT INTO mfa_challenge_rate_limits(scope,key,window_started_at,last_issued_at,issued_count,updated_at) VALUES($1,$2,$3,$3,1,$3)`, current.key.scope, current.key.key, now); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		if now.Sub(current.windowStartedAt) >= mfaChallengeWindow {
+			_, err = tx.Exec(ctx, `UPDATE mfa_challenge_rate_limits SET window_started_at=$3,last_issued_at=$3,issued_count=1,updated_at=$3 WHERE scope=$1 AND key=$2`, current.key.scope, current.key.key, now)
+		} else {
+			_, err = tx.Exec(ctx, `UPDATE mfa_challenge_rate_limits SET last_issued_at=$3,issued_count=issued_count+1,updated_at=$3 WHERE scope=$1 AND key=$2`, current.key.scope, current.key.key, now)
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return 0, nil
+}
+
 func (r *UserRepository) CreateChallenge(ctx context.Context, contact *Contact, purpose, hash string, expiresAt time.Time) (string, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -671,7 +773,7 @@ func (r *UserRepository) PasswordLoginByEmail(ctx context.Context, email string)
 	account := new(PasswordLogin)
 	err := r.pool.QueryRow(ctx, `SELECT u.id::text, u.password_hash
 		FROM users u JOIN user_contacts c ON c.user_id=u.id
-		WHERE c.kind='email' AND c.value_normalized=$1 AND u.deleted_at IS NULL AND u.status <> 'disabled'`, email).Scan(&account.UserID, &account.PasswordHash)
+		WHERE c.kind='email' AND c.value_normalized=$1 AND c.verified_at IS NOT NULL AND u.deleted_at IS NULL AND u.status <> 'disabled'`, email).Scan(&account.UserID, &account.PasswordHash)
 	if err != nil {
 		return nil, err
 	}

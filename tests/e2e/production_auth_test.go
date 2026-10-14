@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,12 +57,13 @@ func TestProductionAuthContract(t *testing.T) {
 	post(t, client, base+"/v1/auth/verify-username", fmt.Sprintf(`{"username":%q}`, name), http.StatusOK)
 	assertStatus(t, client, http.MethodPost, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, name), http.StatusConflict, "duplicate username")
 
-	// A successful challenge proves the live SNS Publish call succeeded. The
-	// code remains unreadable to this harness by design.
+	// A successful challenge proves the live SES SendEmail call was accepted.
+	// The code remains unreadable to this harness by design.
 	challenge := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, email), http.StatusAccepted)
 	if _, ok := challenge["challenge_id"].(string); !ok {
-		t.Fatalf("SNS challenge did not return an ID: %#v", challenge)
+		t.Fatalf("SES challenge did not return an ID: %#v", challenge)
 	}
+	assertStatus(t, client, http.MethodPost, base+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web"}`, email), http.StatusUnauthorized, "unverified email password login")
 	assertStatus(t, client, http.MethodPost, base+"/v1/mfa/challenge", `{"email":"invalid","purpose":"signup_contact_verification"}`, http.StatusUnprocessableEntity, "invalid challenge email")
 	assertStatus(t, client, http.MethodPost, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"unsupported"}`, email), http.StatusUnprocessableEntity, "invalid challenge purpose")
 	assertStatus(t, client, http.MethodPost, base+"/v1/mfa/verify", `{"challenge_id":"not-a-uuid","code":"abc"}`, http.StatusUnprocessableEntity, "invalid OTP format")
@@ -82,10 +84,84 @@ func TestProductionAuthContract(t *testing.T) {
 	assertStatus(t, client, http.MethodPost, base+"/v1/security/revoke", `{"all":true}`, http.StatusUnauthorized, "unauthenticated session revoke")
 }
 
-// TestProductionCompleteAuthFlow uses the private SNS-to-SQS inbox to verify
-// every OTP-dependent auth protocol against production. It must run alone:
-// the queue is drained before each challenge because the SNS message body does
-// not include the recipient address.
+// TestProductionMFAChallengeRateLimit confirms that a repeated request does
+// not create/cancel another OTP while the first challenge is still active.
+// It intentionally does not read the OTP or require inbox access.
+func TestProductionMFAChallengeRateLimit(t *testing.T) {
+	base := productionBaseURL(t)
+	client := &http.Client{Timeout: 15 * time.Second}
+	name := fmt.Sprintf("prod-rate-%d", time.Now().UnixNano())
+	email := name + "@example.test"
+	post(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","email":%q}`, name, email), http.StatusCreated)
+	payload := fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, email)
+	start := make(chan struct{})
+	statuses := make(chan struct {
+		status int
+		retry  string
+		body   []byte
+	}, 5)
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req, err := http.NewRequest(http.MethodPost, base+"/v1/mfa/challenge", strings.NewReader(payload))
+			if err != nil {
+				statuses <- struct {
+					status int
+					retry  string
+					body   []byte
+				}{status: -1, body: []byte(err.Error())}
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := client.Do(req)
+			if err != nil {
+				statuses <- struct {
+					status int
+					retry  string
+					body   []byte
+				}{status: -1, body: []byte(err.Error())}
+				return
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			statuses <- struct {
+				status int
+				retry  string
+				body   []byte
+			}{status: resp.StatusCode, retry: resp.Header.Get("Retry-After"), body: body}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(statuses)
+	accepted, throttled := 0, 0
+	for result := range statuses {
+		switch result.status {
+		case http.StatusAccepted:
+			accepted++
+		case http.StatusTooManyRequests:
+			throttled++
+			if result.retry == "" {
+				t.Fatalf("throttled challenge missing Retry-After: %s", result.body)
+			}
+		default:
+			t.Fatalf("concurrent challenge status=%d body=%s", result.status, result.body)
+		}
+	}
+	if accepted != 1 || throttled != 4 {
+		t.Fatalf("concurrent challenge results accepted=%d throttled=%d; want 1 and 4", accepted, throttled)
+	}
+}
+
+// TestProductionCompleteAuthFlow uses an explicitly configured legacy
+// SNS-to-SQS inbox to verify every OTP-dependent auth protocol against
+// production. It must run alone: the queue is drained before each challenge
+// because the SNS message body does not include the recipient address. The
+// normal production deployment uses SES, so this test is skipped unless an
+// SNS mirror is deliberately configured.
 func TestProductionCompleteAuthFlow(t *testing.T) {
 	base := productionBaseURL(t)
 	inbox := newProductionInbox(t)
@@ -543,7 +619,7 @@ func newProductionInbox(t *testing.T) productionInbox {
 	t.Helper()
 	queue := os.Getenv("E2E_SNS_SQS_QUEUE_URL")
 	if queue == "" {
-		queue = productionE2EQueueURL
+		t.Skip("set E2E_SNS_SQS_QUEUE_URL to run OTP inbox E2E; production email uses SES")
 	}
 	if queue != productionE2EQueueURL {
 		t.Fatal("E2E_SNS_SQS_QUEUE_URL must be the dedicated PingMessenger E2E queue")

@@ -1,0 +1,47 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.8.0
+  next: 0.8.1
+  bump: patch
+  compatibility: behavioral-security-fix
+releaseDate: 2026-10-13
+summary: >-
+  Requires OTP verification before email-password login and throttles MFA
+  challenge issuance across contact and requester IP.
+changes:
+  - id: verified-email-login
+    type: behavior
+    method: POST
+    path: /v1/auth/login
+    description: >-
+      Password login using email now succeeds only when that email contact has
+      completed /v1/mfa/verify. Username and ping_id password login remain
+      available without an email contact.
+  - id: mfa-challenge-rate-limit
+    type: behavior
+    method: POST
+    path: /v1/mfa/challenge
+    description: >-
+      Challenge issuance is limited to one request per minute and five per
+      hour per normalized contact and requester IP. Rejected requests return
+      429 with Retry-After and do not cancel an active challenge.
+  - id: mfa-challenge-rate-limit-state
+    type: migration
+    description: >-
+      Adds durable PostgreSQL rate-limit state so limits apply consistently
+      across API replicas.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:20261013-story-live3
+  migration: migrations/0013_mfa_challenge_rate_limits.sql
+  helm:
+    chart: cs/cloud/deployments/pingmessenger
+    release: pingmessenger
+    namespace: pingmessenger
+    revision: 17
+    emailProvider: ses
+verification:
+  - go test ./...
+  - go test -tags=e2e ./tests/e2e -run 'TestProductionAuthContract|TestProductionMFAChallengeRateLimit'
+  - live unverified email password login returns 401
+  - live concurrent duplicate challenge requests return one 202 and four 429 responses

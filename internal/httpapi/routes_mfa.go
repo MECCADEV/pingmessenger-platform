@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/notify"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -75,6 +76,15 @@ func (a *API) issueChallenge(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusAccepted, map[string]string{"status": "if eligible, a verification code was sent"})
 		return
 	}
+	if retryAfter, err := a.users.ReserveMFAChallenge(context.Background(), contact.ID, kind+":"+contact.Value, requestIP(ctx), time.Now()); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not apply verification rate limit"})
+		return
+	} else if retryAfter > 0 {
+		retrySeconds := int((retryAfter + time.Second - 1) / time.Second)
+		ctx.Response.Header.Set("Retry-After", strconv.Itoa(retrySeconds))
+		writeJSON(ctx, http.StatusTooManyRequests, map[string]any{"error": "too many verification requests", "retry_after_seconds": retrySeconds})
+		return
+	}
 	code, err := auth.NewOTP()
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create challenge"})
@@ -98,4 +108,15 @@ func (a *API) issueChallenge(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	writeJSON(ctx, http.StatusAccepted, map[string]string{"challenge_id": id, "status": "verification code sent"})
+}
+
+// requestIP uses the connection peer address so clients cannot spoof
+// X-Forwarded-For to evade the abuse limit. The cluster gateway must preserve
+// the originating address at the network layer when this API is exposed
+// through a proxy.
+func requestIP(ctx *fasthttp.RequestCtx) string {
+	if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+		return ip.String()
+	}
+	return "unknown"
 }
