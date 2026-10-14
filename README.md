@@ -217,3 +217,11 @@ client delivery. OpenIM carries the resulting `pingmessenger.payment.v1`
 JSON envelope in its existing CustomElem message type. The private callback is
 `POST /v1/internal/payments/events` with an `X-PingPay-Signature` HMAC-SHA256
 header over the exact request body; configure its key as `PINGPAY_EVENT_SECRET`.
+
+## Production deployment automation
+
+Production build and rollout automation is documented in
+[docs/production-deployment.md](docs/production-deployment.md). The GitHub
+Actions job fetches deployment-only values from Vault, pushes an immutable
+image, updates the existing EKS rollout, and verifies health and OpenAPI before
+completing.
