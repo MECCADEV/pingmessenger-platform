@@ -178,10 +178,18 @@ jobs:
           # same ownership model so the rollout can add the object alias
           # without taking server-side ownership of unrelated route fields.
           kubectl apply -f deploy/k8s/openim-client-api.yaml
-          kubectl -n openim wait --for=condition=Accepted \
-            httproute/openim-client-api --timeout=90s
-          kubectl -n openim wait --for=condition=ResolvedRefs \
-            httproute/openim-client-api --timeout=90s
+          for _ in $(seq 1 30); do
+            conditions=$(kubectl -n openim get httproute openim-client-api \
+              -o jsonpath='{.status.parents[0].conditions}')
+            accepted=$(jq -r 'map(select(.type == "Accepted" and .status == "True")) | length' <<<"$conditions")
+            resolved=$(jq -r 'map(select(.type == "ResolvedRefs" and .status == "True")) | length' <<<"$conditions")
+            if [[ "$accepted" = 1 && "$resolved" = 1 ]]; then
+              break
+            fi
+            sleep 3
+          done
+          test "$accepted" = 1
+          test "$resolved" = 1
 
       - name: Capture current rollout and update image
         id: rollout
