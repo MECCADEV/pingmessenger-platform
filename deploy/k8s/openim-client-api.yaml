@@ -1,0 +1,135 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openim-client-api
+  namespace: openim
+  labels:
+    app.kubernetes.io/part-of: pingmessenger
+    app.kubernetes.io/component: openim-gateway
+spec:
+  hostnames:
+    - api-platform-pingmessenger.meainternal.com
+  parentRefs:
+    - name: shark-entry
+      namespace: default
+      sectionName: pingmessenger-meainternal
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/user
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /user
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/friend
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /friend
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/group
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /group
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/conversation
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /conversation
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/msg
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /msg
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/third
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /third
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    # The Android/iOS SDK object client builds this path from the OpenIM base
+    # URL. Keep it as a first-class alias of the third-service object API.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/object
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /object
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/auth/parse_token
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /auth/parse_token
+      backendRefs:
+        - name: openimserver-openim-api
+          port: 80
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /openim/ws
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /
+      backendRefs:
+        - name: openimserver-openim-msggateway
+          port: 10001

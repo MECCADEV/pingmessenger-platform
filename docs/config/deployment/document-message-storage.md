@@ -204,3 +204,21 @@ put/head/delete against their respective buckets. After the Helm deployment,
 upload a small allowed document, confirm the returned `fileElem.sourceUrl`
 downloads successfully, delete it, and verify the object is absent from S3
 while the `message_documents` row remains as a tombstone.
+
+## OpenIM object gateway route
+
+The mobile SDK derives the multipart object endpoint from the OpenIM base URL,
+so the production Cilium `HTTPRoute` must expose both forms:
+
+| Client path | OpenIM API path |
+| --- | --- |
+| `/openim/third/*` | `/third/*` |
+| `/openim/object/*` | `/object/*` |
+
+The route manifest is checked in at
+`deploy/k8s/openim-client-api.yaml`. The platform production GitHub Actions
+deployment applies it with server-side apply and waits for both `Accepted` and
+`ResolvedRefs` before rolling out the platform image. Its smoke check posts to
+`/openim/object/part_limit` and rejects a gateway 404; OpenIM may still return
+its structured operation-ID/token validation error when the probe is
+unauthenticated.

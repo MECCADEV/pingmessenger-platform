@@ -169,6 +169,20 @@ jobs:
             --kubeconfig "$RUNNER_TEMP/kubeconfig"
           chmod 600 "$RUNNER_TEMP/kubeconfig"
 
+      - name: Apply OpenIM client gateway routes
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          set -euo pipefail
+          # This route was originally created with client-side apply. Keep the
+          # same ownership model so the rollout can add the object alias
+          # without taking server-side ownership of unrelated route fields.
+          kubectl apply -f deploy/k8s/openim-client-api.yaml
+          kubectl -n openim wait --for=condition=Accepted \
+            httproute/openim-client-api --timeout=90s
+          kubectl -n openim wait --for=condition=ResolvedRefs \
+            httproute/openim-client-api --timeout=90s
+
       - name: Capture current rollout and update image
         id: rollout
         env:
@@ -240,6 +254,18 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:18080/openapi.json >"$RUNNER_TEMP/openapi.json"
           jq -e '.openapi and .info.version and .paths["/v1/mfa/contacts"]' "$RUNNER_TEMP/openapi.json" >/dev/null
+
+          # A missing object alias is surfaced by the SDK as its generic 10005
+          # error. This endpoint must reach OpenIM and return its normal
+          # structured header/auth validation response, never a gateway 404.
+          object_status=$(curl --silent --show-error --output "$RUNNER_TEMP/object-route.json" \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header 'Content-Type: application/json' \
+            --data '{}' \
+            https://api-platform-pingmessenger.meainternal.com/openim/object/part_limit)
+          test "$object_status" = 200
+          jq -e 'has("errCode") and (.errMsg != "Not Found")' "$RUNNER_TEMP/object-route.json" >/dev/null
 
       - name: Roll back failed deployment
         if: ${{ failure() && steps.rollout.outcome == 'success' && (steps.rollout_status.outcome != 'success' || steps.smoke.outcome != 'success') && steps.vault.outputs.ROLLBACK_ON_FAILURE == 'true' }}
