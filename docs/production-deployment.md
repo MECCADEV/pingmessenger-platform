@@ -61,6 +61,9 @@ recreate the production database or application Secret.
 
 ## Document message storage
 
+The feature-specific AWS and IRSA record is
+[`docs/config/deployment/document-message-storage.md`](config/deployment/document-message-storage.md).
+
 The platform document API uses a dedicated private S3 bucket (for example
 `pingmessenger-message-documents-production`) and a pod workload identity/IRSA
 role. OpenIM's `openim-rpc-third` object service keeps its existing separate
