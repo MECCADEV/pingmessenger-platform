@@ -198,6 +198,17 @@ jobs:
             "pingmessenger.dev/deployed-image=$IMAGE" \
             --overwrite
 
+          # Keep document messages isolated from the legacy media bucket. These
+          # are non-secret policy values; S3 credentials continue to come from
+          # the service account's IRSA role.
+          kubectl -n "$KUBE_NAMESPACE" set env "deployment/$DEPLOYMENT_NAME" \
+            DOCUMENT_S3_BUCKET=pingmessenger-message-documents-production \
+            DOCUMENT_MAX_BYTES=104857600 \
+            DOCUMENT_MAX_COUNT=20 \
+            DOCUMENT_MAX_BYTES_24H=1073741824 \
+            DOCUMENT_RETENTION=168h \
+            DOCUMENT_ALLOWED_MIMES=application/pdf,application/rtf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/csv,application/zip
+
       - name: Wait for rollout
         id: rollout_status
         env:
