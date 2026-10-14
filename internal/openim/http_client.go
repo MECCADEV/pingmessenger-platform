@@ -182,6 +182,29 @@ func (c *HTTPClient) KickTokens(ctx context.Context, tokens []string) error {
 	}{Tokens: tokens}, nil)
 }
 
+func (c *HTTPClient) SendCustomMessage(ctx context.Context, request *SendCustomMessageRequest) (*SendCustomMessageResponse, error) {
+	response := new(SendCustomMessageResponse)
+	payload := struct {
+		RecvID          string         `json:"recvID"`
+		SendID          string         `json:"sendID"`
+		Content         map[string]any `json:"content"`
+		ContentType     int32          `json:"contentType"`
+		SessionType     int32          `json:"sessionType"`
+		SenderNickname  string         `json:"senderNickname,omitempty"`
+		NotOfflinePush  bool           `json:"notOfflinePush,omitempty"`
+		OfflinePushInfo map[string]any `json:"offlinePushInfo,omitempty"`
+		Ex              string         `json:"ex,omitempty"`
+	}{RecvID: request.RecvID, SendID: request.SendID, Content: request.Content, ContentType: request.ContentType, SessionType: request.SessionType, SenderNickname: request.SenderNickname, NotOfflinePush: request.NotOfflinePush, OfflinePushInfo: request.OfflinePushInfo, Ex: request.Ex}
+	if err := c.call(ctx, "msg/send_msg", payload, response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func (c *HTTPClient) ModifyMessage(ctx context.Context, request *ModifyMessageRequest) error {
+	return c.call(ctx, "msg/modify_message", request, nil)
+}
+
 func (c *HTTPClient) call(ctx context.Context, operation string, request, response any) error {
 	// An OpenIM restart or signing-key rotation can invalidate a cached admin
 	// token before its advertised expiry. Retry once with a fresh token. The

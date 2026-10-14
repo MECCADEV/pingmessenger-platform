@@ -8,6 +8,9 @@ stringData:
   POSTGRES_USER: {{ .Values.postgres.user | quote }}
   POSTGRES_PASSWORD: {{ .Values.postgres.password | quote }}
   DATABASE_URL: {{ printf "postgres://%s:%s@%s-postgres:5432/%s?sslmode=disable" .Values.postgres.user .Values.postgres.password .Release.Name .Values.postgres.database | quote }}
+{{- $storageCredentials := .Values.storage.credentials | default dict }}
+{{- $serviceAccount := .Values.serviceAccount | default dict }}
+{{- $serviceAccountName := ($serviceAccount.name | default (printf "%s-api" .Release.Name)) }}
 ---
 apiVersion: v1
 kind: Secret
@@ -16,8 +19,9 @@ metadata:
 type: Opaque
 stringData:
   JWT_SIGNING_SECRET: {{ .Values.auth.jwtSigningSecret | quote }}
+  DEVICE_TOKEN_ENCRYPTION_KEY: {{ .Values.auth.deviceTokenEncryptionKey | default "" | quote }}
   OPENIM_API_TOKEN: {{ .Values.auth.openIMAPIToken | quote }}
-{{- if and (eq .Values.storage.credentials.mode "static") (not .Values.storage.credentials.existingSecret) }}
+{{- if and (eq ($storageCredentials.mode | default "static") "static") (not ($storageCredentials.existingSecret | default "")) }}
 ---
 apiVersion: v1
 kind: Secret
@@ -25,16 +29,16 @@ metadata:
   name: {{ .Release.Name }}-storage
 type: Opaque
 stringData:
-  AWS_ACCESS_KEY_ID: {{ .Values.storage.credentials.accessKeyID | quote }}
-  AWS_SECRET_ACCESS_KEY: {{ .Values.storage.credentials.secretAccessKey | quote }}
+  AWS_ACCESS_KEY_ID: {{ ($storageCredentials.accessKeyID | default "") | quote }}
+  AWS_SECRET_ACCESS_KEY: {{ ($storageCredentials.secretAccessKey | default "") | quote }}
 {{- end }}
 ---
-{{- if .Values.serviceAccount.create }}
+{{- if ($serviceAccount.create | default false) }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ default (printf "%s-api" .Release.Name) .Values.serviceAccount.name }}
-  {{- with .Values.serviceAccount.annotations }}
+  name: {{ $serviceAccountName }}
+  {{- with ($serviceAccount.annotations | default dict) }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -69,12 +73,12 @@ kind: Deployment
 metadata:
   name: {{ .Release.Name }}-api
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.replicaCount | default 1 }}
   selector: {matchLabels: {app: {{ .Release.Name }}-api}}
   template:
     metadata: {labels: {app: {{ .Release.Name }}-api}}
     spec:
-      serviceAccountName: {{ default (printf "%s-api" .Release.Name) .Values.serviceAccount.name }}
+      serviceAccountName: {{ if ($serviceAccount.name | default "") }}{{ $serviceAccount.name }}{{ else if ($serviceAccount.create | default false) }}{{ printf "%s-api" .Release.Name }}{{ else }}default{{ end }}
       initContainers:
         - name: migrate
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -91,6 +95,9 @@ spec:
             - {name: APP_ENV, value: development}
             - {name: OPENIM_API_BASE_URL, value: {{ .Values.auth.openIMAPIBaseURL | quote }}}
             - {name: OPENIM_CONVERSATION_GRPC_TARGET, value: {{ .Values.auth.openIMConversationGRPCTarget | quote }}}
+            - {name: PINGPAY_EVENT_SECRET, value: {{ .Values.auth.pingpayEventSecret | default "" | quote }}}
+            - {name: SOLANA_RPC_URL, value: {{ .Values.chain.solanaRPCURL | default "" | quote }}}
+            - {name: SOLANA_RPC_TIMEOUT, value: {{ .Values.chain.solanaRPCTimeout | default "10s" | quote }}}
             - {name: EMAIL_PROVIDER, value: {{ .Values.email.provider | quote }}}
             - {name: SMTP_ADDRESS, value: {{ .Values.email.smtpAddress | quote }}}
             - {name: SMTP_FROM, value: {{ .Values.email.smtpFrom | quote }}}
@@ -106,9 +113,9 @@ spec:
           envFrom:
             - secretRef: {name: {{ .Release.Name }}-database}
             - secretRef: {name: {{ .Release.Name }}-auth}
-            {{- if .Values.storage.credentials.existingSecret }}
-            - secretRef: {name: {{ .Values.storage.credentials.existingSecret }}}
-            {{- else if eq .Values.storage.credentials.mode "static" }}
+            {{- if ($storageCredentials.existingSecret | default "") }}
+            - secretRef: {name: {{ $storageCredentials.existingSecret }}}
+            {{- else if eq ($storageCredentials.mode | default "static") "static" }}
             - secretRef: {name: {{ .Release.Name }}-storage}
             {{- end }}
           readinessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 2}

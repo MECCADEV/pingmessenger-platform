@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,7 +33,10 @@ type createPaymentRequest struct {
 func (a *API) registerPaymentRoutes(r *router.Router) {
 	r.POST("/v1/conversations/{conversationID}/payments", a.createPayment)
 	r.GET("/v1/conversations/{conversationID}/payments", a.listPayments)
+	r.GET("/v1/conversations/{conversationID}/payments/sync", a.syncPayments)
 	r.GET("/v1/conversations/{conversationID}/payments/ws", a.paymentWebSocket)
+	r.GET("/v1/payments/{paymentID}", a.getPayment)
+	r.GET("/v1/payments/{paymentID}/chain", a.getPaymentChain)
 	r.POST("/v1/internal/payments/events", a.applyPaymentEvent)
 }
 
@@ -68,7 +72,14 @@ func (a *API) createPayment(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusBadRequest, map[string]string{"error": "could not create payment"})
 		return
 	}
-	writeJSON(ctx, http.StatusCreated, map[string]any{"payment": p, "watch_status": "pending_adapter"})
+	messageStatus := "pending"
+	if err := a.emitPaymentMessage(context.Background(), p, payments.PaymentCreatedKind); err == nil {
+		messageStatus = "sent"
+	} else {
+		log.Printf("payment creation message projection failed payment=%s: %v", p.PaymentID, err)
+	}
+	a.indexChainAsync(p.ChainID, p.TransactionID)
+	writeJSON(ctx, http.StatusCreated, map[string]any{"payment": p, "watch_status": "pending_adapter", "message_status": messageStatus})
 }
 
 func (a *API) listPayments(ctx *fasthttp.RequestCtx) {
@@ -88,12 +99,93 @@ func (a *API) listPayments(ctx *fasthttp.RequestCtx) {
 		to = ""
 	}
 	lastKnown := string(ctx.QueryArgs().Peek("last_known_payment_id"))
-	items, err := a.payments.List(context.Background(), conversationID(ctx), userID, to, lastKnown, limit)
+	if lastKnown == "" {
+		lastKnown = string(ctx.QueryArgs().Peek("lastKnownPaymentId"))
+	}
+	lastBlock := string(ctx.QueryArgs().Peek("last_block_id"))
+	if lastBlock == "" {
+		lastBlock = string(ctx.QueryArgs().Peek("lastBlockID"))
+	}
+	items, err := a.payments.List(context.Background(), conversationID(ctx), userID, to, lastKnown, lastBlock, limit)
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not list payments"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]any{"payments": items, "next_to": nextPaymentCursor(items)})
+	writeJSON(ctx, http.StatusOK, map[string]any{"payments": items, "next_to": nextPaymentCursor(items), "next_block_id": nextPaymentBlockCursor(items)})
+}
+
+func (a *API) syncPayments(ctx *fasthttp.RequestCtx) {
+	a.listPayments(ctx)
+}
+
+func (a *API) getPayment(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	paymentID := strings.TrimSpace(ctx.UserValue("paymentID").(string))
+	payment, err := a.payments.Get(context.Background(), paymentID)
+	if errors.Is(err, payments.ErrNotFound) {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "payment not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load payment"})
+		return
+	}
+	if payment.FromUserID != userID && payment.ToUserID != userID {
+		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "payment is not visible to this user"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"payment": payment})
+}
+
+// indexChainAsync deliberately runs after a payment intent or watcher update
+// has been accepted. A transaction may not be visible at creation time; the
+// later status callback gives the chain RPC another opportunity to resolve it.
+func (a *API) indexChainAsync(chainID, transactionID string) {
+	if a.chainIndexer == nil {
+		return
+	}
+	go func() {
+		if _, err := a.chainIndexer.Index(context.Background(), chainID, transactionID); err != nil {
+			log.Printf("chain transaction indexing failed chain=%s tx=%s: %v", chainID, transactionID, err)
+		}
+	}()
+}
+
+func (a *API) getPaymentChain(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	paymentID := strings.TrimSpace(ctx.UserValue("paymentID").(string))
+	payment, err := a.payments.Get(context.Background(), paymentID)
+	if errors.Is(err, payments.ErrNotFound) {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "payment not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load payment"})
+		return
+	}
+	if payment.FromUserID != userID && payment.ToUserID != userID {
+		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "payment is not visible to this user"})
+		return
+	}
+	if a.chainIndexer == nil {
+		writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "chain indexer is not configured"})
+		return
+	}
+	projection, err := a.chainIndexer.GetForPayment(context.Background(), paymentID)
+	if err != nil {
+		a.indexChainAsync(payment.ChainID, payment.TransactionID)
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "chain transaction is not indexed"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, projection)
 }
 
 func nextPaymentCursor(items []*payments.Payment) string {
@@ -101,6 +193,13 @@ func nextPaymentCursor(items []*payments.Payment) string {
 		return ""
 	}
 	return items[len(items)-1].PaymentID
+}
+
+func nextPaymentBlockCursor(items []*payments.Payment) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return items[len(items)-1].BlockID
 }
 
 // applyPaymentEvent is private service-to-service ingress for PingPay-user.
@@ -124,12 +223,18 @@ func (a *API) applyPaymentEvent(ctx *fasthttp.RequestCtx) {
 	payment, err := a.payments.ApplyUpdate(context.Background(), update)
 	switch {
 	case err == nil:
+		a.indexChainAsync(payment.ChainID, payment.TransactionID)
+		a.emitPaymentMessageAsync(payment, payments.PaymentUpdatedKind)
 		writeJSON(ctx, http.StatusOK, map[string]any{"payment": payment})
 	case errors.Is(err, payments.ErrNotFound):
 		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "payment not found"})
 	case errors.Is(err, payments.ErrConflict):
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "payment event does not match its transaction"})
 	case errors.Is(err, payments.ErrStaleUpdate), errors.Is(err, payments.ErrExpired):
+		if errors.Is(err, payments.ErrExpired) && payment != nil {
+			a.indexChainAsync(payment.ChainID, payment.TransactionID)
+			a.emitPaymentMessageAsync(payment, payments.PaymentUpdatedKind)
+		}
 		writeJSON(ctx, http.StatusConflict, map[string]any{"error": err.Error(), "payment": payment})
 	case errors.Is(err, payments.ErrInvalidRequest):
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "invalid payment event"})
@@ -151,14 +256,10 @@ func (a *API) paymentWebSocket(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	conversation := conversationID(ctx)
-	// Authorize the upgrade by requiring at least one visible record. Clients
-	// without history use the HTTP create/list path first; this avoids exposing
-	// an unauthenticated conversation stream.
-	items, err := a.payments.List(context.Background(), conversation, userID, "", "", 1)
-	if err != nil || len(items) == 0 {
-		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "conversation is not available"})
-		return
-	}
+	// The stream may be opened before the first payment exists. Subscriber
+	// filtering below ensures an authenticated user only receives events for
+	// payments where they are the sender or recipient; the HTTP list remains the
+	// source of truth for historical authorization.
 	upgrader := websocket.FastHTTPUpgrader{HandshakeTimeout: 10 * time.Second, CheckOrigin: func(ctx *fasthttp.RequestCtx) bool {
 		origin := strings.TrimSpace(string(ctx.Request.Header.Peek("Origin")))
 		return origin == "" || strings.Contains(origin, string(ctx.Host()))
@@ -166,11 +267,11 @@ func (a *API) paymentWebSocket(ctx *fasthttp.RequestCtx) {
 	if err := upgrader.Upgrade(ctx, func(conn *websocket.Conn) {
 		defer conn.Close()
 		conn.SetReadLimit(4096)
-		updates, unsubscribe := a.payments.Subscribe(conversation)
+		updates, unsubscribe := a.payments.Subscribe(conversation, userID)
 		defer unsubscribe()
 		// Subscribe before taking the snapshot so an update that races the
 		// snapshot is queued and cannot be lost. Clients deduplicate by version.
-		if snapshot, listErr := a.payments.List(context.Background(), conversation, userID, "", "", 100); listErr == nil {
+		if snapshot, listErr := a.payments.List(context.Background(), conversation, userID, "", "", "", 100); listErr == nil {
 			for _, payment := range snapshot {
 				if err := conn.WriteJSON(map[string]any{"type": "payment.updated", "payment": payment}); err != nil {
 					return

@@ -413,6 +413,7 @@ type payment struct {
 	ToUserID       string `json:"to_user_id" format:"uuid"`
 	PaymentType    string `json:"payment_type"`
 	Status         string `json:"status"`
+	UpdateReason   string `json:"update_reason,omitempty" doc:"timeout when the platform marked an unreported transaction failed"`
 	ChainID        string `json:"chain_id"`
 	TransactionID  string `json:"transaction_id"`
 	BlockID        string `json:"block_id,omitempty"`
@@ -425,14 +426,49 @@ type payment struct {
 }
 type paymentCreateOutput struct {
 	Body struct {
-		Payment     payment `json:"payment"`
-		WatchStatus string  `json:"watch_status"`
+		Payment       payment `json:"payment"`
+		WatchStatus   string  `json:"watch_status"`
+		MessageStatus string  `json:"message_status"`
 	}
+}
+type paymentGetOutput struct {
+	Body struct {
+		Payment payment `json:"payment"`
+	}
+}
+type paymentChainOutput struct {
+	Body struct {
+		Transaction chainTransactionSchema `json:"transaction"`
+		Transfers   []chainTransferSchema  `json:"transfers"`
+	}
+}
+type chainTransactionSchema struct {
+	ChainID       string `json:"chain_id"`
+	TransactionID string `json:"transaction_id"`
+	BlockID       string `json:"block_id,omitempty"`
+	Slot          *int64 `json:"slot,omitempty"`
+	Status        string `json:"status"`
+	FeeAtomic     string `json:"fee_atomic,omitempty"`
+	FeePayer      string `json:"fee_payer,omitempty"`
+	ErrorCode     string `json:"error_code,omitempty"`
+}
+type chainTransferSchema struct {
+	Index                 int    `json:"index"`
+	Type                  string `json:"type"`
+	Asset                 string `json:"asset,omitempty"`
+	Mint                  string `json:"mint,omitempty"`
+	From                  string `json:"from,omitempty"`
+	To                    string `json:"to,omitempty"`
+	AmountAtomic          string `json:"amount_atomic"`
+	Decimals              int    `json:"decimals"`
+	InstructionIndex      int    `json:"instruction_index,omitempty"`
+	InnerInstructionIndex int    `json:"inner_instruction_index,omitempty"`
 }
 type paymentListOutput struct {
 	Body struct {
-		Payments []*payment `json:"payments"`
-		NextTo   string     `json:"next_to,omitempty"`
+		Payments    []*payment `json:"payments"`
+		NextTo      string     `json:"next_to,omitempty"`
+		NextBlockID string     `json:"next_block_id,omitempty"`
 	}
 }
 type paymentWebSocketOutput struct {
@@ -441,16 +477,54 @@ type paymentWebSocketOutput struct {
 	}
 }
 type paymentListInput struct {
-	ConversationID string `path:"conversationID" maxLength:"128"`
-	Query          struct {
-		To                 string `query:"to" doc:"latest or a payment ID"`
-		LastKnownPaymentID string `query:"last_known_payment_id"`
-		LastBlockID        string `query:"last_block_id"`
-		Limit              int    `query:"limit" minimum:"1" maximum:"100"`
-	}
+	ConversationID     string `path:"conversationID" maxLength:"128"`
+	To                 string `query:"to" doc:"latest or a payment ID; the to anchor is inclusive"`
+	LastKnownPaymentID string `query:"last_known_payment_id" doc:"exclusive payment cursor"`
+	LastBlockID        string `query:"last_block_id" doc:"exclusive block cursor; use next_block_id from the previous page"`
+	Limit              int    `query:"limit" minimum:"1" maximum:"100"`
 }
 type paymentWebSocketInput struct {
 	ConversationID string `path:"conversationID" maxLength:"128"`
+}
+type paymentGetInput struct {
+	PaymentID string `path:"paymentID" maxLength:"128"`
+}
+type timer struct {
+	Key             string `json:"key"`
+	DurationSeconds int    `json:"duration_seconds" minimum:"0"`
+	Enabled         bool   `json:"enabled"`
+}
+type timerListOutput struct {
+	Body struct {
+		Timers []*timer `json:"timers"`
+	}
+}
+type timerOutput struct{ Body timer }
+type timerGetInput struct {
+	TimerKey string `path:"timerKey" maxLength:"128"`
+}
+type disappearingInput struct {
+	ConversationID string `path:"conversationID" maxLength:"128"`
+}
+type disappearingUpdateInput struct {
+	ConversationID string `path:"conversationID" maxLength:"128"`
+	Body           struct {
+		DurationSeconds *int  `json:"duration_seconds,omitempty" minimum:"0" maximum:"2592000"`
+		Enabled         *bool `json:"enabled,omitempty"`
+	}
+}
+type disappearingSetting struct {
+	ConversationID  string `json:"conversation_id"`
+	UserID          string `json:"user_id" format:"uuid"`
+	DurationSeconds int    `json:"duration_seconds" minimum:"0"`
+	Enabled         bool   `json:"enabled"`
+	UpdatedAt       string `json:"updated_at,omitempty" format:"date-time"`
+}
+type disappearingOutput struct{ Body disappearingSetting }
+type disappearingWebSocketOutput struct {
+	Body struct {
+		Description string `json:"description"`
+	}
 }
 type paymentEventInput struct {
 	Signature string `header:"X-PingPay-Signature" required:"true"`
@@ -473,7 +547,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.8.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.8.4")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -489,7 +563,7 @@ func newDocument() (*DocumentModel, error) {
 	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username is optional and unique when supplied; signup returns device-bound tokens.", 201, public))
 	register[usernameInput, usernameOutput](api, operation(http.MethodPost, "/v1/auth/verify-username", "verifyUsername", "Auth", "Check whether a username is available.", 200, public))
 	register[struct{}, usernameAvailabilityWSOutput](api, operation(http.MethodGet, "/v1/auth/username/availability", "usernameAvailabilityWebSocket", "Auth", "Upgrade to a WebSocket and send check_username JSON frames for availability results.", 101, public))
-	register[passwordLoginInput, passwordLoginOutput](api, operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username, email, or ping_id plus a password. Email is optional at signup.", 200, public))
+	register[passwordLoginInput, passwordLoginOutput](api, operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username, email, or ping_id plus a password. Email login is allowed only after the email contact is OTP-verified; email is optional at signup.", 200, public))
 	register[loginStartInput, loginStartOutput](api, operation(http.MethodPost, "/v1/auth/login/start", "startLogin", "Auth", "Start passwordless email login.", 202, public))
 	register[loginVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/verify", "verifyLogin", "Auth", "Verify a passwordless login code and create a session.", 200, public))
 	register[refreshInput, refreshOutput](api, operation(http.MethodPost, "/v1/auth/refresh", "refreshSession", "Auth", "Rotate a refresh token.", 200, public))
@@ -497,7 +571,7 @@ func newDocument() (*DocumentModel, error) {
 	register[passwordChallengeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/complete", "completePasswordRecovery", "Auth", "Complete password recovery with a one-time code.", 200, public))
 	register[passwordChangeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change", "changePassword", "Auth", "Change a password; verified contacts require a step-up code.", 200, bearer))
 	register[passwordChangeVerifyInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change/verify", "verifyPasswordChange", "Auth", "Complete contact step-up for a password change.", 200, bearer))
-	register[challengeInput, challengeOutput](api, operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email verification or step-up challenge.", 202, public))
+	register[challengeInput, challengeOutput](api, operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email or phone verification challenge. Requests are limited to one per minute and five per hour per contact and requester IP; throttled requests return 429 with Retry-After.", 202, public))
 	register[verifyInput, verifyOutput](api, operation(http.MethodPost, "/v1/mfa/verify", "verifyMFAChallenge", "MFA", "Verify a non-login MFA challenge.", 200, public))
 	register[loginMFAVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/mfa/verify", "verifyLoginMFA", "Auth", "Complete one enabled MFA factor before creating a login session.", 200, public))
 	register[struct{}, mfaListOutput](api, operation(http.MethodGet, "/v1/security/mfa", "listMFA", "Security", "List enabled account MFA factors.", 200, bearer))
@@ -527,9 +601,18 @@ func newDocument() (*DocumentModel, error) {
 	register[discoverInput, discoverOutput](api, operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover registered contacts from supplied email addresses or phone numbers.", 200, bearer))
 	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))
-	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments", "listPayments", "Payments", "List visible payments newest-first with cursor pagination.", 200, bearer))
-	register[paymentWebSocketInput, paymentWebSocketOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments/ws", "paymentWebSocket", "Payments", "Upgrade to a WebSocket for payment.updated events; HTTP remains the recovery source of truth.", 101, bearer))
+	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments", "listPayments", "Payments", "List visible payments newest-first. Use to=latest or a payment ID as the inclusive anchor, then last_known_payment_id and/or last_block_id as exclusive cursors; next_to and next_block_id continue the page.", 200, bearer))
+	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments/sync", "syncPayments", "Payments", "Synchronize visible payment projections with the same reverse-time cursor semantics; repeat-safe HTTP recovery source for the payment WebSocket.", 200, bearer))
+	register[paymentWebSocketInput, paymentWebSocketOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments/ws", "paymentWebSocket", "Payments", "Upgrade to a participant-filtered WebSocket. Both from_user_id and to_user_id receive payment.updated events, including chain success, chain failure, and platform timeout failures; HTTP remains the recovery source of truth.", 101, bearer))
+	register[paymentGetInput, paymentGetOutput](api, operation(http.MethodGet, "/v1/payments/{paymentID}", "getPayment", "Payments", "Get one payment visible to the authenticated participant.", 200, bearer))
+	register[paymentGetInput, paymentChainOutput](api, operation(http.MethodGet, "/v1/payments/{paymentID}/chain", "getPaymentChain", "Payments", "Get the normalized transaction and native/token transfers extracted from the chain RPC. The response is unavailable until indexing succeeds.", 200, bearer))
 	register[paymentEventInput, paymentEventOutput](api, operation(http.MethodPost, "/v1/internal/payments/events", "applyPaymentEvent", "Internal", "Apply a signed PingPay-user transaction update to the platform ledger.", 200, public))
+	register[struct{}, timerListOutput](api, operation(http.MethodGet, "/v1/settings/timers", "listGlobalTimers", "Settings", "List global timer values for authenticated clients; timers are operator-controlled.", 200, bearer))
+	register[timerGetInput, timerOutput](api, operation(http.MethodGet, "/v1/settings/timers/{timerKey}", "getGlobalTimer", "Settings", "Get one operator-controlled global timer.", 200, bearer))
+	register[disappearingInput, disappearingOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/disappearing", "getDisappearingSetting", "Messages", "Get the authenticated user's disappearing-message setting for a conversation.", 200, bearer))
+	register[disappearingUpdateInput, disappearingOutput](api, operation(http.MethodPut, "/v1/conversations/{conversationID}/disappearing", "setDisappearingSetting", "Messages", "Set or disable disappearing messages for a conversation.", 200, bearer))
+	register[disappearingInput, emptyOutput](api, operation(http.MethodDelete, "/v1/conversations/{conversationID}/disappearing", "deleteDisappearingSetting", "Messages", "Disable disappearing messages for a conversation.", 204, bearer))
+	register[disappearingInput, disappearingWebSocketOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/disappearing/ws", "disappearingWebSocket", "Messages", "Receive disappearing-message setting notifications for a conversation.", 101, bearer))
 
 	return api.OpenAPI(), nil
 }
@@ -541,6 +624,6 @@ func register[I, O any](api huma.API, op huma.Operation) {
 func operation(method, path, id, tag, description string, status int, security []map[string][]string) huma.Operation {
 	return huma.Operation{
 		Method: method, Path: path, OperationID: id, Tags: []string{tag}, Description: description,
-		DefaultStatus: status, Errors: []int{http.StatusUnauthorized, http.StatusUnprocessableEntity, http.StatusInternalServerError}, Security: security,
+		DefaultStatus: status, Errors: []int{http.StatusUnauthorized, http.StatusUnprocessableEntity, http.StatusTooManyRequests, http.StatusInternalServerError}, Security: security,
 	}
 }

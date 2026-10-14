@@ -1,0 +1,55 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.8.2
+  next: 0.8.3
+  bump: patch
+  compatibility: additive
+releaseDate: 2026-10-14
+summary: >-
+  Adds payment cursor pagination and participant-filtered terminal payment
+  WebSocket events, including scheduled timeout failures.
+changes:
+  - id: payment-cursor-pagination
+    type: endpoint
+    method: GET
+    path: /v1/conversations/{conversationID}/payments
+    description: >-
+      Supports to=latest or a payment ID as an inclusive upper anchor,
+      last_known_payment_id and last_block_id as exclusive cursors, and returns
+      next_to and next_block_id for reverse-chronological pagination. The sync
+      alias has the same contract.
+  - id: payment-participant-events
+    type: behavior
+    method: GET
+    path: /v1/conversations/{conversationID}/payments/ws
+    description: >-
+      Broadcasts payment.updated frames only to the from and to participants,
+      including submitted, confirmed, failed, and timeout-failed transitions.
+  - id: payment-timeout-sweep
+    type: behavior
+    description: >-
+      A one-second, row-locked sweep marks expired or stale non-terminal
+      payments as failed, appends a timeout event, projects the OpenIM custom
+      message, and includes update_reason=timeout for clients.
+  - id: payment-message-timeout-reason
+    type: schema
+    description: >-
+      pingmessenger.payment.v1 supports the optional reason field; timeout
+      projections use reason=timeout.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:20261014-paymentsws-7
+  localImage: localhost:32000/pingmessenger-platform:payments-ws-20261014-7
+  helm:
+    chart: deploy/helm/pingmessenger
+    release: pingmessenger
+    namespace: pingmessenger
+    localRevision: 20
+verification:
+  - go test ./...
+  - go test -race ./internal/payments ./internal/httpapi ./internal/openapi
+  - go test -tags=e2e ./tests/e2e
+  - local MicroK8s E2E: two users observed pending, submitted, confirmed, and
+    timeout-failed payment.updated events; HTTP pagination and sync passed
+  - live /openapi.json advertises to, last_known_payment_id, last_block_id,
+    limit, next_to, next_block_id, and version 0.8.3

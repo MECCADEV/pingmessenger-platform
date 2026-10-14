@@ -1,0 +1,44 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.8.3
+  next: 0.8.4
+  bump: patch
+  compatibility: additive
+releaseDate: 2026-10-14
+summary: >-
+  Adds normalized chain transaction and native/token transfer indexing for
+  payment intents and a participant-authorized chain observation endpoint.
+changes:
+  - id: payment-chain-index
+    type: schema
+    description: >-
+      Adds chain_transactions and chain_transfers with an idempotent
+      (chain_id, transaction_id) key and links payments through
+      chain_transaction_id. One transaction can contain multiple transfers.
+  - id: solana-transfer-extraction
+    type: behavior
+    description: >-
+      Solana jsonParsed finalized RPC responses extract native SOL and SPL
+      token transfers from top-level and inner instructions, including mint,
+      decimals, owners, fee, slot, and terminal failure data.
+  - id: payment-chain-observation
+    type: endpoint
+    method: GET
+    path: /v1/payments/{paymentID}/chain
+    description: >-
+      Returns the normalized transaction and transfer projection for an
+      authenticated payment participant. It returns not-found until indexing
+      completes and never treats client-supplied payment amount as chain fact.
+deployment:
+  image: localhost:32000/pingmessenger-platform:chain-index-20261014-2
+  helm:
+    chart: deploy/helm/pingmessenger
+    release: pingmessenger
+    namespace: pingmessenger
+    localRevision: 22
+verification:
+  - go test ./...
+  - go test ./internal/chainindex ./internal/httpapi ./internal/openapi ./cmd/api
+  - OpenAPI schema includes /v1/payments/{paymentID}/chain and version 0.8.4
+  - Solana adapter tests cover native, token, inner-instruction, and failed transaction cases

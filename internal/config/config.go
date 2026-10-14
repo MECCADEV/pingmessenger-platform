@@ -36,6 +36,8 @@ type Config struct {
 	AWSSESFromEmail              string
 	SMSMirrorTopicARN            string
 	PingPayEventSecret           string
+	SolanaRPCURL                 string
+	SolanaRPCTimeout             time.Duration
 }
 
 func Load() (Config, error) {
@@ -49,6 +51,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	solanaTimeout, err := duration("SOLANA_RPC_TIMEOUT", "10s")
+	if err != nil {
+		return Config{}, err
+	}
 	c := Config{
 		AppEnv: value("APP_ENV", "development"), HTTPAddr: value("HTTP_ADDR", ":8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"), JWTSigningSecret: os.Getenv("JWT_SIGNING_SECRET"),
@@ -58,6 +64,9 @@ func Load() (Config, error) {
 		OpenIMAPIToken: os.Getenv("OPENIM_API_TOKEN"), OpenIMSharedSecret: os.Getenv("OPENIM_SHARED_SECRET"), OpenIMAdminUserID: value("OPENIM_ADMIN_USER_ID", "imAdmin"), OpenIMWebhookGRPCAddr: value("OPENIM_WEBHOOK_GRPC_ADDR", ":9090"),
 		DeviceTokenEncryptionKey: os.Getenv("DEVICE_TOKEN_ENCRYPTION_KEY"),
 		EmailProvider:            value("EMAIL_PROVIDER", "smtp"), SMTPAddress: os.Getenv("SMTP_ADDRESS"), SMTPFrom: os.Getenv("SMTP_FROM"), EmailMirrorSMTPAddress: os.Getenv("EMAIL_MIRROR_SMTP_ADDRESS"), EmailMirrorFrom: value("EMAIL_MIRROR_FROM", "e2e-mirror@pingmessenger.local"), AWSRegion: os.Getenv("AWS_REGION"), AWSSNSTopicARN: os.Getenv("AWS_SNS_TOPIC_ARN"), AWSSESFromEmail: os.Getenv("AWS_SES_FROM_EMAIL"), SMSMirrorTopicARN: os.Getenv("SMS_MIRROR_TOPIC_ARN"), PingPayEventSecret: os.Getenv("PINGPAY_EVENT_SECRET"),
+		// No public RPC fallback in a deployed process; local development can opt
+		// in through .env.example's devnet value.
+		SolanaRPCURL: value("SOLANA_RPC_URL", ""), SolanaRPCTimeout: solanaTimeout,
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

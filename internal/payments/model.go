@@ -25,6 +25,7 @@ type Payment struct {
 	ToUserID       string     `json:"to_user_id"`
 	PaymentType    string     `json:"payment_type"`
 	Status         string     `json:"status"`
+	UpdateReason   string     `json:"update_reason,omitempty"`
 	ChainID        string     `json:"chain_id"`
 	TransactionID  string     `json:"transaction_id"`
 	BlockID        string     `json:"block_id,omitempty"`

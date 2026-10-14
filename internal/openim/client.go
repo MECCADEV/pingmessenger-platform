@@ -15,6 +15,8 @@ type Client interface {
 	ListConversationUserIDs(context.Context, *ListConversationUserIDsRequest) ([]string, error)
 	GetUserToken(context.Context, *GetUserTokenRequest) (*GetUserTokenResponse, error)
 	KickTokens(context.Context, []string) error
+	SendCustomMessage(context.Context, *SendCustomMessageRequest) (*SendCustomMessageResponse, error)
+	ModifyMessage(context.Context, *ModifyMessageRequest) error
 }
 
 type ProvisionUserRequest struct {
@@ -54,4 +56,29 @@ type GetUserTokenRequest struct {
 type GetUserTokenResponse struct {
 	Token             string `json:"token"`
 	ExpireTimeSeconds int64  `json:"expireTimeSeconds"`
+}
+
+type SendCustomMessageRequest struct {
+	SendID          string
+	RecvID          string
+	Content         map[string]any
+	SenderNickname  string
+	SessionType     int32
+	ContentType     int32
+	NotOfflinePush  bool
+	OfflinePushInfo map[string]any
+	Ex              string
+}
+
+type SendCustomMessageResponse struct {
+	ServerMsgID string `json:"serverMsgID"`
+	ClientMsgID string `json:"clientMsgID"`
+	SendTime    int64  `json:"sendTime"`
+}
+
+type ModifyMessageRequest struct {
+	ConversationID string `json:"conversationID"`
+	Seq            int64  `json:"seq"`
+	OldContent     string `json:"oldContent"`
+	NewContent     string `json:"newContent"`
 }

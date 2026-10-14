@@ -9,6 +9,11 @@ postgres:
   password: pingmessenger-local-only
 auth:
   jwtSigningSecret: development-only-change-before-any-shared-deployment-1234
+  # Base64url-encoded 32-byte key. Replace for every deployment.
+  deviceTokenEncryptionKey: replace-with-a-base64url-encoded-32-byte-key
+  # HMAC secret used by the PingPay-user status-event ingress. Keep empty when
+  # the external watcher is not enabled; inject it through private values.
+  pingpayEventSecret: ""
   # Existing local MicroK8s OpenIM Platform API service (namespace-qualified).
   openIMAPIBaseURL: http://openimserver-openim-api.openim.svc.cluster.local
   openIMConversationGRPCTarget: openimserver-openim-rpc-conversation.openim.svc.cluster.local:10220
@@ -43,3 +48,8 @@ serviceAccount:
   annotations: {}
 service:
   port: 8080
+chain:
+  # Set a private/provider RPC URL in shared deployments. Empty disables
+  # asynchronous chain observation while payment intents remain available.
+  solanaRPCURL: ""
+  solanaRPCTimeout: 10s

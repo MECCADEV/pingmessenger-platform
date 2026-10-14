@@ -17,18 +17,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valyala/fasthttp"
 	"pingmessenger/internal/auth"
+	"pingmessenger/internal/chainindex"
+	"pingmessenger/internal/disappearing"
 	"pingmessenger/internal/notify"
 	"pingmessenger/internal/openapi"
 	"pingmessenger/internal/openim"
 	"pingmessenger/internal/payments"
 	"pingmessenger/internal/storage"
 	"pingmessenger/internal/stories"
+	"pingmessenger/internal/timers"
 )
 
 type API struct {
 	db                 Pinger
 	openIM             openim.Client
 	payments           *payments.Service
+	disappearing       *disappearing.Service
+	timers             *timers.Repository
 	users              *auth.UserRepository
 	email              notify.EmailSender
 	sms                notify.SMSSender
@@ -38,6 +43,7 @@ type API struct {
 	objects            storage.ObjectStore
 	assetBase          string
 	paymentEventSecret string
+	chainIndexer       *chainindex.IndexerService
 	stories            *stories.Repository
 	storyGraphMu       sync.RWMutex
 	storyGraph         map[string]map[string]struct{}
@@ -45,10 +51,15 @@ type API struct {
 	storySubs          map[string]map[*storySubscription]struct{}
 	validate           *validator.Validate
 }
+
+// ConfigureChainIndexer attaches the optional chain observation path. The
+// platform still serves payment intents when no RPC provider is configured.
+func (a *API) ConfigureChainIndexer(indexer *chainindex.IndexerService) { a.chainIndexer = indexer }
+
 type Pinger interface{ Ping(context.Context) error }
 
 func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects storage.ObjectStore, assetBase, paymentEventSecret string) *API {
-	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), storyGraph: make(map[string]map[string]struct{}), storySubs: make(map[string]map[*storySubscription]struct{}), validate: validator.New()}
+	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), storyGraph: make(map[string]map[string]struct{}), storySubs: make(map[string]map[*storySubscription]struct{}), validate: validator.New()}
 }
 
 func (a *API) Router() fasthttp.RequestHandler {
@@ -64,6 +75,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	a.registerFriendRoutes(r)
 	a.registerOpenIMRoutes(r)
 	a.registerPaymentRoutes(r)
+	a.registerDisappearingRoutes(r)
 	a.registerStoryRoutes(r)
 	return r.Handler
 }

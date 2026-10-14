@@ -45,7 +45,9 @@ The database unique index remains the authority, so clients must still handle
 `ping_id` plus access, refresh, and device-session tokens. `platform_id` defaults
 to `web`; clients should send their device name/ID when available. `email` and
 `phone` are optional contact methods; neither is required to create an account
-or to sign in. The primary sign-in route is `POST /v1/auth/login`:
+or to sign in. If email is used as the login identifier, it must first be
+OTP-verified; an unverified email receives the same unauthorized result as an
+invalid password. The primary sign-in route is `POST /v1/auth/login`:
 
 ```json
 {"email":"alice@example.com","password":"correct-horse-battery-staple","platform_id":"android","device_name":"Pixel"}
@@ -107,6 +109,13 @@ Phone verification uses `POST /v1/mfa/challenge` with
 `POST /v1/mfa/verify`. Production sends through AWS SNS transactional SMS;
 `SMS_MIRROR_TOPIC_ARN` is an opt-in test-only SNS/SQS mirror for inspecting
 codes and must remain empty in production.
+
+MFA challenge issuance is limited to one request per minute and five requests
+per hour for both the normalized contact and the connection IP. A throttled
+request returns `429 Too Many Requests` with a `Retry-After` header. Requests
+rejected by the limiter do not replace an active challenge; after a challenge
+is successfully consumed, a new flow may start immediately subject to the
+hourly limit.
 
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
@@ -193,15 +202,39 @@ and rate-limit requests before forwarding logs to the private Loki service.
 
 ## Payments
 
+Payment creation records an application intent. The platform then optionally
+indexes the referenced chain transaction through `SOLANA_RPC_URL` and stores a
+normalized `chain_transactions` row plus one or more `chain_transfers` rows.
+This supports transactions containing multiple native and token movements;
+client-supplied `asset` and `amount_atomic` are never treated as chain facts.
+Indexing is idempotent on `(chain_id, transaction_id)` and updates the matching
+payment's `chain_transaction_id` without changing its status. Fetch the
+observed transaction and transfers with:
+
+`GET /v1/payments/{paymentID}/chain`
+
+The endpoint is participant-authorized and returns 404 until the RPC fetch has
+completed. Solana `jsonParsed` instructions, inner instructions, token mints,
+decimals, native lamports, fee, slot, and terminal RPC status are indexed.
+Additional chains should implement `internal/chainindex.Indexer` and reuse the
+same repository tables.
+
 The platform owns the payment ledger and exposes it as an authenticated
 conversation API. Create a pending record with
 `POST /v1/conversations/{conversationID}/payments`, then retrieve it newest
 first with `GET /v1/conversations/{conversationID}/payments?to=latest&limit=50`.
-Use `last_known_payment_id` as the exclusive lower cursor. The optional
-WebSocket endpoint is
+Results are reverse chronological. `to=latest` (or a payment ID) is the
+inclusive upper anchor; `last_known_payment_id` is an exclusive payment
+cursor, and `last_block_id` is an exclusive chain-block cursor. Continue a
+page with the returned `next_to` and `next_block_id`. The WebSocket endpoint is
 `wss://api-platform-pingmessenger.meainternal.com/v1/conversations/{conversationID}/payments/ws`;
-it emits `payment.updated` frames and clients must recover missed events from
-the HTTP list endpoint.
+it emits participant-filtered `payment.updated` frames. Both the sender and
+recipient receive the pending record and each later chain success/failure
+transition; the one-second timeout sweep sends a terminal `status=failed`
+frame with `update_reason=timeout` to both connected participants. Clients
+must recover missed events from the HTTP list endpoint. The equivalent
+recovery endpoint is `GET /v1/conversations/{conversationID}/payments/sync`;
+an individual record is available at `GET /v1/payments/{paymentID}`.
 
 Payment records are idempotent by `payment_id`, begin as `pending`, and carry a
 monotonically increasing version. PingPay-user transaction updates will enter
@@ -210,3 +243,33 @@ client delivery. OpenIM carries the resulting `pingmessenger.payment.v1`
 JSON envelope in its existing CustomElem message type. The private callback is
 `POST /v1/internal/payments/events` with an `X-PingPay-Signature` HMAC-SHA256
 header over the exact request body; configure its key as `PINGPAY_EVENT_SECRET`.
+
+On creation and each accepted status transition, the platform projects one
+`pingmessenger.payment.v1` CustomElem message into OpenIM. The envelope includes
+the payment ID, version, status, amount/asset, transaction and block metadata,
+and `occurred_at_ms`; timeout projections additionally carry `reason=timeout`.
+Projection delivery is idempotent by `(payment_id, kind, version)`; if OpenIM is
+temporarily unavailable, the ledger remains durable and the client recovers the
+state from the sync endpoint. The operator-controlled
+`stale_payment_failed_after` timer defaults to 180 seconds, while an earlier
+payment `expires_at` can fail a record sooner.
+
+## Timers, disappearing messages, and notifications
+
+Authenticated clients can read operator-controlled values from
+`GET /v1/settings/timers` (or `GET /v1/settings/timers/{timerKey}`). Current
+keys are `message_edit_window`, `stale_payment_failed_after`, and
+`disappearing_message_default`.
+
+Per-conversation disappearing messages are managed with:
+
+- `GET /v1/conversations/{conversationID}/disappearing`
+- `PUT /v1/conversations/{conversationID}/disappearing` with
+  `{"duration_seconds":86400,"enabled":true}`
+- `DELETE /v1/conversations/{conversationID}/disappearing`
+- `wss://api-platform-pingmessenger.meainternal.com/v1/conversations/{conversationID}/disappearing/ws`
+
+The WebSocket emits `disappearing.updated` events so connected clients can
+update their local expiry timer immediately. Settings are stored per user and
+conversation; deleting a setting disables it and subsequent reads fall back to
+the global default.

@@ -1,0 +1,62 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.8.1
+  next: 0.8.2
+  bump: patch
+  compatibility: additive
+releaseDate: 2026-10-14
+summary: >-
+  Adds payment message projections and recovery endpoints, global timer reads,
+  and per-conversation disappearing-message settings with live notifications.
+changes:
+  - id: payment-message-projection
+    type: behavior
+    method: POST
+    path: /v1/conversations/{conversationID}/payments
+    description: >-
+      Payment creation and accepted status transitions project a versioned
+      pingmessenger.payment.v1 CustomElem message to OpenIM. Projection IDs are
+      persisted for idempotent retries; delivery failures leave the ledger
+      durable and report message_status=pending.
+  - id: payment-recovery-endpoints
+    type: endpoint
+    method: GET
+    path: /v1/conversations/{conversationID}/payments/sync
+    description: >-
+      Repeat-safe HTTP recovery alias for payment WebSocket consumers.
+  - id: payment-get
+    type: endpoint
+    method: GET
+    path: /v1/payments/{paymentID}
+    description: >-
+      Returns one payment when the authenticated caller is a participant.
+  - id: global-timers
+    type: migration
+    description: >-
+      Adds operator-controlled message_edit_window,
+      stale_payment_failed_after, and disappearing_message_default values in
+      PostgreSQL.
+  - id: disappearing-message-settings
+    type: endpoint
+    method: PUT
+    path: /v1/conversations/{conversationID}/disappearing
+    description: >-
+      Stores a per-user conversation expiry policy; GET and DELETE are also
+      available, and the WebSocket path emits disappearing.updated events.
+deployment:
+  image: pending build and deployment
+  migration:
+    - migrations/0014_global_timers_disappearing.sql
+    - migrations/0015_payment_message_projections.sql
+  helm:
+    chart: cs/cloud/deployments/pingmessenger
+    release: pingmessenger
+    namespace: pingmessenger
+    emailProvider: ses
+verification:
+  - go test ./...
+  - go test -race ./internal/...
+  - go test -tags=e2e ./tests/e2e
+  - OpenAPI document reports version 0.8.2 and contains payment sync/get,
+    timer, and disappearing-message paths
