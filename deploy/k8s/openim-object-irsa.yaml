@@ -8,3 +8,36 @@ metadata:
     app.kubernetes.io/component: openim-object-storage
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::403048695675:role/shark-openim-rpc-third
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openim-rpc-third-config
+  namespace: openim
+  labels:
+    app.kubernetes.io/part-of: pingmessenger
+    app.kubernetes.io/component: openim-object-storage
+data:
+  # The service image reads split config files. The legacy Helm deployment
+  # mounts only config.yaml, which makes this process choose an ephemeral RPC
+  # port and leaves Service port 80 unreachable.
+  openim-rpc-third.yml: |
+    rpc:
+      registerIP:
+      listenIP: 0.0.0.0
+      autoSetPorts: false
+      ports: [80]
+    prometheus:
+      enable: true
+      autoSetPorts: false
+      ports: [90]
+    object:
+      enable: aws
+      apiURL: https://api-platform-pingmessenger.meainternal.com/openim
+      aws:
+        region: ap-south-1
+        bucket: pingmessenger-openim-403048695675-ap-south-1
+        accessKeyID: ""
+        secretAccessKey: ""
+        sessionToken: ""
+        publicRead: false

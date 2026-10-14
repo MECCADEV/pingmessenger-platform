@@ -223,3 +223,28 @@ deployment applies it with server-side apply and waits for both `Accepted` and
 `/openim/object/part_limit` and rejects a gateway 404; OpenIM may still return
 its structured operation-ID/token validation error when the probe is
 unauthenticated.
+
+## Authenticated multipart E2E
+
+Route probes are not sufficient: an invalid token can stop before the RPC
+third-service or S3 adapter is called. The production E2E test creates two
+short-lived users, issues a device-bound OpenIM token, uploads a two-part file
+through `part_limit`, `initiate_multipart_upload`, `auth_sign`, and
+`complete_multipart_upload`, downloads the signed object, and sends it as a
+`contentType=105` WebSocket file message to the second user:
+
+```bash
+E2E_PRODUCTION=1 \
+E2E_BASE_URL=https://api-platform-pingmessenger.meainternal.com \
+go test -tags=e2e ./tests/e2e \
+  -run '^TestProductionOpenIMMultipartDocumentUpload$' -count=1 -v
+```
+
+The test is also included in the `make e2e` target (the default `make test`
+target intentionally remains unit/package tests only). The OpenIM third
+service must mount `openim-rpc-third.yml`; the checked-in
+`deploy/k8s/openim-object-irsa.yaml` provides that file, fixed Service port
+80, the production OpenIM bucket, and the IRSA service account. Its deployed
+image tag `20261014-irsa1` uses the AWS SDK default credential chain when
+static credentials are empty, allowing the pod's web-identity token to assume
+`shark-openim-rpc-third`.

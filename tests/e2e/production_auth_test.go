@@ -372,6 +372,10 @@ func readOpenIMJSONFrame(t *testing.T, conn *websocket.Conn, timeout time.Durati
 // the message gateway. Keeping the test independent of a generated SDK lets
 // it validate the wire protocol used by JS/Flutter clients as well.
 func encodeE2EMessageData(senderID, receiverID, content string) []byte {
+	return encodeE2EMessageDataWithContentType(senderID, receiverID, content, 101)
+}
+
+func encodeE2EMessageDataWithContentType(senderID, receiverID, content string, contentType uint64) []byte {
 	var data []byte
 	appendString := func(number protowire.Number, value string) {
 		data = protowire.AppendTag(data, number, protowire.BytesType)
@@ -387,7 +391,7 @@ func encodeE2EMessageData(senderID, receiverID, content string) []byte {
 	appendVarint(6, 5)
 	appendVarint(9, 1)
 	appendVarint(10, 100)
-	appendVarint(11, 101)
+	appendVarint(11, contentType)
 	appendString(12, content)
 	appendVarint(15, uint64(time.Now().UnixMilli()))
 	return data

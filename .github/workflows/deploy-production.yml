@@ -181,6 +181,14 @@ jobs:
           kubectl -n openim patch deployment openimserver-openim-rpc-third \
             --type=merge \
             --patch '{"spec":{"template":{"spec":{"serviceAccountName":"openim-rpc-third"}}}}'
+          kubectl -n openim patch deployment openimserver-openim-rpc-third \
+            --type=strategic \
+            --patch '{"spec":{"template":{"spec":{"volumes":[{"name":"openim-rpc-third-config","configMap":{"name":"openim-rpc-third-config"}}],"containers":[{"name":"openim-rpc-third","volumeMounts":[{"name":"openim-rpc-third-config","mountPath":"/openim/openim-server/config/openim-rpc-third.yml","subPath":"openim-rpc-third.yml","readOnly":true}]}]}}}}'
+          # This image carries the IRSA-aware AWS SDK adapter. The historical
+          # image used an empty static credential provider and could not sign
+          # S3 multipart requests even when the pod had a valid IRSA role.
+          kubectl -n openim set image deployment/openimserver-openim-rpc-third \
+            openim-rpc-third=registry.meainternal.com/pingmessenger/openim-rpc-third:20261014-irsa1
           kubectl -n openim rollout status deployment/openimserver-openim-rpc-third --timeout=10m
           test "$(kubectl -n openim get deployment openimserver-openim-rpc-third \
             -o jsonpath='{.spec.template.spec.serviceAccountName}')" = openim-rpc-third
