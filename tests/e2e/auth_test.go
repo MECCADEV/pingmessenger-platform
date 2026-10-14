@@ -87,6 +87,7 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 		t.Fatalf("direct password login did not return tokens: %#v", tokens)
 	}
 	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-email"}`, email), http.StatusUnauthorized, "unverified email password login")
+	assertStatus(t, client, http.MethodPost, baseURL+"/v1/mfa/contacts", fmt.Sprintf(`{"kind":"email","value":%q}`, email), http.StatusUnauthorized, "unauthenticated contact enrollment")
 	pingIDTokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"ping_id":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-ping-id"}`, created["ping_id"]), http.StatusOK)
 	if pingIDTokens["access_token"] == "" || pingIDTokens["refresh_token"] == "" {
 		t.Fatalf("ping_id password login did not return tokens: %#v", pingIDTokens)
@@ -103,14 +104,18 @@ func TestMFAAndPasswordlessLoginAgainstDeployedAPI(t *testing.T) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	user := fmt.Sprintf("otp-%d", time.Now().UnixNano())
 	email := user + "@example.test"
-	post(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple","email":%q}`, user, email), http.StatusCreated)
-	challenge := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"email":%q,"purpose":"signup_contact_verification"}`, email), http.StatusAccepted)["challenge_id"].(string)
+	signup := postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, user), http.StatusCreated)
+	access := signup["access_token"].(string)
+	contact := postAuthenticatedJSON(t, client, base+"/v1/mfa/contacts", access, fmt.Sprintf(`{"kind":"email","value":%q}`, email), http.StatusAccepted)
+	challenge := contact["challenge_id"].(string)
 	code := mailCode(t, client, mailpit, email)
 	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, challenge, code), http.StatusOK)
 	emailTokens := postJSON(t, client, base+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-email"}`, email), http.StatusOK)
 	if emailTokens["access_token"] == "" || emailTokens["refresh_token"] == "" {
 		t.Fatalf("verified email password login did not return tokens: %#v", emailTokens)
 	}
+	postAuthenticatedJSON(t, client, base+"/v1/mfa/contacts", emailTokens["access_token"].(string), fmt.Sprintf(`{"kind":"email","value":%q}`, email), http.StatusConflict)
+	postAuthenticatedJSON(t, client, base+"/v1/mfa/contacts", emailTokens["access_token"].(string), fmt.Sprintf(`{"kind":"email","value":%q}`, user+"-different@example.test"), http.StatusConflict)
 	login := postJSON(t, client, base+"/v1/auth/login/start", fmt.Sprintf(`{"email":%q}`, email), http.StatusAccepted)["challenge_id"].(string)
 	code = mailCode(t, client, mailpit, email)
 	tokens := postJSON(t, client, base+"/v1/auth/login/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q,"platform_id":"web","device_name":"e2e"}`, login, code), http.StatusOK)
@@ -194,18 +199,44 @@ func mailCode(t *testing.T, c *http.Client, base, email string) string {
 	for time.Now().Before(deadline) {
 		r, err := c.Get(base + "/api/v1/messages")
 		if err == nil {
-			var v struct {
-				Messages []struct {
-					To      []struct{ Address string }
-					Snippet string
-				}
-			}
-			_ = json.NewDecoder(r.Body).Decode(&v)
+			var raw json.RawMessage
+			_ = json.NewDecoder(r.Body).Decode(&raw)
 			r.Body.Close()
-			for _, m := range v.Messages {
+			var messages []struct {
+				To      []struct{ Address, Mailbox, Domain string }
+				Snippet string
+				Body    string
+				Content struct{ Body string }
+			}
+			if len(raw) > 0 && raw[0] == '[' {
+				_ = json.Unmarshal(raw, &messages)
+			} else {
+				var envelope struct {
+					Messages []struct {
+						To      []struct{ Address, Mailbox, Domain string }
+						Snippet string
+						Body    string
+						Content struct{ Body string }
+					}
+				}
+				_ = json.Unmarshal(raw, &envelope)
+				messages = envelope.Messages
+			}
+			for _, m := range messages {
 				for _, to := range m.To {
-					if to.Address == email {
-						if code := re.FindString(m.Snippet); code != "" {
+					address := to.Address
+					if address == "" && to.Mailbox != "" && to.Domain != "" {
+						address = to.Mailbox + "@" + to.Domain
+					}
+					if address == email {
+						text := m.Snippet
+						if text == "" {
+							text = m.Body
+						}
+						if text == "" {
+							text = m.Content.Body
+						}
+						if code := re.FindString(text); code != "" {
 							return code
 						}
 					}

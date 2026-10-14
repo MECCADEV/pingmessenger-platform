@@ -108,6 +108,13 @@ Phone verification uses `POST /v1/mfa/challenge` with
 `SMS_MIRROR_TOPIC_ARN` is an opt-in test-only SNS/SQS mirror for inspecting
 codes and must remain empty in production.
 
+If a user omitted a contact during signup, an authenticated session can add
+one with `POST /v1/mfa/contacts` using
+`{"kind":"email|phone","value":"..."}`. The response includes a challenge
+ID; complete it with `POST /v1/mfa/verify`. A contact remains unverified until
+that challenge is consumed, and an existing verified contact cannot be
+replaced.
+
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
 that module. Development/test fixtures run through `make seed` and are refused
