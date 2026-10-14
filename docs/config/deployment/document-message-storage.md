@@ -22,6 +22,12 @@ declarative.
 | OpenIM object bucket | `pingmessenger-openim-403048695675-ap-south-1` | OpenIM |
 | OpenIM IRSA role | `arn:aws:iam::403048695675:role/shark-openim-rpc-third` | OpenIM |
 
+The `openim/openim-rpc-third` service account has been created and annotated
+with the OpenIM role. The currently running Helm release still uses the
+`default` service account and its existing MinIO configuration; upgrade the
+OpenIM release from the document-support Helm worktree before enabling AWS
+object traffic. This avoids an untracked live-patch that Helm would overwrite.
+
 The document bucket must remain separate from the OpenIM object bucket. The
 platform cleanup worker is the only component responsible for deleting message
 document objects immediately after a document is deleted or expires. The
