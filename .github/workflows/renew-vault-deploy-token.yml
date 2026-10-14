@@ -1,0 +1,61 @@
+name: Renew PingMessenger deployment Vault token
+
+on:
+  schedule:
+    # Renew weekly; the dedicated GitHub Vault token must be renewable and
+    # should have a policy limited to pingmessenger/platform/deploy.
+    - cron: '17 02 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pingmessenger-vault-token-renewal
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    name: Renew deployment token lease
+    runs-on: ubuntu-latest
+    environment: production-maintenance
+    timeout-minutes: 5
+    steps:
+      - name: Renew self token and verify the returned lease
+        env:
+          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api() {
+            curl --fail-with-body --silent --show-error \
+              --header "X-Vault-Token: ${VAULT_TOKEN}" \
+              --header 'Content-Type: application/json' "$@"
+          }
+
+          lookup=$(api "${VAULT_ADDR%/}/v1/auth/token/lookup-self")
+          renewable=$(jq -er '.data.renewable' <<<"$lookup")
+          current_ttl=$(jq -er '.data.ttl' <<<"$lookup")
+          if [[ "$renewable" != "true" ]]; then
+            echo "GitHub VAULT_TOKEN is not renewable; rotate the GitHub environment secret before expiry" >&2
+            exit 1
+          fi
+          if (( current_ttl < 604800 )); then
+            echo "Current Vault token has less than seven days remaining (${current_ttl}s); renewal is required now" >&2
+          fi
+
+          renewed=$(api --request POST --data '{"increment":"744h"}' \
+            "${VAULT_ADDR%/}/v1/auth/token/renew-self")
+          renewed_ttl=$(jq -er '.auth.lease_duration' <<<"$renewed")
+          if (( renewed_ttl < 604800 )); then
+            echo "Vault returned an unsafe lease duration (${renewed_ttl}s)" >&2
+            exit 1
+          fi
+          {
+            echo '### PingMessenger Vault deployment token renewed'
+            echo
+            echo "- Previous TTL: ${current_ttl}s"
+            echo "- Renewed TTL: ${renewed_ttl}s"
+            echo '- Token value was never printed.'
+          } >> "$GITHUB_STEP_SUMMARY"

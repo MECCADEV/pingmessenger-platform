@@ -280,3 +280,11 @@ The WebSocket emits `disappearing.updated` events so connected clients can
 update their local expiry timer immediately. Settings are stored per user and
 conversation; deleting a setting disables it and subsequent reads fall back to
 the global default.
+
+## Production deployment automation
+
+Production build and rollout automation is documented in
+[docs/production-deployment.md](docs/production-deployment.md). The GitHub
+Actions job fetches deployment-only values from Vault, pushes an immutable
+image, updates the existing EKS rollout, and verifies health and OpenAPI before
+completing.

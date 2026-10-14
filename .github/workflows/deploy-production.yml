@@ -1,0 +1,239 @@
+name: Deploy PingMessenger platform to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build and deploy
+        required: true
+        default: main
+        type: string
+      image_tag:
+        description: Optional immutable image tag; defaults to the selected commit SHA
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pingmessenger-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Test selected ref
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test and vet
+        run: |
+          go test ./...
+          go vet ./...
+          go test -tags=e2e ./tests/e2e -run '^$'
+
+      - name: Verify generated OpenAPI is current
+        run: |
+          go run ./cmd/openapi -output "$RUNNER_TEMP/openapi.json"
+          cmp --silent openapi/openapi.json "$RUNNER_TEMP/openapi.json"
+
+  deploy:
+    name: Build, push, and roll out the platform API
+    runs-on: ubuntu-latest
+    environment: production
+    needs: preflight
+    timeout-minutes: 25
+    steps:
+      - name: Check out selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Resolve checked-out revision
+        id: source
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch deployment configuration from Vault
+        id: vault
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          token: ${{ secrets.VAULT_TOKEN }}
+          secrets: |
+            secret/data/pingmessenger/platform/deploy REGISTRY_USER       | REGISTRY_USER ;
+            secret/data/pingmessenger/platform/deploy REGISTRY_PASSWORD    | REGISTRY_PASSWORD ;
+            secret/data/pingmessenger/platform/deploy IMAGE_REPOSITORY     | IMAGE_REPOSITORY ;
+            secret/data/pingmessenger/platform/deploy AWS_ACCESS_KEY_ID    | AWS_ACCESS_KEY_ID ;
+            secret/data/pingmessenger/platform/deploy AWS_SECRET_ACCESS_KEY | AWS_SECRET_ACCESS_KEY ;
+            secret/data/pingmessenger/platform/deploy AWS_REGION           | AWS_REGION ;
+            secret/data/pingmessenger/platform/deploy EKS_CLUSTER          | EKS_CLUSTER ;
+            secret/data/pingmessenger/platform/deploy KUBE_NAMESPACE       | KUBE_NAMESPACE ;
+            secret/data/pingmessenger/platform/deploy SERVICE_NAME         | SERVICE_NAME ;
+            secret/data/pingmessenger/platform/deploy DEPLOYMENT_NAME      | DEPLOYMENT_NAME ;
+            secret/data/pingmessenger/platform/deploy CONTAINER_NAME       | CONTAINER_NAME ;
+            secret/data/pingmessenger/platform/deploy MIGRATION_CONTAINER   | MIGRATION_CONTAINER ;
+            secret/data/pingmessenger/platform/deploy ROLLBACK_ON_FAILURE   | ROLLBACK_ON_FAILURE
+
+      - name: Resolve image tag
+        id: image
+        env:
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+          IMAGE_REPOSITORY: ${{ steps.vault.outputs.IMAGE_REPOSITORY }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_TAG:-sha-${SOURCE_SHA::12}}"
+          if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "image tag contains unsupported characters" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE_REPOSITORY}:${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the private registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.meainternal.com
+          username: ${{ steps.vault.outputs.REGISTRY_USER }}
+          password: ${{ steps.vault.outputs.REGISTRY_PASSWORD }}
+
+      - name: Build and push immutable image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          GIT_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --tag "$IMAGE" \
+            --label "org.opencontainers.image.revision=$GIT_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --push .
+          docker buildx imagetools inspect "$IMAGE"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ steps.vault.outputs.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ steps.vault.outputs.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ steps.vault.outputs.AWS_REGION }}
+
+      - name: Write isolated kubeconfig
+        env:
+          AWS_REGION: ${{ steps.vault.outputs.AWS_REGION }}
+          EKS_CLUSTER: ${{ steps.vault.outputs.EKS_CLUSTER }}
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig \
+            --name "$EKS_CLUSTER" \
+            --region "$AWS_REGION" \
+            --kubeconfig "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+
+      - name: Capture current rollout and update image
+        id: rollout
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          KUBE_NAMESPACE: ${{ steps.vault.outputs.KUBE_NAMESPACE }}
+          DEPLOYMENT_NAME: ${{ steps.vault.outputs.DEPLOYMENT_NAME }}
+          CONTAINER_NAME: ${{ steps.vault.outputs.CONTAINER_NAME }}
+          MIGRATION_CONTAINER: ${{ steps.vault.outputs.MIGRATION_CONTAINER }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubectl -n "$KUBE_NAMESPACE" get deployment "$DEPLOYMENT_NAME" >/dev/null
+          old_image=$(kubectl -n "$KUBE_NAMESPACE" get deployment "$DEPLOYMENT_NAME" \
+            -o jsonpath="{.spec.template.spec.containers[?(@.name=='${CONTAINER_NAME}')].image}")
+          old_migration_image=$(kubectl -n "$KUBE_NAMESPACE" get deployment "$DEPLOYMENT_NAME" \
+            -o jsonpath="{.spec.template.spec.initContainers[?(@.name=='${MIGRATION_CONTAINER}')].image}")
+          echo "old_image=$old_image" >> "$GITHUB_OUTPUT"
+          echo "old_migration_image=$old_migration_image" >> "$GITHUB_OUTPUT"
+          kubectl -n "$KUBE_NAMESPACE" set image \
+            "deployment/$DEPLOYMENT_NAME" \
+            "$CONTAINER_NAME=$IMAGE" \
+            "$MIGRATION_CONTAINER=$IMAGE"
+          kubectl -n "$KUBE_NAMESPACE" annotate deployment "$DEPLOYMENT_NAME" \
+            "pingmessenger.dev/deployed-by=github-actions" \
+            "pingmessenger.dev/deployed-sha=${{ steps.source.outputs.sha }}" \
+            "pingmessenger.dev/deployed-image=$IMAGE" \
+            --overwrite
+
+      - name: Wait for rollout
+        id: rollout_status
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          KUBE_NAMESPACE: ${{ steps.vault.outputs.KUBE_NAMESPACE }}
+          DEPLOYMENT_NAME: ${{ steps.vault.outputs.DEPLOYMENT_NAME }}
+        run: kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=10m
+
+      - name: Smoke-check health and published contract
+        id: smoke
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          KUBE_NAMESPACE: ${{ steps.vault.outputs.KUBE_NAMESPACE }}
+          SERVICE_NAME: ${{ steps.vault.outputs.SERVICE_NAME }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/pingmessenger-port-forward.log"
+          kubectl -n "$KUBE_NAMESPACE" port-forward "service/$SERVICE_NAME" 18080:8080 >"$log" 2>&1 &
+          port_forward_pid=$!
+          cleanup() { kill "$port_forward_pid" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null
+          curl --fail --silent --show-error http://127.0.0.1:18080/openapi.json >"$RUNNER_TEMP/openapi.json"
+          jq -e '.openapi and .info.version and .paths["/v1/mfa/contacts"]' "$RUNNER_TEMP/openapi.json" >/dev/null
+
+      - name: Roll back failed deployment
+        if: ${{ failure() && steps.rollout.outcome == 'success' && (steps.rollout_status.outcome != 'success' || steps.smoke.outcome != 'success') && steps.vault.outputs.ROLLBACK_ON_FAILURE == 'true' }}
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          KUBE_NAMESPACE: ${{ steps.vault.outputs.KUBE_NAMESPACE }}
+          DEPLOYMENT_NAME: ${{ steps.vault.outputs.DEPLOYMENT_NAME }}
+        run: |
+          set -euo pipefail
+          kubectl -n "$KUBE_NAMESPACE" rollout undo "deployment/$DEPLOYMENT_NAME"
+          kubectl -n "$KUBE_NAMESPACE" rollout status "deployment/$DEPLOYMENT_NAME" --timeout=10m
+
+      - name: Deployment summary
+        if: always()
+        env:
+          KUBE_NAMESPACE: ${{ steps.vault.outputs.KUBE_NAMESPACE }}
+          DEPLOYMENT_NAME: ${{ steps.vault.outputs.DEPLOYMENT_NAME }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          {
+            echo "### PingMessenger production deployment"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Image | `$IMAGE` |"
+            echo "| Namespace | `$KUBE_NAMESPACE` |"
+            echo "| Deployment | `$DEPLOYMENT_NAME` |"
+            echo "| Commit | `$SOURCE_SHA` |"
+          } >> "$GITHUB_STEP_SUMMARY"
