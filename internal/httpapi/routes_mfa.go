@@ -2,10 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/fasthttp/router"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/valyala/fasthttp"
 	"net/http"
+	"net/mail"
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/notify"
 	"strconv"
@@ -16,6 +19,101 @@ import (
 func (a *API) registerMFARoutes(r *router.Router) {
 	r.POST("/v1/mfa/challenge", a.issueChallenge)
 	r.POST("/v1/mfa/verify", a.verifyChallenge)
+	r.POST("/v1/mfa/contacts", a.addContact)
+}
+
+type addContactRequest struct {
+	Kind  string `json:"kind" validate:"required,oneof=email phone"`
+	Value string `json:"value" validate:"required,max=254"`
+}
+
+func (a *API) addContact(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req addContactRequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	value, err := normalizeContactValue(req.Kind, req.Value)
+	if err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	contact, err := a.users.AddContact(context.Background(), userID, req.Kind, value)
+	if errors.Is(err, auth.ErrContactAlreadyVerified) {
+		writeJSON(ctx, http.StatusConflict, map[string]string{"error": "verified contacts cannot be changed"})
+		return
+	}
+	if errors.Is(err, auth.ErrContactPending) {
+		writeJSON(ctx, http.StatusConflict, map[string]string{"error": "another contact of this kind is pending verification"})
+		return
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		writeJSON(ctx, http.StatusConflict, map[string]string{"error": "contact is already in use"})
+		return
+	}
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not add contact"})
+		return
+	}
+
+	if retryAfter, err := a.users.ReserveMFAChallenge(context.Background(), contact.ID, req.Kind+":"+contact.Value, requestIP(ctx), time.Now()); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not apply verification rate limit"})
+		return
+	} else if retryAfter > 0 {
+		retrySeconds := int((retryAfter + time.Second - 1) / time.Second)
+		ctx.Response.Header.Set("Retry-After", strconv.Itoa(retrySeconds))
+		writeJSON(ctx, http.StatusTooManyRequests, map[string]any{"error": "too many verification requests", "retry_after_seconds": retrySeconds})
+		return
+	}
+	code, err := auth.NewOTP()
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create challenge"})
+		return
+	}
+	challengeID, err := a.users.CreateChallenge(context.Background(), contact, "signup_contact_verification", auth.HashOTP(a.otpSecret, code), time.Now().Add(10*time.Minute))
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create challenge"})
+		return
+	}
+	if req.Kind == "email" {
+		err = a.email.Send(context.Background(), &notify.Email{To: contact.Value, Subject: "PingMessenger verification code", Text: "Your PingMessenger verification code is " + code + ". It expires in 10 minutes."})
+	} else if a.sms != nil {
+		err = a.sms.SendSMS(context.Background(), &notify.SMS{To: contact.Value, Text: "Your PingMessenger verification code is " + code + ". It expires in 10 minutes."})
+	} else {
+		err = fmt.Errorf("SMS delivery unavailable")
+	}
+	if err != nil {
+		_ = a.users.InvalidateChallenge(context.Background(), challengeID)
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not deliver verification code"})
+		return
+	}
+	writeJSON(ctx, http.StatusAccepted, map[string]any{"contact_id": contact.ID, "kind": contact.Kind, "value": contact.Value, "challenge_id": challengeID, "status": "verification code sent"})
+}
+
+func normalizeContactValue(kind, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	switch kind {
+	case "email":
+		value = strings.ToLower(value)
+		parsed, err := mail.ParseAddress(value)
+		if err != nil || !strings.EqualFold(parsed.Address, value) {
+			return "", fmt.Errorf("value must be a valid email address")
+		}
+		return value, nil
+	case "phone":
+		if value == "" || len(value) > 32 {
+			return "", fmt.Errorf("value must be a valid phone number")
+		}
+		return value, nil
+	default:
+		return "", fmt.Errorf("kind must be email or phone")
+	}
 }
 
 type verifyChallengeRequest struct {

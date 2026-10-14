@@ -25,10 +25,11 @@ func TestProductionPhoneContactVerification(t *testing.T) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	name := fmt.Sprintf("sms-e2e-%d", time.Now().UnixNano())
 	password := "correct-horse-battery-staple"
-	postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q,"phone":%q,"platform_id":"web"}`, name, password, phone), http.StatusCreated)
-	challenge := postJSON(t, client, base+"/v1/mfa/challenge", fmt.Sprintf(`{"phone":%q,"purpose":"signup_contact_verification"}`, phone), http.StatusAccepted)
+	signup := postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, password), http.StatusCreated)
+	access := signup["access_token"].(string)
+	challenge := postAuthenticatedJSON(t, client, base+"/v1/mfa/contacts", access, fmt.Sprintf(`{"kind":"phone","value":%q}`, phone), http.StatusAccepted)
 	post(t, client, base+"/v1/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, challenge["challenge_id"], inbox.otp(t)), http.StatusOK)
-	access := postJSON(t, client, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, password), http.StatusOK)["access_token"].(string)
+	access = postJSON(t, client, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, name, password), http.StatusOK)["access_token"].(string)
 	factor := postAuthenticatedJSON(t, client, base+"/v1/security/mfa/factors", access, fmt.Sprintf(`{"kind":"phone","contact":%q}`, phone), http.StatusCreated)
 	if factor["status"] != "enabled" {
 		t.Fatalf("phone factor was not enabled: %#v", factor)

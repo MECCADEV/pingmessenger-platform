@@ -190,6 +190,56 @@ type Contact struct {
 	Verified                bool
 }
 
+var (
+	ErrContactAlreadyVerified = errors.New("contact is already verified and cannot be changed")
+	ErrContactPending         = errors.New("another contact of this kind is pending verification")
+)
+
+// AddContact creates the user's first contact of a kind, or returns the same
+// unverified contact so a new challenge can be issued. A contact kind is
+// intentionally immutable once it exists: verified values cannot be replaced
+// and a different pending value cannot race the original enrollment.
+func (r *UserRepository) AddContact(ctx context.Context, userID, kind, value string) (*Contact, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	contact := new(Contact)
+	var verifiedAt *time.Time
+	err = tx.QueryRow(ctx, `SELECT id::text,user_id::text,kind::text,value_normalized,verified_at
+		FROM user_contacts WHERE user_id=$1 AND kind=$2::contact_kind
+		ORDER BY is_primary DESC,created_at ASC LIMIT 1 FOR UPDATE`, userID, kind).Scan(
+		&contact.ID, &contact.UserID, &contact.Kind, &contact.Value, &verifiedAt)
+	if err == nil {
+		contact.Verified = verifiedAt != nil
+		if contact.Verified {
+			return nil, ErrContactAlreadyVerified
+		}
+		if contact.Value != value {
+			return nil, ErrContactPending
+		}
+		return contact, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	err = tx.QueryRow(ctx, `INSERT INTO user_contacts (user_id,kind,value_normalized,is_primary)
+		VALUES ($1,$2::contact_kind,$3,true)
+		RETURNING id::text,user_id::text,kind::text,value_normalized,verified_at`, userID, kind, value).Scan(
+		&contact.ID, &contact.UserID, &contact.Kind, &contact.Value, &verifiedAt)
+	if err != nil {
+		return nil, err
+	}
+	contact.Verified = verifiedAt != nil
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return contact, nil
+}
+
 type PasswordChallenge struct {
 	ID, UserID, Purpose, CodeHash string
 	Attempts                      int

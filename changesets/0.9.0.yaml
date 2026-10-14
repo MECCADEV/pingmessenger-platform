@@ -1,0 +1,47 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.8.1
+  next: 0.9.0
+  bump: minor
+  compatibility: additive
+releaseDate: 2026-10-14
+summary: >-
+  Adds authenticated post-signup email and phone enrollment with OTP
+  verification and immutable verified contacts.
+changes:
+  - id: mfa-contact-enrollment
+    type: endpoint
+    method: POST
+    path: /v1/mfa/contacts
+    description: >-
+      An authenticated user can add one missing email or phone contact after
+      signup. The endpoint returns a challenge ID and leaves the contact
+      unverified until /v1/mfa/verify succeeds.
+  - id: mfa-contact-immutability
+    type: behavior
+    method: POST
+    path: /v1/mfa/contacts
+    description: >-
+      A verified contact cannot be changed. A different pending value of the
+      same kind is rejected, and a contact value already owned by another user
+      is rejected.
+  - id: mfa-contact-verification
+    type: behavior
+    method: POST
+    path: /v1/mfa/verify
+    description: >-
+      Completing the returned challenge marks the newly enrolled email or
+      phone verified, enabling existing login, recovery, discovery, and MFA
+      behavior.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:20261014-contact-verification
+  helmChart:
+    path: deploy/helm/pingmessenger
+    appVersion: 0.9.0
+verification:
+  - go test ./...
+  - go vet ./...
+  - email contact enrollment and OTP verification E2E
+  - phone contact enrollment and OTP verification E2E with SMS mirror
+  - verified-contact replacement returns 409

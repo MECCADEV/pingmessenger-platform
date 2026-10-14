@@ -117,6 +117,13 @@ rejected by the limiter do not replace an active challenge; after a challenge
 is successfully consumed, a new flow may start immediately subject to the
 hourly limit.
 
+If a user omitted a contact during signup, an authenticated session can add
+one with `POST /v1/mfa/contacts` using
+`{"kind":"email|phone","value":"..."}`. The response includes a challenge
+ID; complete it with `POST /v1/mfa/verify`. A contact remains unverified until
+that challenge is consumed, and an existing verified contact cannot be
+replaced.
+
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
 that module. Development/test fixtures run through `make seed` and are refused

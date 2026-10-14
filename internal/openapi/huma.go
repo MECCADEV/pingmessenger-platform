@@ -147,6 +147,21 @@ type challengeBody struct {
 }
 type challengeInput struct{ Body challengeBody }
 type challengeOutput struct{ Body challengeResponse }
+type addContactInput struct {
+	Body struct {
+		Kind  string `json:"kind" enum:"email,phone"`
+		Value string `json:"value" maxLength:"254"`
+	}
+}
+type addContactOutput struct {
+	Body struct {
+		ContactID   string `json:"contact_id" format:"uuid"`
+		Kind        string `json:"kind"`
+		Value       string `json:"value"`
+		ChallengeID string `json:"challenge_id" format:"uuid"`
+		Status      string `json:"status"`
+	}
+}
 type mfaFactorBody struct {
 	ID           string `json:"id" format:"uuid"`
 	Kind         string `json:"kind"`
@@ -547,7 +562,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.8.4")
+	config := huma.DefaultConfig("PingMessenger API", "0.9.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -571,8 +586,13 @@ func newDocument() (*DocumentModel, error) {
 	register[passwordChallengeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/complete", "completePasswordRecovery", "Auth", "Complete password recovery with a one-time code.", 200, public))
 	register[passwordChangeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change", "changePassword", "Auth", "Change a password; verified contacts require a step-up code.", 200, bearer))
 	register[passwordChangeVerifyInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change/verify", "verifyPasswordChange", "Auth", "Complete contact step-up for a password change.", 200, bearer))
-	register[challengeInput, challengeOutput](api, operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email or phone verification challenge. Requests are limited to one per minute and five per hour per contact and requester IP; throttled requests return 429 with Retry-After.", 202, public))
+	challengeOperation := operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email or phone verification challenge. Requests are limited to one per minute and five per hour per contact and requester IP; throttled requests return 429 with Retry-After.", 202, public)
+	challengeOperation.Errors = append(challengeOperation.Errors, http.StatusTooManyRequests)
+	register[challengeInput, challengeOutput](api, challengeOperation)
 	register[verifyInput, verifyOutput](api, operation(http.MethodPost, "/v1/mfa/verify", "verifyMFAChallenge", "MFA", "Verify a non-login MFA challenge.", 200, public))
+	addContact := operation(http.MethodPost, "/v1/mfa/contacts", "addMFAContact", "MFA", "Add an email or phone contact after signup. The contact remains unverified until the returned challenge is completed; a verified contact cannot be changed.", 202, bearer)
+	addContact.Errors = append(addContact.Errors, http.StatusConflict, http.StatusTooManyRequests)
+	register[addContactInput, addContactOutput](api, addContact)
 	register[loginMFAVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/mfa/verify", "verifyLoginMFA", "Auth", "Complete one enabled MFA factor before creating a login session.", 200, public))
 	register[struct{}, mfaListOutput](api, operation(http.MethodGet, "/v1/security/mfa", "listMFA", "Security", "List enabled account MFA factors.", 200, bearer))
 	register[enrollMFAInput, enrollMFAOutput](api, operation(http.MethodPost, "/v1/security/mfa/factors", "enrollMFA", "Security", "Enroll an email, phone, or TOTP factor.", 201, bearer))
