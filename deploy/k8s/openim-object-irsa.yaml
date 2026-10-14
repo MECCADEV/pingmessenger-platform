@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openim-rpc-third
+  namespace: openim
+  labels:
+    app.kubernetes.io/part-of: pingmessenger
+    app.kubernetes.io/component: openim-object-storage
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::403048695675:role/shark-openim-rpc-third

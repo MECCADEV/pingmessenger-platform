@@ -169,11 +169,21 @@ jobs:
             --kubeconfig "$RUNNER_TEMP/kubeconfig"
           chmod 600 "$RUNNER_TEMP/kubeconfig"
 
-      - name: Apply OpenIM client gateway routes
+      - name: Apply OpenIM object storage and gateway routes
         env:
           KUBECONFIG: ${{ runner.temp }}/kubeconfig
         run: |
           set -euo pipefail
+          kubectl apply -f deploy/k8s/openim-object-irsa.yaml
+          # The Helm values now select this account, but older live releases
+          # used namespace/default. Patch that pod template during rollout so
+          # the multipart object service actually receives its dedicated role.
+          kubectl -n openim patch deployment openimserver-openim-rpc-third \
+            --type=merge \
+            --patch '{"spec":{"template":{"spec":{"serviceAccountName":"openim-rpc-third"}}}}'
+          kubectl -n openim rollout status deployment/openimserver-openim-rpc-third --timeout=10m
+          test "$(kubectl -n openim get deployment openimserver-openim-rpc-third \
+            -o jsonpath='{.spec.template.spec.serviceAccountName}')" = openim-rpc-third
           # This route was originally created with client-side apply. Keep the
           # same ownership model so the rollout can add the object alias
           # without taking server-side ownership of unrelated route fields.

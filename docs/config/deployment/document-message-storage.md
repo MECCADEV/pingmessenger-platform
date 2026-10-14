@@ -22,11 +22,11 @@ declarative.
 | OpenIM object bucket | `pingmessenger-openim-403048695675-ap-south-1` | OpenIM |
 | OpenIM IRSA role | `arn:aws:iam::403048695675:role/shark-openim-rpc-third` | OpenIM |
 
-The `openim/openim-rpc-third` service account has been created and annotated
-with the OpenIM role. The currently running Helm release still uses the
-`default` service account and its existing MinIO configuration; upgrade the
-OpenIM release from the document-support Helm worktree before enabling AWS
-object traffic. This avoids an untracked live-patch that Helm would overwrite.
+The `openim/openim-rpc-third` service account is annotated with the OpenIM
+role. The platform production deployment applies that account and patches the
+legacy live OpenIM third-service pod template if it still uses `default`; the
+Helm values in the OpenIM worktree make the change persistent on the next
+OpenIM release upgrade.
 
 The document bucket must remain separate from the OpenIM object bucket. The
 platform cleanup worker is the only component responsible for deleting message
@@ -147,7 +147,8 @@ and OpenIM Helm releases:
 3. Attach the platform policy above to `shark-pingmessenger-api`.
 4. Create/attach the OpenIM policy to `shark-openim-rpc-third`.
 5. Annotate `pingmessenger/pingmessenger-api` with the platform role and
-   `openim/openim-rpc-third` with the OpenIM role.
+   `openim/openim-rpc-third` with the OpenIM role; ensure the third-service
+   deployment uses that service account (the platform workflow enforces this).
 6. Apply migration `0017_message_documents.sql` through the normal platform
    migration job.
 7. Deploy the platform image and verify the document environment variables:
