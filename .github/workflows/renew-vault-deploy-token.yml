@@ -23,7 +23,7 @@ jobs:
     steps:
       - name: Renew self token and verify the returned lease
         env:
-          VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+          VAULT_ADDR: https://vault.meainternal.com
           VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
         shell: bash
         run: |

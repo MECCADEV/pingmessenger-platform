@@ -7,13 +7,14 @@ reviewers before enabling unattended production promotion. The workflow is
 
 ## GitHub environment secrets
 
-Configure these secrets on both the protected `production` environment and the
+Configure this secret on both the protected `production` environment and the
 unattended `production-maintenance` environment:
 
-- `VAULT_ADDR`
 - `VAULT_TOKEN`
 
-`VAULT_TOKEN` should be a renewable, least-privilege token. It is used by the
+The workflows use the fixed, non-sensitive Vault endpoint
+`https://vault.meainternal.com`; `VAULT_TOKEN` should be a renewable,
+least-privilege token. It is used by the
 Vault action and by the scheduled token-renewal workflow; its value is never
 written to a file or step summary.
 

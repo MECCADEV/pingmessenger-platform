@@ -70,7 +70,10 @@ jobs:
         id: vault
         uses: hashicorp/vault-action@v3
         with:
-          url: ${{ secrets.VAULT_ADDR }}
+          # The Vault hostname is non-sensitive and fixed for this cluster.
+          # Keep credentials in the protected environment; avoiding secret URL
+          # interpolation prevents malformed/empty URL failures in the action.
+          url: https://vault.meainternal.com
           token: ${{ secrets.VAULT_TOKEN }}
           secrets: |
             secret/data/pingmessenger/platform/deploy REGISTRY_USER       | REGISTRY_USER ;
