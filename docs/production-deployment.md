@@ -1,7 +1,8 @@
 # Production deployment
 
-The production deployment is intentionally manual and runs from the protected
-GitHub `production` environment. The workflow is
+The production deployment is intentionally manual and runs from the GitHub
+`production` environment. Add the repository's release approvers as environment
+reviewers before enabling unattended production promotion. The workflow is
 `.github/workflows/deploy-production.yml`.
 
 ## GitHub environment secrets
