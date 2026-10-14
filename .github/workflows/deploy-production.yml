@@ -66,6 +66,25 @@ jobs:
         shell: bash
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Verify Vault deployment token access
+        env:
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          lookup_status=$(curl --fail-with-body --silent --show-error --output /tmp/vault-token-lookup \
+            --write-out '%{http_code}' \
+            --header "X-Vault-Token: ${VAULT_TOKEN}" \
+            https://vault.meainternal.com/v1/auth/token/lookup-self)
+          kv_status=$(curl --fail-with-body --silent --show-error --output /tmp/vault-deploy-config \
+            --write-out '%{http_code}' \
+            --header "X-Vault-Token: ${VAULT_TOKEN}" \
+            https://vault.meainternal.com/v1/secret/data/pingmessenger/platform/deploy)
+          echo "vault_token_lookup_status=${lookup_status}"
+          echo "vault_deploy_config_status=${kv_status}"
+          test "${lookup_status}" = 200
+          test "${kv_status}" = 200
+
       - name: Fetch deployment configuration from Vault
         id: vault
         uses: hashicorp/vault-action@v3
