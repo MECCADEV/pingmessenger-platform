@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fasthttp/websocket"
+	"pingmessenger/internal/stories"
 )
 
 // storySubscription is created for every authenticated story WebSocket. A
@@ -50,6 +51,10 @@ func (a *API) broadcastStoryEvent(ctx context.Context, eventID int64) {
 	delivery, err := a.stories.EventDelivery(ctx, eventID)
 	if err != nil {
 		log.Printf("story event %d lookup failed: %v", eventID, err)
+		return
+	}
+	if err := a.signStoryEvents(ctx, []*stories.Event{delivery.Event}); err != nil {
+		log.Printf("story event %d media signing failed: %v", eventID, err)
 		return
 	}
 	message := map[string]any{

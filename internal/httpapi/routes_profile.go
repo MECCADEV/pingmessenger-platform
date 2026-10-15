@@ -89,6 +89,9 @@ func (a *API) updateProfile(ctx *fasthttp.RequestCtx) {
 	}
 	var public *string
 	if fileErr == nil {
+		if !a.enforceRate(ctx, "profile-upload", userID, profileUploadUserLimit, profileUploadIPLimit) {
+			return
+		}
 		stream, err := file.Open()
 		if err != nil {
 			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "could not read image"})

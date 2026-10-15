@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,7 +17,80 @@ import (
 	"time"
 
 	"github.com/fasthttp/websocket"
+	"google.golang.org/protobuf/encoding/protowire"
 )
+
+// TestPaymentCustomMessageReachesOpenIMReceiver proves that the platform's
+// durable payment projection is also delivered as the OpenIM custom-message
+// wire type (contentType=110), not only through the platform payment stream.
+func TestPaymentCustomMessageReachesOpenIMReceiver(t *testing.T) {
+	base := strings.TrimRight(getE2EBaseURL(t), "/")
+	client := &http.Client{Timeout: 20 * time.Second}
+	password := "correct-horse-battery-staple"
+	newUser := func(prefix string) map[string]any {
+		name := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+		return postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, name, password), http.StatusCreated)
+	}
+	sender := newUser("payment-openim-sender")
+	receiver := newUser("payment-openim-receiver")
+	senderOpenIMID, receiverOpenIMID := openIMUserID(t, sender), openIMUserID(t, receiver)
+	senderOpenIMToken := issueDeviceOpenIMTokenForE2E(t, client, base, sender["access_token"].(string))
+	receiverOpenIMToken := issueDeviceOpenIMTokenForE2E(t, client, base, receiver["access_token"].(string))
+	testOpenIMFriendInteroperability(t, client, base, senderOpenIMToken, receiverOpenIMToken, senderOpenIMID, receiverOpenIMID)
+
+	receiverSocket := dialOpenIMClient(t, base, receiverOpenIMToken, receiverOpenIMID)
+	defer receiverSocket.Close()
+	conversationID := fmt.Sprintf("e2e-openim-payment-%d", time.Now().UnixNano())
+	paymentID := fmt.Sprintf("e2e-openim-payment-id-%d", time.Now().UnixNano())
+	postAuthenticatedJSON(t, client, base+"/v1/conversations/"+conversationID+"/payments", sender["access_token"].(string), fmt.Sprintf(`{"payment_id":%q,"to_user_id":%q,"payment_type":"direct","chain_id":"e2e-devnet","transaction_id":%q,"asset":"TEST","amount_atomic":"100"}`, paymentID, receiver["user_id"].(string), paymentID+"-tx"), http.StatusCreated)
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		frame := readOpenIMJSONFrame(t, receiverSocket, time.Until(deadline))
+		if frame["reqIdentifier"] != float64(2001) {
+			continue
+		}
+		encoded, ok := frame["data"].(string)
+		if !ok {
+			t.Fatalf("OpenIM payment push has no data: %#v", frame)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := openIMContentType(decoded); got != 110 {
+			t.Fatalf("payment push content type=%d want 110: %#v", got, frame)
+		}
+		if !bytes.Contains(decoded, []byte("pingmessenger.payment.v1")) || !bytes.Contains(decoded, []byte(paymentID)) {
+			t.Fatalf("payment push did not contain the payment schema/id: %q", decoded)
+		}
+		return
+	}
+	t.Fatal("timed out waiting for payment custom message on recipient OpenIM WebSocket")
+}
+
+func openIMContentType(data []byte) uint64 {
+	for len(data) > 0 {
+		number, kind, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return 0
+		}
+		data = data[n:]
+		if number == 11 && kind == protowire.VarintType {
+			value, n := protowire.ConsumeVarint(data)
+			if n < 0 {
+				return 0
+			}
+			return value
+		}
+		n = protowire.ConsumeFieldValue(number, kind, data)
+		if n < 0 {
+			return 0
+		}
+		data = data[n:]
+	}
+	return 0
+}
 
 // TestPaymentAndDisappearingMessageContracts exercises the durable payment
 // projection/recovery endpoints and the live disappearing-message notification

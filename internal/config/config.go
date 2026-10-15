@@ -20,6 +20,7 @@ type Config struct {
 	S3Bucket                     string
 	DocumentS3Bucket             string
 	S3Endpoint                   string
+	RedisURL                     string
 	DocumentMaxBytes             int64
 	DocumentMaxCount             int
 	DocumentMaxBytes24h          int64
@@ -82,7 +83,7 @@ func Load() (Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"), JWTSigningSecret: os.Getenv("JWT_SIGNING_SECRET"),
 		JWTIssuer: value("JWT_ISSUER", "pingmessenger"), AccessTokenTTL: accessTTL, RefreshTokenTTL: refreshTTL,
 		S3PublicBaseURL: os.Getenv("S3_PUBLIC_BASE_URL"), OpenIMAPIBaseURL: os.Getenv("OPENIM_API_BASE_URL"), OpenIMConversationGRPCTarget: os.Getenv("OPENIM_CONVERSATION_GRPC_TARGET"),
-		S3Bucket: os.Getenv("S3_BUCKET"), DocumentS3Bucket: value("DOCUMENT_S3_BUCKET", os.Getenv("S3_BUCKET")), S3Endpoint: os.Getenv("S3_ENDPOINT"),
+		S3Bucket: os.Getenv("S3_BUCKET"), DocumentS3Bucket: value("DOCUMENT_S3_BUCKET", os.Getenv("S3_BUCKET")), S3Endpoint: os.Getenv("S3_ENDPOINT"), RedisURL: os.Getenv("REDIS_URL"),
 		DocumentMaxBytes: documentMaxBytes, DocumentMaxCount: documentMaxCount, DocumentMaxBytes24h: documentMaxBytes24h, DocumentRetention: documentRetention,
 		DocumentAllowedMIMEs: value("DOCUMENT_ALLOWED_MIMES", "application/pdf,application/rtf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/csv,application/zip"),
 		OpenIMAPIToken:       os.Getenv("OPENIM_API_TOKEN"), OpenIMSharedSecret: os.Getenv("OPENIM_SHARED_SECRET"), OpenIMAdminUserID: value("OPENIM_ADMIN_USER_ID", "imAdmin"), OpenIMWebhookGRPCAddr: value("OPENIM_WEBHOOK_GRPC_ADDR", ":9090"),

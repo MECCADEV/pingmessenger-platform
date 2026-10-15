@@ -33,15 +33,51 @@ type storyViewRequest struct {
 func (a *API) registerStoryRoutes(r *router.Router) {
 	r.POST("/v1/stories", a.createStory)
 	r.DELETE("/v1/stories/{storyID}", a.deleteStory)
+	r.GET("/v1/stories/{storyID}/media", a.downloadStoryMedia)
 	r.POST("/v1/stories/{storyID}/view", a.viewStory)
 	r.GET("/v1/stories/{storyID}/views", a.listStoryViews)
 	r.GET("/v1/stories/ws", a.storyWebSocket)
+}
+
+func (a *API) downloadStoryMedia(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "story-download", userID, downloadUserLimit, downloadIPLimit) {
+		return
+	}
+	story, err := a.stories.MediaForRecipient(context.Background(), userID, strings.TrimSpace(ctx.UserValue("storyID").(string)))
+	if errors.Is(err, stories.ErrForbidden) {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "story not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load story media"})
+		return
+	}
+	reader, ok := a.objects.(storage.ObjectReader)
+	if !ok {
+		writeJSON(ctx, http.StatusNotImplemented, map[string]string{"error": "story download proxy is unavailable"})
+		return
+	}
+	body, contentType, err := reader.Get(context.Background(), story.StorageKey)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not download story media"})
+		return
+	}
+	ctx.Response.Header.SetContentType(contentType)
+	ctx.Response.SetBodyStream(body, int(story.ByteSize))
 }
 
 func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "story-upload", userID, storyUploadUserLimit, storyUploadIPLimit) {
 		return
 	}
 	form, err := ctx.Request.MultipartForm()
@@ -150,7 +186,19 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not store story media"})
 		return
 	}
-	story, err := a.stories.Create(context.Background(), stories.CreateParams{OwnerID: userID, MediaType: string(mediaType), StorageKey: key, MediaURL: storage.PublicPath(a.assetBase, key), ContentType: contentType, ByteSize: int64(len(data)), Caption: caption, Visibility: visibility, ExpiresAt: time.Now().Add(expires), Recipients: recipients, VisibilityUsers: ids})
+	// Sign once before publishing the story so an unavailable private signer
+	// cannot create a story that clients can never download.
+	if !a.enforceRate(ctx, "story-signed-url", userID, signedURLUserLimit, signedURLIPLimit) {
+		_ = a.objects.Delete(context.Background(), key)
+		return
+	}
+	privateStory := &stories.Story{StorageKey: key}
+	if err := a.signStoryMedia(context.Background(), privateStory); err != nil {
+		_ = a.objects.Delete(context.Background(), key)
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not sign story media"})
+		return
+	}
+	story, err := a.stories.Create(context.Background(), stories.CreateParams{OwnerID: userID, MediaType: string(mediaType), StorageKey: key, MediaURL: "", ContentType: contentType, ByteSize: int64(len(data)), Caption: caption, Visibility: visibility, ExpiresAt: time.Now().Add(expires), Recipients: recipients, VisibilityUsers: ids})
 	if err != nil {
 		_ = a.objects.Delete(context.Background(), key)
 		if errors.Is(err, stories.ErrActiveLimit) {
@@ -164,6 +212,7 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not persist story"})
 		return
 	}
+	story.MediaURL = privateStory.MediaURL
 	writeJSON(ctx, http.StatusCreated, map[string]any{"story": story})
 }
 
@@ -420,6 +469,15 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 			}
 			switch msg.Type {
 			case "get", "sync":
+				allowed, rateErr := a.allowRate(context.Background(), "story-signed-url", userID, requestIP(ctx), signedURLUserLimit, signedURLIPLimit)
+				if rateErr != nil || !allowed {
+					code := "rate_limited"
+					if rateErr != nil {
+						code = "rate_limit_unavailable"
+					}
+					_ = subscription.send(map[string]any{"type": "error", "code": code})
+					return
+				}
 				result, e := a.stories.Sync(context.Background(), userID, msg.GlobalCursor, msg.UserCursors, msg.Limit)
 				if e != nil {
 					log.Printf("story sync failed for user %s: %v", userID, e)
@@ -428,6 +486,11 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 						code = "cursor_regression"
 					}
 					_ = subscription.send(map[string]any{"type": "error", "code": code})
+					continue
+				}
+				if e = a.signStoryEvents(context.Background(), result.Events); e != nil {
+					log.Printf("story media signing failed for user %s: %v", userID, e)
+					_ = subscription.send(map[string]any{"type": "error", "code": "media_unavailable"})
 					continue
 				}
 				_ = subscription.send(map[string]any{"type": "stories.batch", "events": result.Events, "global_cursor": result.GlobalCursor, "user_cursors": result.UserCursors, "has_more": result.HasMore})
@@ -485,6 +548,7 @@ func (a *API) RunStoryExpiry(ctx context.Context) {
 }
 
 func (a *API) deleteStoryMedia(ctx context.Context, storyID, storageKey string) {
+	a.evictStoryMediaURL(storageKey)
 	if err := a.objects.Delete(ctx, storageKey); err != nil {
 		log.Printf("story media delete failed for %s: %v", storyID, err)
 		return

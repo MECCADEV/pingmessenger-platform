@@ -27,6 +27,8 @@ type Story struct {
 	OwnerID     string     `json:"owner_id"`
 	StorageKey  string     `json:"-"`
 	MediaType   MediaType  `json:"media_type"`
+	// MediaURL is populated only at the HTTP/WebSocket boundary with a
+	// short-lived presigned URL. It is not an authoritative persisted field.
 	MediaURL    string     `json:"media_url"`
 	ContentType string     `json:"content_type"`
 	ByteSize    int64      `json:"byte_size"`

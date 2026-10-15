@@ -43,6 +43,13 @@ storage:
     existingSecret: ""
     accessKeyID: root
     secretAccessKey: openIM123
+redis:
+  # Use the existing shark Redis service in shared deployments. Empty uses the
+  # process-local limiter, which is suitable only for local development.
+  url: ""
+  # If set, the Secret must expose a REDIS_URL key; it takes precedence over
+  # url so credentials do not need to live in Helm values.
+  existingSecret: ""
 serviceAccount:
   create: true
   name: ""

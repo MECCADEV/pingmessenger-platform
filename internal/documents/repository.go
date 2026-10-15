@@ -111,6 +111,57 @@ func (r *Repository) MarkS3Deleted(ctx context.Context, id string) error {
 	return err
 }
 
+func (r *Repository) LinkMessage(ctx context.Context, ownerID, documentID, conversationID, openIMUserID string, seq int64, expiresAt time.Time) error {
+	_, err := r.pool.Exec(ctx, `INSERT INTO message_media_links(document_id,owner_id,conversation_id,seq,openim_user_id,expires_at)
+		SELECT id,$1,$3,$4,$5,$6 FROM message_documents WHERE id=$2 AND owner_id=$1 AND deleted_at IS NULL
+		ON CONFLICT (document_id,conversation_id,seq) DO UPDATE SET expires_at=EXCLUDED.expires_at,updated_at=now()`, ownerID, documentID, conversationID, seq, openIMUserID, expiresAt)
+	return err
+}
+
+func (r *Repository) ClaimExpiredMessageLinks(ctx context.Context, limit int) ([]MessageMediaLink, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `WITH picked AS (
+		SELECT id FROM message_media_links
+		WHERE expires_at<=now() AND (revoked_at IS NULL OR s3_deleted_at IS NULL)
+		  AND (cleanup_claimed_at IS NULL OR cleanup_claimed_at<now()-interval '5 minutes')
+		ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT $1
+	)
+	UPDATE message_media_links l SET cleanup_claimed_at=now(),revoke_attempts=revoke_attempts+1,updated_at=now()
+	FROM picked p JOIN message_documents d ON d.id=l.document_id
+	WHERE l.id=p.id
+		RETURNING l.id::text,l.document_id::text,d.storage_key,l.conversation_id,l.openim_user_id,l.seq,l.revoked_at IS NOT NULL,l.s3_deleted_at IS NOT NULL`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	links := make([]MessageMediaLink, 0)
+	for rows.Next() {
+		var link MessageMediaLink
+		if err := rows.Scan(&link.ID, &link.DocumentID, &link.StorageKey, &link.ConversationID, &link.OpenIMUserID, &link.Seq, &link.Revoked, &link.S3Deleted); err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+func (r *Repository) MarkMessageRevoked(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE message_media_links SET revoked_at=COALESCE(revoked_at,now()),last_error=NULL,updated_at=now() WHERE id=$1`, id)
+	return err
+}
+
+func (r *Repository) MarkMessageS3Deleted(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE message_media_links SET s3_deleted_at=COALESCE(s3_deleted_at,now()),updated_at=now() WHERE id=$1`, id)
+	return err
+}
+
+func (r *Repository) RecordMessageCleanupError(ctx context.Context, id, message string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE message_media_links SET last_error=$2,updated_at=now() WHERE id=$1`, id, message)
+	return err
+}
+
 func (r *Repository) RecordDeleteError(ctx context.Context, id, message string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE message_documents SET delete_attempts=delete_attempts+1,last_delete_error=$2,updated_at=now() WHERE id=$1`, id, message)
 	return err

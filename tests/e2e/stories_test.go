@@ -41,6 +41,23 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 	if story["media_type"] != "image" || story["content_type"] != "image/png" || story["caption"] != "hello 🌈" || story["visibility"] != "contacts" {
 		t.Fatalf("story metadata = %#v", story)
 	}
+	mediaURL, ok := story["media_url"].(string)
+	if !ok || mediaURL == "" {
+		t.Fatalf("story media_url=%#v", story["media_url"])
+	}
+	parsedMediaURL, err := url.Parse(mediaURL)
+	if err != nil || parsedMediaURL.Query().Get("X-Amz-Signature") == "" {
+		t.Fatalf("story URL is not a private presigned URL: %q err=%v", mediaURL, err)
+	}
+	mediaResponse, err := c.Get(mediaURL)
+	if err != nil {
+		t.Fatalf("download story media: %v", err)
+	}
+	mediaBytes, readErr := io.ReadAll(mediaResponse.Body)
+	mediaResponse.Body.Close()
+	if readErr != nil || mediaResponse.StatusCode != http.StatusOK || !bytes.Equal(mediaBytes, []byte("story-image")) {
+		t.Fatalf("story download status=%d bytes=%q err=%v", mediaResponse.StatusCode, mediaBytes, readErr)
+	}
 	if got := int64(story["byte_size"].(float64)); got != int64(len("story-image")) {
 		t.Fatalf("byte_size=%d", got)
 	}
@@ -192,6 +209,9 @@ func TestStoryLiveFanoutAgainstDeployedAPI(t *testing.T) {
 			EventID int64  `json:"event_id"`
 			Type    string `json:"type"`
 			StoryID string `json:"story_id"`
+			Story   struct {
+				MediaURL string `json:"media_url"`
+			} `json:"story"`
 		} `json:"event"`
 	}
 	if err := receiverWS.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
@@ -202,6 +222,9 @@ func TestStoryLiveFanoutAgainstDeployedAPI(t *testing.T) {
 	}
 	if live.Type != "stories.event" || live.Event.Type != "created" || live.Event.StoryID != storyID || live.Event.EventID == 0 {
 		t.Fatalf("live create event=%#v", live)
+	}
+	if live.Event.Story.MediaURL == "" {
+		t.Fatalf("live story event did not include a signed media URL: %#v", live)
 	}
 
 	postAuthenticatedJSON(t, c, base+"/v1/stories/"+storyID+"/view", receiverAccess, `{"reaction":"🔥"}`, http.StatusOK)

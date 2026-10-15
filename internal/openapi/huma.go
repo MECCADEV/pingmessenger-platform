@@ -403,6 +403,13 @@ type documentUploadOutput struct {
 type documentPathInput struct {
 	DocumentID string `path:"documentID" format:"uuid"`
 }
+type documentMessageLinkInput struct {
+	DocumentID string `path:"documentID" format:"uuid"`
+	Body       struct {
+		ConversationID string `json:"conversation_id" maxLength:"256"`
+		Seq            int64  `json:"seq" minimum:"1"`
+	}
+}
 type documentGetOutput struct {
 	Body struct {
 		Document document `json:"document"`
@@ -643,20 +650,23 @@ func newDocument() (*DocumentModel, error) {
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
-	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an image or video story (maximum 10 MiB per upload, 10 active stories, and 40 retained rows per user). Expiry defaults to 24 hours.", 201, bearer)
+	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an image or video story (maximum 10 MiB per upload, 10 active stories, and 40 retained rows per user). Expiry defaults to 24 hours. The response media_url is a short-lived private S3 presigned URL.", 201, bearer)
 	storyCreate.MaxBodyBytes = 10 << 20
 	storyCreate.Errors = append(storyCreate.Errors, http.StatusTooManyRequests)
 	register[storyCreateInput, storyCreateOutput](api, storyCreate)
 	register[storyDeleteInput, storyDeleteOutput](api, operation(http.MethodDelete, "/v1/stories/{storyID}", "deleteStory", "Stories", "Delete one of the authenticated user's stories.", 200, bearer))
+	register[storyDeleteInput, struct{}](api, operation(http.MethodGet, "/v1/stories/{storyID}/media", "downloadStoryMedia", "Stories", "Download private story media through the rate-limited platform proxy. Direct presigned S3 URLs remain bearer capabilities.", 200, bearer))
 	register[storyViewInput, storyViewOutput](api, operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Record a view and optional reaction.", 200, bearer))
 	register[storyViewsInput, storyViewsOutput](api, operation(http.MethodGet, "/v1/stories/{storyID}/views", "listStoryViews", "Stories", "List views and reactions for the authenticated owner's story.", 200, bearer))
-	register[struct{}, storyWebSocketOutput](api, operation(http.MethodGet, "/v1/stories/ws", "storyWebSocket", "Stories", "Upgrade to the authenticated, default-subscribed story WebSocket. Live create/delete events are pushed to eligible network users; send a sync or get query for replay and acknowledge durable cursors.", 101, bearer))
+	register[struct{}, storyWebSocketOutput](api, operation(http.MethodGet, "/v1/stories/ws", "storyWebSocket", "Stories", "Upgrade to the authenticated, default-subscribed story WebSocket. Live create/delete events are pushed to eligible network users; created events include a short-lived private S3 presigned media_url. Send a sync or get query for replay and acknowledge durable cursors.", 101, bearer))
 	documentUpload := operation(http.MethodPost, "/v1/documents", "uploadDocument", "Documents", "Upload a document for a normal OpenIM contentType=105 file message. The response includes a retention-bound signed sourceUrl and fileElem metadata. Default policy is 100 MiB per file, 20 retained documents, 1 GiB per rolling 24 hours, and seven-day retention.", 201, bearer)
 	documentUpload.MaxBodyBytes = 101 << 20
 	documentUpload.Errors = append(documentUpload.Errors, http.StatusTooManyRequests, http.StatusUnsupportedMediaType, http.StatusRequestEntityTooLarge)
 	register[documentUploadInput, documentUploadOutput](api, documentUpload)
 	register[documentPathInput, documentGetOutput](api, operation(http.MethodGet, "/v1/documents/{documentID}", "getDocument", "Documents", "Get document metadata and a fresh retention-bound sourceUrl while the object is retained.", 200, bearer))
+	register[documentPathInput, struct{}](api, operation(http.MethodGet, "/v1/documents/{documentID}/download", "downloadDocument", "Documents", "Download a document through the authenticated, rate-limited platform proxy.", 200, bearer))
 	register[documentPathInput, struct{}](api, operation(http.MethodDelete, "/v1/documents/{documentID}", "deleteDocument", "Documents", "Delete the S3 object while retaining a tombstone for message history. Expired objects are removed automatically after seven days.", 204, bearer))
+	register[documentMessageLinkInput, struct{}](api, operation(http.MethodPost, "/v1/documents/{documentID}/message-link", "linkDocumentMessage", "Documents", "Link an uploaded document to its OpenIM conversation sequence so disappearing-message cleanup can revoke the message before deleting S3 media.", 201, bearer))
 	register[discoverInput, discoverOutput](api, operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover registered contacts from supplied email addresses or phone numbers.", 200, bearer))
 	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))

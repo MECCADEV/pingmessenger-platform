@@ -17,6 +17,10 @@ type ObjectStore interface {
 	Put(context.Context, string, string, []byte) error
 	Delete(context.Context, string) error
 }
+
+type ObjectReader interface {
+	Get(context.Context, string) (io.ReadCloser, string, error)
+}
 type S3 struct {
 	client  *s3.Client
 	bucket  string
@@ -51,6 +55,21 @@ func (s *S3) Put(ctx context.Context, key, contentType string, data []byte) erro
 func (s *S3) Delete(ctx context.Context, key string) error {
 	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &s.bucket, Key: &key})
 	return err
+}
+
+func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, string, error) {
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
+	if err != nil {
+		return nil, "", err
+	}
+	return result.Body, stringValue(result.ContentType), nil
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return "application/octet-stream"
+	}
+	return *value
 }
 
 // PresignGet returns a short-lived URL for a private object. The platform

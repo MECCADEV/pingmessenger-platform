@@ -205,6 +205,10 @@ func (c *HTTPClient) ModifyMessage(ctx context.Context, request *ModifyMessageRe
 	return c.call(ctx, "msg/modify_message", request, nil)
 }
 
+func (c *HTTPClient) RevokeMessage(ctx context.Context, request *RevokeMessageRequest) error {
+	return c.call(ctx, "msg/revoke_msg", request, nil)
+}
+
 func (c *HTTPClient) call(ctx context.Context, operation string, request, response any) error {
 	// An OpenIM restart or signing-key rotation can invalidate a cached admin
 	// token before its advertised expiry. Retry once with a fresh token. The

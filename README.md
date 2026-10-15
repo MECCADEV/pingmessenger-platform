@@ -170,6 +170,25 @@ Clients consume `/v1/stories/ws` with `sync` and `ack` frames. The server
 returns monotonic `event_id` cursors globally and per story owner, and rejects
 acknowledgements that move either cursor backwards.
 
+Story media is private. The `media_url` returned by the create response and
+story WebSocket events is a short-lived S3 presigned GET URL (10 minutes), not
+the configured public asset base. The API caches one URL per story object key
+on each replica and reuses it for all eligible recipients until it is near
+expiry; it evicts that entry when the story is deleted or expires. This is a
+bearer URL, so clients must not log or persist it. The bucket must remain
+private. A shared Redis cache is only needed if identical URL strings across
+multiple API replicas are required; correctness and authorization do not rely
+on that optimization.
+
+When `REDIS_URL` is configured, profile/story/document uploads, signed-URL
+issuance, and the platform download proxies are limited by both authenticated
+user and peer IP. The controlled download routes are `GET
+/v1/stories/{storyID}/media` and `GET /v1/documents/{documentID}/download`.
+Direct S3 presigned GETs cannot be counted by this API after the client leaves
+the service; use the proxy routes when API-enforced download throttling is
+required. Without `REDIS_URL`, only a process-local development limiter is
+used.
+
 ## Document messages
 
 Clients upload a document with authenticated multipart `POST /v1/documents`
@@ -189,6 +208,18 @@ history remains. A platform cleanup worker retries failed deletes and removes
 objects automatically at expiry even when nobody downloads them. The OpenIM
 object API is also exposed at `/openim/object/*`; clients should prefer the
 platform endpoint because it enforces PingMessenger policy and ownership.
+
+After sending a document as an OpenIM file message, the sender may register
+its conversation sequence with `POST /v1/documents/{documentID}/message-link`.
+When disappearing retention expires, cleanup revokes that OpenIM message first
+and then deletes the linked S3 object.
+
+The OpenIM fork exposes `POST /openim/msg/modify_message` and the existing
+`POST /openim/msg/revoke_msg` route. The modify path persists the replacement,
+invalidates the message cache, and emits the SDK-native modify notification;
+revoke emits the native revoke notification. The platform cleanup worker uses
+the revoke path before deleting linked media. Product callers must enforce any
+message-edit time window before invoking the fork route.
 
 The initial conversation graph snapshot is fetched over OpenIM's native
 conversation gRPC service (`OPENIM_CONVERSATION_GRPC_TARGET`). To enable

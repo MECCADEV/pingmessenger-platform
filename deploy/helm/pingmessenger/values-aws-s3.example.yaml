@@ -17,12 +17,18 @@ storage:
   documentBucket: pingmessenger-message-documents-production
   # Empty selects AWS S3 rather than a MinIO/custom S3-compatible endpoint.
   endpoint: ""
+  # Used only by legacy profile/avatar responses. Story media always uses a
+  # short-lived presigned URL and the bucket must have public access blocked.
   publicBaseURL: https://assets.example.com
   credentials:
     # EKS IRSA: no AWS keys are mounted. The AWS SDK obtains temporary
     # credentials using the service account role below.
     mode: irsa
     existingSecret: ""
+redis:
+  # Prefer a Secret containing REDIS_URL for production; this example leaves
+  # the cluster-specific service name/password out of version control.
+  existingSecret: pingmessenger-redis
 serviceAccount:
   create: true
   name: pingmessenger-api

@@ -111,6 +111,9 @@ spec:
             - {name: DOCUMENT_S3_BUCKET, value: {{ .Values.storage.documentBucket | quote }}}
             - {name: S3_ENDPOINT, value: {{ .Values.storage.endpoint | quote }}}
             - {name: S3_PUBLIC_BASE_URL, value: {{ .Values.storage.publicBaseURL | quote }} }
+            {{- if not (.Values.redis.existingSecret | default "") }}
+            - {name: REDIS_URL, value: {{ .Values.redis.url | default "" | quote }} }
+            {{- end }}
             - {name: DOCUMENT_MAX_BYTES, value: {{ .Values.documentPolicy.maxBytes | quote }}}
             - {name: DOCUMENT_MAX_COUNT, value: {{ .Values.documentPolicy.maxCount | quote }}}
             - {name: DOCUMENT_MAX_BYTES_24H, value: {{ .Values.documentPolicy.maxBytes24h | quote }}}
@@ -123,6 +126,9 @@ spec:
             - secretRef: {name: {{ $storageCredentials.existingSecret }}}
             {{- else if eq ($storageCredentials.mode | default "static") "static" }}
             - secretRef: {name: {{ .Release.Name }}-storage}
+            {{- end }}
+            {{- if (.Values.redis.existingSecret | default "") }}
+            - secretRef: {name: {{ .Values.redis.existingSecret }}}
             {{- end }}
           readinessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 2}
           livenessProbe: {httpGet: {path: /healthz, port: 8080}, initialDelaySeconds: 5}

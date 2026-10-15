@@ -44,3 +44,9 @@ type CleanupItem struct {
 	ID         string
 	StorageKey string
 }
+
+type MessageMediaLink struct {
+	ID, DocumentID, StorageKey, ConversationID, OpenIMUserID string
+	Seq                                                      int64
+	Revoked, S3Deleted                                       bool
+}

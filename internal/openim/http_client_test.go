@@ -127,6 +127,35 @@ func TestProvisionAndProfileUsePinnedOpenIMContract(t *testing.T) {
 	}
 }
 
+func TestMessageLifecycleClientUsesForkRoutes(t *testing.T) {
+	paths := make([]string, 0, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/msg/modify_message" && !strings.Contains(string(body), `"userID":"sender"`) {
+			t.Fatalf("modify request = %s", body)
+		}
+		if r.URL.Path == "/msg/revoke_msg" && !strings.Contains(string(body), `"seq":42`) {
+			t.Fatalf("revoke request = %s", body)
+		}
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = client.ModifyMessage(context.Background(), &ModifyMessageRequest{ConversationID: "si_a_b", Seq: 42, UserID: "sender", OldContent: `{"text":"old"}`, NewContent: `{"text":"new"}`}); err != nil {
+		t.Fatal(err)
+	}
+	if err = client.RevokeMessage(context.Background(), &RevokeMessageRequest{ConversationID: "si_a_b", Seq: 42, UserID: "sender"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths, ",") != "/msg/modify_message,/msg/revoke_msg" {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
 func TestListConversationUserIDsFiltersGroupConversations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/conversation/get_all_conversations" {

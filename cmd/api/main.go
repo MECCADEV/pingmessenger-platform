@@ -17,6 +17,7 @@ import (
 	"pingmessenger/internal/httpapi"
 	"pingmessenger/internal/notify"
 	"pingmessenger/internal/openim"
+	"pingmessenger/internal/ratelimit"
 	"pingmessenger/internal/storage"
 	"pingmessenger/internal/webhookgrpc"
 )
@@ -62,6 +63,19 @@ func main() {
 	}
 	documentPolicy := documents.NewPolicy(cfg.DocumentMaxBytes, cfg.DocumentMaxCount, cfg.DocumentMaxBytes24h, cfg.DocumentRetention, cfg.DocumentAllowedMIMEs)
 	api := httpapi.NewWithDocuments(pool, openIM, email, sms, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, documentObjects, cfg.S3PublicBaseURL, cfg.PingPayEventSecret, documentPolicy)
+	if cfg.RedisURL != "" {
+		limiter, limiterErr := ratelimit.NewRedis(cfg.RedisURL)
+		if limiterErr != nil {
+			log.Fatal(limiterErr)
+		}
+		if limiterErr = limiter.Ping(context.Background()); limiterErr != nil {
+			log.Fatalf("Redis rate-limit backend unavailable: %v", limiterErr)
+		}
+		defer limiter.Close()
+		api.ConfigureRateLimiter(limiter)
+	} else {
+		log.Printf("REDIS_URL is empty; using process-local rate limits")
+	}
 	if cfg.SolanaRPCURL != "" {
 		chainRepo := chainindex.NewRepository(pool)
 		chainRPC := &chainindex.SolanaRPC{Endpoint: cfg.SolanaRPCURL, Client: &http.Client{Timeout: cfg.SolanaRPCTimeout}}

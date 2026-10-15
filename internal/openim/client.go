@@ -17,6 +17,7 @@ type Client interface {
 	KickTokens(context.Context, []string) error
 	SendCustomMessage(context.Context, *SendCustomMessageRequest) (*SendCustomMessageResponse, error)
 	ModifyMessage(context.Context, *ModifyMessageRequest) error
+	RevokeMessage(context.Context, *RevokeMessageRequest) error
 }
 
 type ProvisionUserRequest struct {
@@ -79,6 +80,13 @@ type SendCustomMessageResponse struct {
 type ModifyMessageRequest struct {
 	ConversationID string `json:"conversationID"`
 	Seq            int64  `json:"seq"`
+	UserID         string `json:"userID,omitempty"`
 	OldContent     string `json:"oldContent"`
 	NewContent     string `json:"newContent"`
+}
+
+type RevokeMessageRequest struct {
+	ConversationID string `json:"conversationID"`
+	Seq            int64  `json:"seq"`
+	UserID         string `json:"userID"`
 }
