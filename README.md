@@ -214,6 +214,18 @@ its conversation sequence with `POST /v1/documents/{documentID}/message-link`.
 When disappearing retention expires, cleanup revokes that OpenIM message first
 and then deletes the linked S3 object.
 
+## Custom message formats
+
+The supported contact, location, document, image/video/media, status-reply, and
+payment formats are documented in
+[`docs/custom-message-formats.md`](docs/custom-message-formats.md). Contact,
+location, and documents use native OpenIM `cardElem`/`locationElem`/`fileElem`
+(`108`/`109`/`105`); custom media and status-reply payloads use a versioned JSON
+envelope on OpenIM `contentType=110`; images/videos use native
+`pictureElem`/`videoElem` (`102`/`104`) for SDK compatibility. All non-payment messages are client-created after the relevant
+authenticated upload or lookup. Payment messages are server-created only by
+the payment ledger projection and carry a monotonic version.
+
 The OpenIM fork exposes `POST /openim/msg/modify_message` and the existing
 `POST /openim/msg/revoke_msg` route. The modify path persists the replacement,
 invalidates the message cache, and emits the SDK-native modify notification;

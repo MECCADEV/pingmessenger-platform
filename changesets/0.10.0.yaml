@@ -1,0 +1,47 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.9.0
+  next: 0.10.0
+  bump: minor
+  compatibility: additive
+releaseDate: 2026-10-15
+summary: >-
+  Defines versioned custom message formats for contacts, locations, attachments,
+  media, status replies, and server-created payment projections.
+changes:
+  - id: custom-message-format-contract
+    type: schema
+    description: >-
+      Adds pingmessenger.contact.v1, pingmessenger.location.v1,
+      pingmessenger.media.v1, and pingmessenger.status_reply.v1 custom JSON
+      envelopes on OpenIM contentType=110. Payload validation is shared by Go
+      clients and platform integrations through internal/messages.
+  - id: native-media-message-contract
+    type: schema
+    description: >-
+      Documents the SDK-compatible native OpenIM fileElem (contentType=105),
+      pictureElem (102), and videoElem (104) contracts. Documents use the
+      authenticated platform upload and retention-bound signed URLs.
+  - id: payment-message-ownership
+    type: behavior
+    description: >-
+      Clarifies that pingmessenger.payment.v1 is server-created only by the
+      payment ledger projection. Clients reconcile payment.created and
+      payment.updated messages by their monotonically increasing version.
+  - id: message-schema-compatibility
+    type: documentation
+    description: >-
+      Adds ownership, validation, signed-URL handling, and additive versioning
+      rules in docs/custom-message-formats.md.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:custom-messages-20261015
+  helm:
+    chart: deploy/helm/pingmessenger
+    release: pingmessenger
+    namespace: pingmessenger
+verification:
+  - go test ./internal/messages ./internal/payments
+  - go test ./...
+  - verify the checked-in OpenAPI contract is unchanged because this release
+    adds message payload schemas, not HTTP operations
