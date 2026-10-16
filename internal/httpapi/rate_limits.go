@@ -16,6 +16,20 @@ const (
 	documentUploadIPLimit   = 30
 	profileUploadUserLimit  = 10
 	profileUploadIPLimit    = 30
+	documentLinkUserLimit   = 60
+	documentLinkIPLimit     = 120
+	documentDeleteUserLimit = 60
+	documentDeleteIPLimit   = 120
+	storyWSUserLimit        = 30
+	storyWSIPLimit          = 120
+	storyAckUserLimit       = 120
+	storyAckIPLimit         = 600
+	storyDeleteUserLimit    = 60
+	storyDeleteIPLimit      = 120
+	storyViewUserLimit      = 120
+	storyViewIPLimit        = 600
+	storyViewsUserLimit     = 60
+	storyViewsIPLimit       = 120
 	signedURLUserLimit      = 60
 	signedURLIPLimit        = 300
 	downloadUserLimit       = 120
@@ -27,12 +41,14 @@ func (a *API) allowRate(ctx context.Context, operation, userID, ip string, userL
 	if a.limiter == nil {
 		return true, nil
 	}
+	// Check the shared peer bucket first. A rejected abusive peer must not
+	// consume a user's bucket, which is especially important behind a NAT.
 	for _, item := range []struct {
 		key   string
 		limit int
 	}{
-		{key: "pm:rate:" + operation + ":user:" + userID, limit: userLimit},
 		{key: "pm:rate:" + operation + ":ip:" + ip, limit: ipLimit},
+		{key: "pm:rate:" + operation + ":user:" + userID, limit: userLimit},
 	} {
 		allowed, err := a.limiter.Allow(ctx, item.key, item.limit, rateLimitWindow)
 		if err != nil || !allowed {
@@ -43,7 +59,7 @@ func (a *API) allowRate(ctx context.Context, operation, userID, ip string, userL
 }
 
 func (a *API) enforceRate(ctx *fasthttp.RequestCtx, operation, userID string, userLimit, ipLimit int) bool {
-	allowed, err := a.allowRate(context.Background(), operation, userID, requestIP(ctx), userLimit, ipLimit)
+	allowed, err := a.allowRateBounded(operation, userID, requestIP(ctx), userLimit, ipLimit)
 	if err != nil {
 		writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "rate limit service unavailable"})
 		return false
@@ -54,4 +70,10 @@ func (a *API) enforceRate(ctx *fasthttp.RequestCtx, operation, userID string, us
 		return false
 	}
 	return true
+}
+
+func (a *API) allowRateBounded(operation, userID, ip string, userLimit, ipLimit int) (bool, error) {
+	rateCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return a.allowRate(rateCtx, operation, userID, ip, userLimit, ipLimit)
 }

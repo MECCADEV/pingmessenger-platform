@@ -91,7 +91,10 @@ func (a *API) uploadDocument(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if !a.enforceRate(ctx, "document-signed-url", ownerID, signedURLUserLimit, signedURLIPLimit) {
-		_ = a.deleteDocumentObject(context.Background(), documents.CleanupItem{ID: doc.ID, StorageKey: key})
+		// The row was reserved before the second limiter. Mark it deleted before
+		// removing the object; otherwise a rejected request leaves an active
+		// database row pointing at a deleted object.
+		a.abandonDocument(context.Background(), ownerID, doc.ID, errors.New("signed URL rate limit exceeded"))
 		return
 	}
 	doc.SourceURL, err = a.documentSourceURL(context.Background(), key)
@@ -112,6 +115,11 @@ func (a *API) getDocument(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	// Charge signed-URL issuance before the ownership lookup so repeated
+	// guesses cannot bypass the issuance budget through database work.
+	if !a.enforceRate(ctx, "document-signed-url", ownerID, signedURLUserLimit, signedURLIPLimit) {
+		return
+	}
 	doc, err := a.documents.Get(context.Background(), ownerID, documentID(ctx))
 	if errors.Is(err, documents.ErrNotFound) {
 		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "document not found"})
@@ -123,9 +131,6 @@ func (a *API) getDocument(ctx *fasthttp.RequestCtx) {
 	}
 	if doc.DeletedAt != nil {
 		writeJSON(ctx, http.StatusGone, map[string]string{"error": "document has expired"})
-		return
-	}
-	if !a.enforceRate(ctx, "document-signed-url", ownerID, signedURLUserLimit, signedURLIPLimit) {
 		return
 	}
 	doc.SourceURL, err = a.documentSourceURL(context.Background(), doc.StorageKey)
@@ -178,6 +183,9 @@ func (a *API) deleteDocument(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !a.enforceRate(ctx, "document-delete", ownerID, documentDeleteUserLimit, documentDeleteIPLimit) {
+		return
+	}
 	item, err := a.documents.MarkDeleteRequested(context.Background(), ownerID, documentID(ctx))
 	if errors.Is(err, documents.ErrNotFound) {
 		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "document not found"})
@@ -201,6 +209,9 @@ func (a *API) linkDocumentMessage(ctx *fasthttp.RequestCtx) {
 	ownerID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "document-message-link", ownerID, documentLinkUserLimit, documentLinkIPLimit) {
 		return
 	}
 	var req documentMessageLinkRequest
@@ -229,11 +240,16 @@ func (a *API) linkDocumentMessage(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
 		return
 	}
-	if err = a.documents.LinkMessage(context.Background(), ownerID, documentID(ctx), conversation, openIMUserID, req.Seq, time.Now().Add(time.Duration(duration)*time.Second)); err != nil {
+	expiresAt := time.Now().Add(time.Duration(duration) * time.Second)
+	if err = a.documents.LinkMessage(context.Background(), ownerID, documentID(ctx), conversation, openIMUserID, req.Seq, expiresAt); err != nil {
+		if errors.Is(err, documents.ErrNotFound) {
+			writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "document not found"})
+			return
+		}
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not link document message"})
 		return
 	}
-	writeJSON(ctx, http.StatusCreated, map[string]any{"status": "linked", "expires_at": time.Now().Add(time.Duration(duration) * time.Second)})
+	writeJSON(ctx, http.StatusCreated, map[string]any{"status": "linked", "expires_at": expiresAt})
 }
 
 func documentID(ctx *fasthttp.RequestCtx) string {
@@ -267,7 +283,9 @@ func (a *API) abandonDocument(ctx context.Context, ownerID, id string, cause err
 		return
 	}
 	if err := a.deleteDocumentObject(ctx, *item); err != nil {
-		_ = a.documents.RecordDeleteError(ctx, id, cause.Error()+"; cleanup: "+err.Error())
+		// deleteDocumentObject already records the cleanup failure and releases
+		// the claim lease for retry; do not increment the attempt twice.
+		return
 	}
 }
 

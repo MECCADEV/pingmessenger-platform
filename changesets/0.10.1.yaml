@@ -1,0 +1,56 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.10.0
+  next: 0.10.1
+  bump: patch
+  compatibility: additive
+releaseDate: 2026-10-16
+summary: >-
+  Hardens media and story lifecycle authorization, rate limits, and concurrent
+  cleanup behavior.
+changes:
+  - id: document-link-ownership
+    type: behavior
+    method: POST
+    path: /v1/documents/{documentID}/message-link
+    description: >-
+      Returns not-found unless the caller owns an active, non-expired document;
+      successful links are now rate-limited per authenticated user and peer IP.
+  - id: cleanup-claim-leases
+    type: schema
+    description: >-
+      Migration 0020 adds five-minute cleanup claim leases for document and
+      story media rows. Expiry and pending cleanup workers use PostgreSQL
+      FOR UPDATE SKIP LOCKED to avoid duplicate revoke/delete work across API
+      replicas, while stale leases remain recoverable.
+  - id: media-rate-limit-hardening
+    type: behavior
+    description: >-
+      Signed URL issuance is charged before document lookup; document delete,
+      story delete/view/list, and story WebSocket connect/ack operations are
+      protected by user and peer-IP rate limits. The Redis limiter uses a
+      bounded timeout and checks the peer bucket before the user bucket.
+  - id: story-websocket-origin-and-resource-limits
+    type: security
+    description: >-
+      Story WebSockets require an exact HTTP(S) host origin, cap eight active
+      connections per user, and reject more than 100 per-owner cursors per
+      request. Upgraded connections receive JSON error frames over WebSocket.
+  - id: signed-url-cache-bound
+    type: behavior
+    description: >-
+      Story signed URLs are evicted when expired and the in-process cache is
+      bounded at 10,000 object keys.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:security-audit-20261016
+  helm:
+    chart: deploy/helm/pingmessenger
+    release: pingmessenger
+    namespace: pingmessenger
+verification:
+  - go test ./...
+  - go test -race ./...
+  - go vet ./...
+  - go test -tags=e2e ./tests/e2e -count=1
+  - generated OpenAPI comparison passes without an HTTP schema change

@@ -149,8 +149,10 @@ and OpenIM Helm releases:
 5. Annotate `pingmessenger/pingmessenger-api` with the platform role and
    `openim/openim-rpc-third` with the OpenIM role; ensure the third-service
    deployment uses that service account (the platform workflow enforces this).
-6. Apply migration `0017_message_documents.sql` through the normal platform
-   migration job.
+6. Apply migrations `0017_message_documents.sql`, `0019_message_media_links.sql`,
+   and `0020_cleanup_claims.sql` through the normal platform migration job.
+   Migration 0020 adds five-minute leases so concurrent API replicas do not
+   revoke or delete the same document/story object twice.
 7. Deploy the platform image and verify the document environment variables:
    `DOCUMENT_S3_BUCKET`, `DOCUMENT_MAX_BYTES`, `DOCUMENT_MAX_COUNT`,
    `DOCUMENT_MAX_BYTES_24H`, and `DOCUMENT_RETENTION`.

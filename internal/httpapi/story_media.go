@@ -14,6 +14,7 @@ const (
 	// copied URL has limited value, while avoiding a signer call per recipient.
 	storyMediaURLTTL     = 10 * time.Minute
 	storyMediaURLRefresh = time.Minute
+	storyURLCacheMax     = 10000
 )
 
 type storyURLCacheEntry struct {
@@ -51,9 +52,32 @@ func (a *API) signStoryMedia(ctx context.Context, story *stories.Story) error {
 	if err != nil {
 		return err
 	}
+	a.evictExpiredStoryURLsLocked(now)
+	if _, exists := a.storyURLs[key]; !exists && len(a.storyURLs) >= storyURLCacheMax {
+		// Evict the oldest live entry when expiry cleanup did not free enough
+		// space. This bounds memory even if S3 signing is faster than expiry.
+		var oldestKey string
+		var oldest time.Time
+		for candidate, entry := range a.storyURLs {
+			if oldestKey == "" || entry.ExpiresAt.Before(oldest) {
+				oldestKey, oldest = candidate, entry.ExpiresAt
+			}
+		}
+		if oldestKey != "" {
+			delete(a.storyURLs, oldestKey)
+		}
+	}
 	a.storyURLs[key] = storyURLCacheEntry{URL: url, ExpiresAt: now.Add(storyMediaURLTTL)}
 	story.MediaURL = url
 	return nil
+}
+
+func (a *API) evictExpiredStoryURLsLocked(now time.Time) {
+	for key, entry := range a.storyURLs {
+		if !entry.ExpiresAt.After(now) {
+			delete(a.storyURLs, key)
+		}
+	}
 }
 
 func (a *API) evictStoryMediaURL(storageKey string) {

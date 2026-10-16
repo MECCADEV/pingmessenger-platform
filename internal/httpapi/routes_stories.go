@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -376,6 +377,9 @@ func (a *API) deleteStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !a.enforceRate(ctx, "story-delete", userID, storyDeleteUserLimit, storyDeleteIPLimit) {
+		return
+	}
 	story, err := a.stories.Delete(context.Background(), userID, strings.TrimSpace(ctx.UserValue("storyID").(string)))
 	if errors.Is(err, stories.ErrNotFound) {
 		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "story not found"})
@@ -393,6 +397,9 @@ func (a *API) viewStory(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "story-view", userID, storyViewUserLimit, storyViewIPLimit) {
 		return
 	}
 	var req storyViewRequest
@@ -424,6 +431,9 @@ func (a *API) listStoryViews(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !a.enforceRate(ctx, "story-views-list", userID, storyViewsUserLimit, storyViewsIPLimit) {
+		return
+	}
 	views, err := a.stories.Views(context.Background(), userID, strings.TrimSpace(ctx.UserValue("storyID").(string)))
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load story views"})
@@ -445,15 +455,25 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	origin := strings.TrimSpace(string(ctx.Request.Header.Peek("Origin")))
+	if !validStoryOrigin(origin, string(ctx.Host())) {
+		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "origin not allowed"})
+		return
+	}
+	if !a.enforceRate(ctx, "story-ws-connect", userID, storyWSUserLimit, storyWSIPLimit) {
+		return
+	}
 	upgrader := websocket.FastHTTPUpgrader{HandshakeTimeout: 10 * time.Second, CheckOrigin: func(c *fasthttp.RequestCtx) bool {
-		origin := strings.TrimSpace(string(c.Request.Header.Peek("Origin")))
-		return origin == "" || strings.Contains(origin, string(c.Host()))
+		return validStoryOrigin(strings.TrimSpace(string(c.Request.Header.Peek("Origin"))), string(c.Host()))
 	}}
 	if err := upgrader.Upgrade(ctx, func(conn *websocket.Conn) {
-		subscription := &storySubscription{userID: userID, conn: conn}
-		a.addStorySubscription(subscription)
-		defer a.removeStorySubscription(subscription)
 		defer conn.Close()
+		subscription := &storySubscription{userID: userID, conn: conn}
+		if !a.addStorySubscription(subscription) {
+			_ = subscription.send(map[string]any{"type": "error", "code": "too_many_connections"})
+			return
+		}
+		defer a.removeStorySubscription(subscription)
 		conn.SetReadLimit(64 << 10)
 		for {
 			_, payload, err := conn.ReadMessage()
@@ -467,9 +487,13 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 				_ = subscription.send(map[string]any{"type": "error", "code": "invalid_request"})
 				continue
 			}
+			if len(msg.UserCursors) > 100 {
+				_ = subscription.send(map[string]any{"type": "error", "code": "too_many_cursors"})
+				continue
+			}
 			switch msg.Type {
 			case "get", "sync":
-				allowed, rateErr := a.allowRate(context.Background(), "story-signed-url", userID, requestIP(ctx), signedURLUserLimit, signedURLIPLimit)
+				allowed, rateErr := a.allowRateBounded("story-signed-url", userID, requestIP(ctx), signedURLUserLimit, signedURLIPLimit)
 				if rateErr != nil || !allowed {
 					code := "rate_limited"
 					if rateErr != nil {
@@ -495,6 +519,18 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 				}
 				_ = subscription.send(map[string]any{"type": "stories.batch", "events": result.Events, "global_cursor": result.GlobalCursor, "user_cursors": result.UserCursors, "has_more": result.HasMore})
 			case "ack":
+				allowed, rateErr := a.allowRateBounded("story-ack", userID, requestIP(ctx), storyAckUserLimit, storyAckIPLimit)
+				if rateErr != nil || !allowed {
+					code := "rate_limited"
+					if rateErr != nil {
+						code = "rate_limit_unavailable"
+					}
+					_ = subscription.send(map[string]any{"type": "error", "code": code})
+					if rateErr != nil {
+						return
+					}
+					continue
+				}
 				if e := a.stories.Ack(context.Background(), userID, msg.GlobalCursor, msg.UserCursors); e != nil {
 					log.Printf("story ack failed for user %s: %v", userID, e)
 					code := "ack_failed"
@@ -512,6 +548,17 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 	}); err != nil {
 		return
 	}
+}
+
+func validStoryOrigin(origin, requestHost string) bool {
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.User != nil || u.Host == "" || u.Host != requestHost || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	return u.Path == "" || u.Path == "/"
 }
 
 func (a *API) RunStoryExpiry(ctx context.Context) {
@@ -551,9 +598,11 @@ func (a *API) deleteStoryMedia(ctx context.Context, storyID, storageKey string) 
 	a.evictStoryMediaURL(storageKey)
 	if err := a.objects.Delete(ctx, storageKey); err != nil {
 		log.Printf("story media delete failed for %s: %v", storyID, err)
+		_ = a.stories.RecordMediaCleanupError(ctx, storyID)
 		return
 	}
 	if err := a.stories.MarkMediaDeleted(ctx, storyID); err != nil {
 		log.Printf("story media cleanup marker failed for %s: %v", storyID, err)
+		_ = a.stories.RecordMediaCleanupError(ctx, storyID)
 	}
 }

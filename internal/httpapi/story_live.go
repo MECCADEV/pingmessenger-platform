@@ -25,7 +25,7 @@ func (s *storySubscription) send(message any) error {
 	return s.conn.WriteJSON(message)
 }
 
-func (a *API) addStorySubscription(sub *storySubscription) {
+func (a *API) addStorySubscription(sub *storySubscription) bool {
 	a.storySubsMu.Lock()
 	defer a.storySubsMu.Unlock()
 	if a.storySubs == nil {
@@ -34,7 +34,11 @@ func (a *API) addStorySubscription(sub *storySubscription) {
 	if a.storySubs[sub.userID] == nil {
 		a.storySubs[sub.userID] = make(map[*storySubscription]struct{})
 	}
+	if len(a.storySubs[sub.userID]) >= 8 {
+		return false
+	}
 	a.storySubs[sub.userID][sub] = struct{}{}
+	return true
 }
 
 func (a *API) removeStorySubscription(sub *storySubscription) {

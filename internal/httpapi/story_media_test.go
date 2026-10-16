@@ -73,6 +73,41 @@ func TestSignStoryMediaRequiresPrivateSigner(t *testing.T) {
 	}
 }
 
+func TestEvictExpiredStoryURLsBoundsExpiredEntries(t *testing.T) {
+	a := &API{storyURLs: map[string]storyURLCacheEntry{
+		"expired": {URL: "old", ExpiresAt: time.Now().Add(-time.Second)},
+		"live":    {URL: "new", ExpiresAt: time.Now().Add(time.Minute)},
+	}}
+	a.storyURLMu.Lock()
+	a.evictExpiredStoryURLsLocked(time.Now())
+	a.storyURLMu.Unlock()
+	if _, ok := a.storyURLs["expired"]; ok {
+		t.Fatal("expired story URL was not evicted")
+	}
+	if _, ok := a.storyURLs["live"]; !ok {
+		t.Fatal("live story URL was evicted")
+	}
+}
+
+func TestValidStoryOriginRequiresExactHost(t *testing.T) {
+	tests := []struct {
+		origin string
+		valid  bool
+	}{
+		{"", true},
+		{"https://api.example.test", true},
+		{"https://evil.example.test/api.example.test", false},
+		{"https://api.example.test.evil.test", false},
+		{"https://api.example.test/path", false},
+		{"https://api.example.test?redirect=evil", false},
+	}
+	for _, tt := range tests {
+		if got := validStoryOrigin(tt.origin, "api.example.test"); got != tt.valid {
+			t.Errorf("validStoryOrigin(%q)=%v, want %v", tt.origin, got, tt.valid)
+		}
+	}
+}
+
 type storyURLOnlyStore struct{}
 
 func (storyURLOnlyStore) Put(context.Context, string, string, []byte) error { return nil }

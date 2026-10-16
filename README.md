@@ -214,6 +214,14 @@ its conversation sequence with `POST /v1/documents/{documentID}/message-link`.
 When disappearing retention expires, cleanup revokes that OpenIM message first
 and then deletes the linked S3 object.
 
+Cleanup is claimed with PostgreSQL `FOR UPDATE SKIP LOCKED` leases from
+`migrations/0020_cleanup_claims.sql`, so multiple API replicas do not revoke or
+delete the same media concurrently. Document link requests require an active
+document owned by the caller. Story media/download, signed-URL, delete/view,
+and story WebSocket operations use authenticated user plus peer-IP limits;
+story WebSockets additionally require an exact request host origin, allow at
+most eight live connections per user, and cap cursor fan-out.
+
 ## Custom message formats
 
 The supported contact, location, document, image/video/media, status-reply, and

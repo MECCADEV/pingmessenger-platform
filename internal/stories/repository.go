@@ -120,7 +120,7 @@ func (r *Repository) Delete(ctx context.Context, ownerID, storyID string) (*Stor
 	defer tx.Rollback(ctx)
 	var s Story
 	var deletedAt time.Time
-	err = tx.QueryRow(ctx, `UPDATE stories SET deleted_at=COALESCE(deleted_at,now()),updated_at=now()
+	err = tx.QueryRow(ctx, `UPDATE stories SET deleted_at=COALESCE(deleted_at,now()),media_cleanup_claimed_at=now(),updated_at=now()
 		WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL
 		RETURNING id::text,owner_id::text,storage_key,media_type::text,media_url,content_type,byte_size,caption,visibility::text,expires_at,deleted_at,created_at`, storyID, ownerID).Scan(
 		&s.ID, &s.OwnerID, &s.StorageKey, &s.MediaType, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Visibility, &s.ExpiresAt, &deletedAt, &s.CreatedAt)
@@ -330,7 +330,7 @@ func (r *Repository) Expire(ctx context.Context) ([]Expired, error) {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `UPDATE stories SET deleted_at=now(),updated_at=now() WHERE expires_at<=now() AND deleted_at IS NULL RETURNING id,storage_key`)
+	rows, err := tx.Query(ctx, `UPDATE stories SET deleted_at=now(),media_cleanup_claimed_at=now(),updated_at=now() WHERE expires_at<=now() AND deleted_at IS NULL RETURNING id,storage_key`)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +446,15 @@ func (r *Repository) PendingMediaCleanup(ctx context.Context, limit int) ([]Expi
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := r.pool.Query(ctx, `SELECT id::text,storage_key FROM stories WHERE deleted_at IS NOT NULL AND media_deleted_at IS NULL ORDER BY deleted_at LIMIT $1`, limit)
+	rows, err := r.pool.Query(ctx, `WITH picked AS (
+		SELECT id FROM stories
+		WHERE deleted_at IS NOT NULL AND media_deleted_at IS NULL
+		  AND (media_cleanup_claimed_at IS NULL OR media_cleanup_claimed_at<now()-interval '5 minutes')
+		ORDER BY deleted_at FOR UPDATE SKIP LOCKED LIMIT $1
+	)
+	UPDATE stories s SET media_cleanup_claimed_at=now(),updated_at=now()
+	FROM picked WHERE s.id=picked.id
+	RETURNING s.id::text,s.storage_key`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -463,6 +471,11 @@ func (r *Repository) PendingMediaCleanup(ctx context.Context, limit int) ([]Expi
 }
 
 func (r *Repository) MarkMediaDeleted(ctx context.Context, storyID string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE stories SET media_deleted_at=COALESCE(media_deleted_at,now()),updated_at=now() WHERE id=$1`, storyID)
+	_, err := r.pool.Exec(ctx, `UPDATE stories SET media_deleted_at=COALESCE(media_deleted_at,now()),media_cleanup_claimed_at=NULL,updated_at=now() WHERE id=$1`, storyID)
+	return err
+}
+
+func (r *Repository) RecordMediaCleanupError(ctx context.Context, storyID string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE stories SET media_cleanup_claimed_at=NULL,updated_at=now() WHERE id=$1`, storyID)
 	return err
 }
