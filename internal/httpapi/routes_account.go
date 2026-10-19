@@ -52,9 +52,11 @@ func (a *API) deleteAccount(ctx *fasthttp.RequestCtx) {
 				writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not remove OpenIM account"})
 				return
 			}
-			if revokeErr := a.openIM.RevokeSessions(context.Background(), &openim.RevokeSessionsRequest{UserID: openIMUserID}); revokeErr != nil {
-				writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not revoke OpenIM sessions"})
-				return
+			for platformID := int32(1); platformID <= 12; platformID++ {
+				if revokeErr := a.openIM.ForceLogout(context.Background(), &openim.ForceLogoutRequest{UserID: openIMUserID, PlatformID: platformID}); revokeErr != nil {
+					writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not revoke OpenIM sessions"})
+					return
+				}
 			}
 			log.Printf("OpenIM user/delete_users is unavailable for %s; completed account deletion after revoking sessions", openIMUserID)
 		}

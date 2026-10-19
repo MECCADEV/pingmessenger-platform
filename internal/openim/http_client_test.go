@@ -231,7 +231,10 @@ func TestBlockAndDeleteUserUseAdminRoutes(t *testing.T) {
 	if err = client.DeleteUser(context.Background(), &DeleteUserRequest{UserID: "u1"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "/friend/get_black_list,/friend/add_black,/friend/remove_black,/user/delete_users"
+	if err = client.ForceLogout(context.Background(), &ForceLogoutRequest{UserID: "u1", PlatformID: 5}); err != nil {
+		t.Fatal(err)
+	}
+	want := "/friend/get_black_list,/friend/add_black,/friend/remove_black,/user/delete_users,/auth/force_logout"
 	if strings.Join(paths, ",") != want {
 		t.Fatalf("paths=%s want=%s", strings.Join(paths, ","), want)
 	}

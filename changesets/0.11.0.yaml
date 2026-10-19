@@ -56,8 +56,9 @@ changes:
     description: >-
       Password-confirmed deletion removes application data, sessions, media,
       contacts, stories, and profile state after accept_terms=true. It calls
-      OpenIM user/delete_users when available and otherwise revokes every
-      OpenIM session before completing the platform tombstone. PingID,
+      OpenIM user/delete_users when available and otherwise calls
+      auth/force_logout across all platform IDs before completing the platform
+      tombstone. PingID,
       username, and linked email/phone identifiers are retained as non-login
       tombstones and cannot be reused.
   - id: schema-only-openapi

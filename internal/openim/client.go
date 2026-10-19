@@ -16,6 +16,7 @@ type Client interface {
 	AddBlock(context.Context, *BlockRequest) error
 	RemoveBlock(context.Context, *BlockRequest) error
 	DeleteUser(context.Context, *DeleteUserRequest) error
+	ForceLogout(context.Context, *ForceLogoutRequest) error
 	ListConversationUserIDs(context.Context, *ListConversationUserIDsRequest) ([]string, error)
 	GetUserToken(context.Context, *GetUserTokenRequest) (*GetUserTokenResponse, error)
 	KickTokens(context.Context, []string) error
@@ -64,6 +65,10 @@ type BlockInfo struct {
 }
 type DeleteUserRequest struct {
 	UserID string `json:"userID"`
+}
+type ForceLogoutRequest struct {
+	UserID     string `json:"userID"`
+	PlatformID int32  `json:"platformID"`
 }
 type ListConversationUserIDsRequest struct {
 	UserID string `json:"ownerUserID"`

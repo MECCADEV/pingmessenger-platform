@@ -146,9 +146,9 @@ Account deletion is `POST /v1/account/delete` with
 `{ "current_password": "…", "accept_terms": true }`. It removes platform
 profile, contact, MFA, session, story, and document data and requests removal
 of the OpenIM identity. When the fork exposes `user/delete_users`, that route
-is used; older deployments fall back to revoking every OpenIM session and then
-complete the platform tombstone, while network/authentication failures remain
-fail-closed. PingID, username, and linked email/phone values remain only as
+is used; older deployments fall back to OpenIM `auth/force_logout` across all
+platform IDs and then complete the platform tombstone, while
+network/authentication failures remain fail-closed. PingID, username, and linked email/phone values remain only as
 non-login tombstones and cannot be reused.
 
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),

@@ -170,6 +170,9 @@ func (c *HTTPClient) DeleteUser(ctx context.Context, request *DeleteUserRequest)
 		UserIDs []string `json:"userIDs"`
 	}{UserIDs: []string{request.UserID}}, nil)
 }
+func (c *HTTPClient) ForceLogout(ctx context.Context, request *ForceLogoutRequest) error {
+	return c.call(ctx, "auth/force_logout", request, nil)
+}
 func (c *HTTPClient) ListConversationUserIDs(ctx context.Context, request *ListConversationUserIDsRequest) ([]string, error) {
 	if c.conversation != nil {
 		operationID := make([]byte, 12)
