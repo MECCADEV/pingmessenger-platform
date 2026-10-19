@@ -81,7 +81,18 @@ func TestSelectedRequestCardsAgainstDeployedAPI(t *testing.T) {
 	if deleted["status"] != "deleted" {
 		t.Fatalf("account deletion response: %#v", deleted)
 	}
+	if deleted["deleted_at"] == nil || deleted["deleted_at"] == "" {
+		t.Fatalf("soft-delete response lacks deleted_at: %#v", deleted)
+	}
 	assertStatus(t, client, http.MethodGet, base+"/v1/profile/", "", http.StatusUnauthorized, "deleted account bearer token")
+	assertStatus(t, client, http.MethodPost, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, primaryName, newPassword), http.StatusUnauthorized, "deleted account username login")
+	assertStatus(t, client, http.MethodPost, base+"/v1/auth/login", fmt.Sprintf(`{"ping_id":%q,"password":%q,"platform_id":"web"}`, primary["ping_id"], newPassword), http.StatusUnauthorized, "deleted account PingID login")
+	available := postJSON(t, client, base+"/v1/auth/verify-username", fmt.Sprintf(`{"username":%q}`, primaryName), http.StatusOK)
+	if available["available"] != false {
+		t.Fatalf("deleted account username was reported available: %#v", available)
+	}
+	// The identity remains reserved, while the account's data is retained.
+	assertStatus(t, client, http.MethodPost, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, primaryName, password), http.StatusConflict, "deleted account username reuse")
 }
 
 func containsPingID(items []any, pingID string) bool {

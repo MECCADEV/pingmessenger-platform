@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"strings"
 
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
@@ -41,26 +40,6 @@ func (a *API) deleteAccount(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid current password"})
 		return
 	}
-	openIMUserID, err := a.users.OpenIMUserID(context.Background(), userID)
-	if err == nil && openIMUserID != "" {
-		if err = a.openIM.DeleteUser(context.Background(), &openim.DeleteUserRequest{UserID: openIMUserID}); err != nil {
-			// Older OpenIM deployments do not expose user/delete_users. The
-			// platform can still safely complete deletion after revoking every
-			// OpenIM session; a newer fork will remove the identity first.
-			// Network/authentication failures remain fail-closed.
-			if !strings.Contains(err.Error(), " returned 404:") && !strings.Contains(err.Error(), "Not Found") {
-				writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not remove OpenIM account"})
-				return
-			}
-			for platformID := int32(1); platformID <= 12; platformID++ {
-				if revokeErr := a.openIM.ForceLogout(context.Background(), &openim.ForceLogoutRequest{UserID: openIMUserID, PlatformID: platformID}); revokeErr != nil {
-					writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not revoke OpenIM sessions"})
-					return
-				}
-			}
-			log.Printf("OpenIM user/delete_users is unavailable for %s; completed account deletion after revoking sessions", openIMUserID)
-		}
-	}
 	deletion, err := a.users.DeleteAccount(context.Background(), userID)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -70,16 +49,17 @@ func (a *API) deleteAccount(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not delete account"})
 		return
 	}
-	for _, object := range deletion.Objects {
-		store := a.objects
-		if object.Kind == "document" {
-			store = a.documentObjects
-		}
-		if store != nil {
-			if deleteErr := store.Delete(context.Background(), object.Key); deleteErr != nil {
-				log.Printf("account %s object cleanup failed (%s): %v", userID, object.Key, deleteErr)
+	// Account deletion is deliberately a platform soft-delete. Do not invoke
+	// OpenIM user/delete_users and do not remove S3/application rows: retained
+	// messages and payment history remain addressable for audit/retention. The
+	// platform transaction has already revoked every local session, so a failed
+	// OpenIM notification cannot reopen the account for platform login.
+	if deletion.OpenIMUserID != "" && !deletion.AlreadyDeleted {
+		for platformID := int32(1); platformID <= 12; platformID++ {
+			if revokeErr := a.openIM.ForceLogout(context.Background(), &openim.ForceLogoutRequest{UserID: deletion.OpenIMUserID, PlatformID: platformID}); revokeErr != nil {
+				log.Printf("account %s OpenIM force logout platform %d failed after soft-delete: %v", userID, platformID, revokeErr)
 			}
 		}
 	}
-	writeJSON(ctx, http.StatusOK, map[string]string{"status": "deleted"})
+	writeJSON(ctx, http.StatusOK, map[string]any{"status": "deleted", "deleted_at": deletion.DeletedAt})
 }

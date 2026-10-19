@@ -322,7 +322,8 @@ type accountDeleteInput struct {
 }
 type accountDeleteOutput struct {
 	Body struct {
-		Status string `json:"status"`
+		Status    string `json:"status"`
+		DeletedAt string `json:"deleted_at" format:"date-time"`
 	}
 }
 type story struct {
@@ -735,7 +736,7 @@ func newDocument() (*DocumentModel, error) {
 	register[struct{}, blocksOutput](api, operation(http.MethodGet, "/v1/blocks", "listBlocks", "Blocks", "List only users blocked by the authenticated user; OpenIM is the source of truth.", 200, bearer))
 	register[blockInput, blockCreatedOutput](api, operation(http.MethodPost, "/v1/blocks", "addBlock", "Blocks", "Block a user by PingID and synchronize the OpenIM blacklist.", 201, bearer))
 	register[blockPathInput, emptyOutput](api, operation(http.MethodDelete, "/v1/blocks/{pingID}", "removeBlock", "Blocks", "Unblock a user by PingID and synchronize the OpenIM blacklist.", 204, bearer))
-	register[accountDeleteInput, accountDeleteOutput](api, operation(http.MethodPost, "/v1/account/delete", "deleteAccount", "Account", "Delete application data after password confirmation and accept_terms=true. PingID, username, and linked contact identifiers remain reserved and cannot be reused.", 200, bearer))
+	register[accountDeleteInput, accountDeleteOutput](api, operation(http.MethodPost, "/v1/account/delete", "deleteAccount", "Account", "Soft-delete the account after password confirmation and accept_terms=true. Sessions are revoked and the account cannot log in again; application, OpenIM, media, and payment data are retained for audit/retention. PingID, username, and linked contact identifiers remain reserved and cannot be reused.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))
 	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments", "listPayments", "Payments", "List visible payments newest-first. Use to=latest or a payment ID as the inclusive anchor, then last_known_payment_id and/or last_block_id as exclusive cursors; next_to and next_block_id continue the page.", 200, bearer))
 	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments/sync", "syncPayments", "Payments", "Synchronize visible payment projections with the same reverse-time cursor semantics; repeat-safe HTTP recovery source for the payment WebSocket.", 200, bearer))

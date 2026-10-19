@@ -143,13 +143,15 @@ Blocks are OpenIM-backed: `GET /v1/blocks` lists only the caller's blocks,
 `DELETE /v1/blocks/{pingID}` removes one. All require a bearer session.
 
 Account deletion is `POST /v1/account/delete` with
-`{ "current_password": "…", "accept_terms": true }`. It removes platform
-profile, contact, MFA, session, story, and document data and requests removal
-of the OpenIM identity. When the fork exposes `user/delete_users`, that route
-is used; older deployments fall back to OpenIM `auth/force_logout` across all
-platform IDs and then complete the platform tombstone, while
-network/authentication failures remain fail-closed. PingID, username, and linked email/phone values remain only as
-non-login tombstones and cannot be reused.
+`{ "current_password": "…", "accept_terms": true }`. It is a soft-delete:
+the user row receives `status=deleted` and `deleted_at`, all local sessions,
+OpenIM device tokens, MFA challenges, and factors are timestamp-revoked, and
+the identity remains blocked from login. Application, OpenIM, S3, story,
+document, and payment rows are retained; this route never calls OpenIM
+`user/delete_users` and never removes objects. PingID, username, and linked
+email/phone values remain reserved and cannot be reused. The transaction locks
+the user row, so concurrent deletion requests cannot issue a new session or
+race identity reservation.
 
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
@@ -175,7 +177,12 @@ strips the `/openim` prefix before forwarding to OpenIM. Client-safe API
 groups (`user`, `friend`, `group`, `conversation`, `msg`, `third`, and
 `auth/parse_token`) are routed; OpenIM admin/token-minting endpoints remain
 cluster-private. Use an OpenIM user token in its required `token` header and
-send an `operationID` header on OpenIM requests.
+send an `operationID` header on OpenIM requests. The Platform OpenAPI document
+does not describe these gateway routes. OpenIM `clientMsgID` is an identity
+field, not a server idempotency guarantee: a timeout followed by a retried
+send can currently create another message and sequence. Clients must persist
+their local identity and deduplicate pushes/history until a server-side
+idempotency record is added.
 
 Its MongoDB (three members), Kafka (two brokers, replication factor two), and
 shared Redis dependency are cluster-private. Avatar/object writes use the private S3 bucket

@@ -32,6 +32,10 @@ type PasswordLogin struct {
 	UserID, PasswordHash string
 }
 
+// ErrAccountUnavailable is returned when a session cannot be created because
+// the account was soft-deleted (or is otherwise no longer active).
+var ErrAccountUnavailable = errors.New("account unavailable")
+
 type MFAFactor struct {
 	ID, Kind, ContactID, ContactValue, SecretCiphertext string
 	Preferred                                           bool
@@ -251,13 +255,13 @@ func (r *UserRepository) LookupRecoveryUser(ctx context.Context, kind, value str
 	var userID string
 	switch kind {
 	case "username":
-		err := r.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE username=$1 AND deleted_at IS NULL AND status <> 'disabled'`, value).Scan(&userID)
+		err := r.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE username=$1 AND deleted_at IS NULL AND status='active'`, value).Scan(&userID)
 		return userID, err
 	case "ping_id":
-		err := r.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE ping_id=$1 AND deleted_at IS NULL AND status <> 'disabled'`, value).Scan(&userID)
+		err := r.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE ping_id=$1 AND deleted_at IS NULL AND status='active'`, value).Scan(&userID)
 		return userID, err
 	case "email", "phone":
-		err := r.pool.QueryRow(ctx, `SELECT u.id::text FROM users u JOIN user_contacts c ON c.user_id=u.id WHERE c.kind=$1::contact_kind AND c.value_normalized=$2 AND c.verified_at IS NOT NULL AND u.deleted_at IS NULL AND u.status <> 'disabled'`, kind, value).Scan(&userID)
+		err := r.pool.QueryRow(ctx, `SELECT u.id::text FROM users u JOIN user_contacts c ON c.user_id=u.id WHERE c.kind=$1::contact_kind AND c.value_normalized=$2 AND c.verified_at IS NOT NULL AND u.deleted_at IS NULL AND u.status='active'`, kind, value).Scan(&userID)
 		return userID, err
 	default:
 		return "", fmt.Errorf("unsupported recovery identifier")
@@ -340,7 +344,9 @@ func (r *UserRepository) changePassword(ctx context.Context, userID, currentSess
 func (r *UserRepository) FindContact(ctx context.Context, kind, value string) (*Contact, error) {
 	c := new(Contact)
 	var verifiedAt *time.Time
-	err := r.pool.QueryRow(ctx, `SELECT id::text, user_id::text, kind::text, value_normalized, verified_at FROM user_contacts WHERE kind=$1::contact_kind AND value_normalized=$2`, kind, value).Scan(&c.ID, &c.UserID, &c.Kind, &c.Value, &verifiedAt)
+	err := r.pool.QueryRow(ctx, `SELECT c.id::text, c.user_id::text, c.kind::text, c.value_normalized, c.verified_at
+		FROM user_contacts c JOIN users u ON u.id=c.user_id
+		WHERE c.kind=$1::contact_kind AND c.value_normalized=$2 AND u.status='active' AND u.deleted_at IS NULL`, kind, value).Scan(&c.ID, &c.UserID, &c.Kind, &c.Value, &verifiedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -523,12 +529,12 @@ type Session struct {
 
 func (r *UserRepository) SessionActive(ctx context.Context, userID, sessionID string) bool {
 	var active bool
-	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM device_sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now())`, sessionID, userID).Scan(&active)
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM device_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.user_id=$2 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' AND u.deleted_at IS NULL)`, sessionID, userID).Scan(&active)
 	return err == nil && active
 }
 func (r *UserRepository) SessionPlatform(ctx context.Context, userID, sessionID string) (string, error) {
 	var platform string
-	err := r.pool.QueryRow(ctx, `SELECT platform_id FROM device_sessions WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now()`, sessionID, userID).Scan(&platform)
+	err := r.pool.QueryRow(ctx, `SELECT s.platform_id FROM device_sessions s JOIN users u ON u.id=s.user_id WHERE s.id=$1 AND s.user_id=$2 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' AND u.deleted_at IS NULL`, sessionID, userID).Scan(&platform)
 	return platform, err
 }
 
@@ -601,12 +607,21 @@ func (r *UserRepository) RevokeOpenIMDeviceToken(ctx context.Context, sessionID 
 
 func (r *UserRepository) CreateSession(ctx context.Context, userID, refreshHash, platform, deviceName, deviceID string, expiresAt time.Time) (*Session, error) {
 	s := new(Session)
-	err := r.pool.QueryRow(ctx, `INSERT INTO device_sessions (user_id,refresh_token_hash,platform_id,device_name,device_id,expires_at) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id::text,user_id::text,expires_at`, userID, refreshHash, platform, deviceName, deviceID, expiresAt).Scan(&s.ID, &s.UserID, &s.ExpiresAt)
+	err := r.pool.QueryRow(ctx, `INSERT INTO device_sessions (user_id,refresh_token_hash,platform_id,device_name,device_id,expires_at)
+		SELECT u.id,$2,$3,$4,$5,$6 FROM users u
+		WHERE u.id=$1 AND u.status='active' AND u.deleted_at IS NULL
+		RETURNING id::text,user_id::text,expires_at`, userID, refreshHash, platform, deviceName, deviceID, expiresAt).Scan(&s.ID, &s.UserID, &s.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAccountUnavailable
+	}
 	return s, err
 }
 func (r *UserRepository) RotateRefresh(ctx context.Context, oldHash, newHash string, expiresAt time.Time) (*Session, error) {
 	s := new(Session)
-	err := r.pool.QueryRow(ctx, `UPDATE device_sessions SET refresh_token_hash=$2,last_active_at=now(),expires_at=$3 WHERE refresh_token_hash=$1 AND revoked_at IS NULL AND expires_at>now() RETURNING id::text,user_id::text,expires_at`, oldHash, newHash, expiresAt).Scan(&s.ID, &s.UserID, &s.ExpiresAt)
+	err := r.pool.QueryRow(ctx, `UPDATE device_sessions SET refresh_token_hash=$2,last_active_at=now(),expires_at=$3
+		WHERE refresh_token_hash=$1 AND revoked_at IS NULL AND expires_at>now()
+		AND EXISTS (SELECT 1 FROM users u WHERE u.id=device_sessions.user_id AND u.status='active' AND u.deleted_at IS NULL)
+		RETURNING id::text,user_id::text,expires_at`, oldHash, newHash, expiresAt).Scan(&s.ID, &s.UserID, &s.ExpiresAt)
 	return s, err
 }
 
@@ -820,20 +835,17 @@ func (r *UserRepository) ReplaceRecoveryCodes(ctx context.Context, userID string
 	return tx.Commit(ctx)
 }
 
-type AccountObject struct {
-	Key  string
-	Kind string
-}
-
 type AccountDeletion struct {
-	OpenIMUserID string
-	Objects      []AccountObject
+	OpenIMUserID   string
+	DeletedAt      time.Time
+	AlreadyDeleted bool
 }
 
-// DeleteAccount removes application-owned rows in one transaction and leaves
-// a deleted user tombstone plus lifetime identity reservations. Payment rows
-// retain the tombstone foreign key so their audit trail remains referentially
-// valid without retaining profile, contact, or session data.
+// DeleteAccount performs an idempotent soft-delete. The user row is locked so
+// concurrent deletion requests cannot race identity reservation or session
+// revocation. No application/OpenIM/S3 row is physically removed; the user
+// tombstone and revoked session timestamps block future authentication while
+// preserving the account's audit history.
 func (r *UserRepository) DeleteAccount(ctx context.Context, userID string) (*AccountDeletion, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -841,14 +853,23 @@ func (r *UserRepository) DeleteAccount(ctx context.Context, userID string) (*Acc
 	}
 	defer tx.Rollback(ctx)
 	var username, pingID, openIMUserID string
-	if err = tx.QueryRow(ctx, `SELECT COALESCE(username,''),ping_id,COALESCE(openim_user_id,'') FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, userID).Scan(&username, &pingID, &openIMUserID); err != nil {
+	var status string
+	var deletedAt *time.Time
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(username,''),ping_id,COALESCE(openim_user_id,''),status,deleted_at FROM users WHERE id=$1 FOR UPDATE`, userID).Scan(&username, &pingID, &openIMUserID, &status, &deletedAt); err != nil {
 		return nil, err
+	}
+	if deletedAt != nil || status == "deleted" {
+		when := time.Now().UTC()
+		if deletedAt != nil {
+			when = deletedAt.UTC()
+		}
+		return &AccountDeletion{OpenIMUserID: openIMUserID, DeletedAt: when, AlreadyDeleted: true}, tx.Commit(ctx)
 	}
 	reserve := func(kind, value string) error {
 		if value == "" {
 			return nil
 		}
-		_, e := tx.Exec(ctx, `INSERT INTO account_identity_reservations(user_id,kind,value) VALUES($1,$2,$3)`, userID, kind, value)
+		_, e := tx.Exec(ctx, `INSERT INTO account_identity_reservations(user_id,kind,value) VALUES($1,$2,$3) ON CONFLICT (kind,value) DO NOTHING`, userID, kind, value)
 		return e
 	}
 	if err = reserve("ping_id", pingID); err != nil {
@@ -877,61 +898,31 @@ func (r *UserRepository) DeleteAccount(ctx context.Context, userID string) (*Acc
 		return nil, err
 	}
 	contacts.Close()
-	objects := make([]AccountObject, 0)
-	collect := func(query, kind string) error {
-		rows, e := tx.Query(ctx, query, userID)
-		if e != nil {
-			return e
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var key string
-			if e = rows.Scan(&key); e != nil {
-				return e
-			}
-			if key != "" {
-				objects = append(objects, AccountObject{Key: key, Kind: kind})
-			}
-		}
-		return rows.Err()
-	}
-	if err = collect(`SELECT storage_key FROM profile_assets WHERE user_id=$1 AND deleted_at IS NULL`, "profile"); err != nil {
+	var tombstone time.Time
+	if err = tx.QueryRow(ctx, `UPDATE users SET status='deleted',deleted_at=COALESCE(deleted_at,now()),password_hash='',updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING deleted_at`, userID).Scan(&tombstone); err != nil {
 		return nil, err
 	}
-	if err = collect(`SELECT storage_key FROM stories WHERE owner_id=$1 AND storage_key IS NOT NULL`, "story"); err != nil {
-		return nil, err
-	}
-	if err = collect(`SELECT storage_key FROM message_documents WHERE owner_id=$1 AND deleted_at IS NULL`, "document"); err != nil {
-		return nil, err
-	}
+	// Revoke all locally issued credentials in the same transaction. The
+	// timestamp predicates make retries and concurrent calls idempotent.
 	for _, query := range []string{
-		`DELETE FROM story_views WHERE viewer_id=$1`,
-		`DELETE FROM story_sync_cursors WHERE user_id=$1`,
-		`DELETE FROM stories WHERE owner_id=$1`,
-		`DELETE FROM message_media_links WHERE owner_id=$1`,
-		`DELETE FROM message_documents WHERE owner_id=$1`,
-		`DELETE FROM conversation_disappearing_settings WHERE user_id=$1`,
-		`DELETE FROM profile_assets WHERE user_id=$1`,
-		`DELETE FROM recovery_codes WHERE user_id=$1`,
-		`DELETE FROM password_challenges WHERE user_id=$1`,
-		`DELETE FROM mfa_challenges WHERE user_id=$1`,
-		`DELETE FROM pending_login_challenges WHERE user_id=$1`,
-		`DELETE FROM mfa_enrollment_challenges WHERE user_id=$1`,
-		`DELETE FROM user_mfa_factors WHERE user_id=$1`,
-		`DELETE FROM user_contacts WHERE user_id=$1`,
-		`DELETE FROM device_sessions WHERE user_id=$1`,
+		`UPDATE device_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`,
+		`UPDATE openim_device_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE session_id IN (SELECT id FROM device_sessions WHERE user_id=$1)`,
+		`UPDATE device_keys SET revoked_at=COALESCE(revoked_at,now()) WHERE session_id IN (SELECT id FROM device_sessions WHERE user_id=$1)`,
+		`UPDATE device_proof_challenges SET consumed_at=COALESCE(consumed_at,now()) WHERE session_id IN (SELECT id FROM device_sessions WHERE user_id=$1)`,
+		`UPDATE pending_login_challenges SET consumed_at=COALESCE(consumed_at,now()) WHERE user_id=$1`,
+		`UPDATE mfa_enrollment_challenges SET consumed_at=COALESCE(consumed_at,now()) WHERE user_id=$1`,
+		`UPDATE mfa_challenges SET consumed_at=COALESCE(consumed_at,now()) WHERE user_id=$1`,
+		`UPDATE password_challenges SET consumed_at=COALESCE(consumed_at,now()) WHERE user_id=$1`,
+		`UPDATE user_mfa_factors SET disabled_at=COALESCE(disabled_at,now()),preferred=false,updated_at=now() WHERE user_id=$1`,
 	} {
 		if _, err = tx.Exec(ctx, query, userID); err != nil {
 			return nil, err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE users SET status='deleted',deleted_at=now(),password_hash='',openim_user_id=NULL,nickname='',updated_at=now() WHERE id=$1`, userID); err != nil {
-		return nil, err
-	}
 	if err = tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return &AccountDeletion{OpenIMUserID: openIMUserID, Objects: objects}, nil
+	return &AccountDeletion{OpenIMUserID: openIMUserID, DeletedAt: tombstone}, nil
 }
 
 // Create executes parameterized PostgreSQL queries through raw pgx. It accepts
@@ -979,7 +970,7 @@ func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (*Crea
 
 func (r *UserRepository) PasswordLogin(ctx context.Context, username string) (*PasswordLogin, error) {
 	account := new(PasswordLogin)
-	err := r.pool.QueryRow(ctx, `SELECT id::text, password_hash FROM users WHERE username=$1 AND deleted_at IS NULL AND status <> 'disabled'`, username).Scan(&account.UserID, &account.PasswordHash)
+	err := r.pool.QueryRow(ctx, `SELECT id::text, password_hash FROM users WHERE username=$1 AND deleted_at IS NULL AND status='active'`, username).Scan(&account.UserID, &account.PasswordHash)
 	if err != nil {
 		return nil, err
 	}
@@ -990,7 +981,7 @@ func (r *UserRepository) PasswordLoginByEmail(ctx context.Context, email string)
 	account := new(PasswordLogin)
 	err := r.pool.QueryRow(ctx, `SELECT u.id::text, u.password_hash
 		FROM users u JOIN user_contacts c ON c.user_id=u.id
-		WHERE c.kind='email' AND c.value_normalized=$1 AND c.verified_at IS NOT NULL AND u.deleted_at IS NULL AND u.status <> 'disabled'`, email).Scan(&account.UserID, &account.PasswordHash)
+		WHERE c.kind='email' AND c.value_normalized=$1 AND c.verified_at IS NOT NULL AND u.deleted_at IS NULL AND u.status='active'`, email).Scan(&account.UserID, &account.PasswordHash)
 	if err != nil {
 		return nil, err
 	}
@@ -1001,7 +992,7 @@ func (r *UserRepository) PasswordLoginByPingID(ctx context.Context, pingID strin
 	account := new(PasswordLogin)
 	err := r.pool.QueryRow(ctx, `SELECT id::text, password_hash
 		FROM users
-		WHERE ping_id=$1 AND deleted_at IS NULL AND status <> 'disabled'`, pingID).Scan(&account.UserID, &account.PasswordHash)
+		WHERE ping_id=$1 AND deleted_at IS NULL AND status='active'`, pingID).Scan(&account.UserID, &account.PasswordHash)
 	if err != nil {
 		return nil, err
 	}
@@ -1010,13 +1001,20 @@ func (r *UserRepository) PasswordLoginByPingID(ctx context.Context, pingID strin
 
 func (r *UserRepository) PasswordLoginByID(ctx context.Context, userID string) (*PasswordLogin, error) {
 	account := new(PasswordLogin)
-	err := r.pool.QueryRow(ctx, `SELECT id::text,password_hash FROM users WHERE id=$1 AND deleted_at IS NULL AND status <> 'disabled'`, userID).Scan(&account.UserID, &account.PasswordHash)
+	err := r.pool.QueryRow(ctx, `SELECT id::text,password_hash FROM users WHERE id=$1 AND deleted_at IS NULL AND status='active'`, userID).Scan(&account.UserID, &account.PasswordHash)
 	return account, err
 }
 
 func (r *UserRepository) UsernameAvailable(ctx context.Context, username string) (bool, error) {
 	var exists bool
-	err := r.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE username = $1 AND deleted_at IS NULL)`, username).Scan(&exists)
+	// Username uniqueness is lifetime-scoped. A deleted account remains a
+	// tombstone, so availability must agree with the database unique index and
+	// never report a name as reusable merely because its owner is soft-deleted.
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM users WHERE username = $1
+		UNION ALL
+		SELECT 1 FROM account_identity_reservations WHERE kind='username' AND value=$1
+	)`, username).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check username: %w", err)
 	}

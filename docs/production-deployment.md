@@ -79,7 +79,24 @@ The public OpenIM gateway must include this exact rewrite route:
 /openim/object(/|$)(.*)  ->  openim-api /object/$2
 ```
 
-Keep `/openim/msg/send_msg` private: clients upload through `POST
-/v1/documents`, then send the returned `fileElem` over their authenticated
-OpenIM WebSocket. Platform cleanup deletes document objects at seven days or
-when the owner explicitly deletes them while retaining message history.
+The checked-in `openim-client-api` HTTPRoute also exposes the authenticated
+`/openim/msg` group. That group is not part of the Platform OpenAPI document:
+it is an OpenIM gateway surface and must be described and versioned with the
+OpenIM protocol. Mobile clients should send normal chat messages over the
+authenticated OpenIM WebSocket; the Platform service may use the internal
+`/msg/send_msg` HTTP call for server-created projections. Neither path is
+idempotent by `clientMsgID` today, so callers must not retry an unknown send
+without a client-side deduplication strategy and a matching backend contract.
+Clients upload through `POST /v1/documents`, then send the returned `fileElem`
+over their authenticated OpenIM WebSocket. Platform cleanup deletes document
+objects at seven days or when the owner explicitly deletes them while retaining
+message history.
+
+Account deletion is intentionally a soft-delete. `POST /v1/account/delete`
+locks the user row, sets `users.status=deleted` and `users.deleted_at`, and
+timestamps revocation/consumption of all platform-issued session, OpenIM-token,
+MFA, and password-challenge rows. It does not call OpenIM `user/delete_users`,
+delete application rows, or delete S3 objects. Login, passwordless login,
+refresh, and session creation all require an active, non-deleted user, so a
+deleted identity cannot be reactivated or reused. Retained OpenIM/payment
+history remains available to the configured retention/audit process.

@@ -237,6 +237,10 @@ func (a *API) loginVerify(ctx *fasthttp.RequestCtx) {
 func (a *API) issueLoginSession(ctx *fasthttp.RequestCtx, userID, platform, deviceName, deviceID string) {
 	tokens, err := a.newSession(userID, platform, deviceName, deviceID)
 	if err != nil {
+		if errors.Is(err, auth.ErrAccountUnavailable) {
+			writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "account is unavailable"})
+			return
+		}
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
 	}
