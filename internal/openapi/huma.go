@@ -128,7 +128,7 @@ type passwordChallengeBody struct {
 }
 type passwordChallengeInput struct{ Body passwordChallengeBody }
 type passwordChangeBody struct {
-	CurrentPassword string `json:"current_password" minLength:"12" maxLength:"256"`
+	CurrentPassword string `json:"current_password" maxLength:"256" doc:"The existing password; mismatch always returns 401, including short legacy passwords."`
 	NewPassword     string `json:"new_password" minLength:"12" maxLength:"256"`
 }
 type passwordChangeInput struct{ Body passwordChangeBody }
@@ -308,22 +308,44 @@ type profileUpdateOutput struct {
 		Sync     string  `json:"sync" enum:"complete,pending"`
 	}
 }
+type profileImageDeleteOutput struct {
+	Body struct {
+		Image *string `json:"image" format:"uri"`
+		Sync  string  `json:"sync" enum:"complete,pending"`
+	}
+}
+type accountDeleteInput struct {
+	Body struct {
+		CurrentPassword string `json:"current_password" maxLength:"256"`
+		AcceptTerms     bool   `json:"accept_terms"`
+	}
+}
+type accountDeleteOutput struct {
+	Body struct {
+		Status string `json:"status"`
+	}
+}
 type story struct {
-	ID          string  `json:"id" format:"uuid"`
-	OwnerID     string  `json:"owner_id" format:"uuid"`
-	MediaType   string  `json:"media_type" enum:"image,video"`
-	MediaURL    string  `json:"media_url" format:"uri"`
-	ContentType string  `json:"content_type"`
-	ByteSize    int64   `json:"byte_size"`
-	Caption     string  `json:"caption"`
-	Visibility  string  `json:"visibility" enum:"contacts,allow,exclude"`
-	ExpiresAt   string  `json:"expires_at" format:"date-time"`
-	DeletedAt   *string `json:"deleted_at,omitempty" format:"date-time"`
-	CreatedAt   string  `json:"created_at" format:"date-time"`
+	ID              string  `json:"id" format:"uuid"`
+	OwnerID         string  `json:"owner_id" format:"uuid"`
+	MediaType       string  `json:"media_type" enum:"image,video,text"`
+	MediaURL        string  `json:"media_url" format:"uri"`
+	ContentType     string  `json:"content_type"`
+	ByteSize        int64   `json:"byte_size"`
+	Caption         string  `json:"caption"`
+	Text            string  `json:"text,omitempty" maxLength:"700"`
+	BackgroundColor string  `json:"background_color,omitempty" pattern:"^#[0-9A-Fa-f]{6}$"`
+	Visibility      string  `json:"visibility" enum:"contacts,allow,exclude"`
+	ExpiresAt       string  `json:"expires_at" format:"date-time"`
+	DeletedAt       *string `json:"deleted_at,omitempty" format:"date-time"`
+	CreatedAt       string  `json:"created_at" format:"date-time"`
 }
 type storyCreateInput struct {
 	RawBody huma.MultipartFormFiles[struct {
 		Media            huma.FormFile `form:"media" contentType:"image/*,video/*"`
+		Type             string        `form:"type" enum:"image,video,text"`
+		Text             string        `form:"text" maxLength:"700"`
+		BackgroundColor  string        `form:"background_color" pattern:"^#[0-9A-Fa-f]{6}$"`
 		Caption          string        `form:"caption" maxLength:"4096"`
 		Visibility       string        `form:"visibility" enum:"contacts,allow,exclude"`
 		UserIDs          string        `form:"user_ids"`
@@ -374,6 +396,45 @@ type storyWebSocketOutput struct {
 	Body struct {
 		Description string `json:"description"`
 	}
+}
+type friendProfile struct {
+	UserID       string  `json:"user_id" format:"uuid"`
+	OpenIMUserID string  `json:"openim_user_id"`
+	PingID       string  `json:"ping_id" pattern:"^[0-9]{12}$"`
+	Username     string  `json:"username,omitempty"`
+	Nickname     string  `json:"nickname"`
+	Image        *string `json:"image" format:"uri"`
+}
+type friendsOutput struct {
+	Body struct {
+		Friends []friendProfile `json:"friends"`
+	}
+}
+type blockItem struct {
+	UserID    string  `json:"user_id" format:"uuid"`
+	PingID    string  `json:"ping_id" pattern:"^[0-9]{12}$"`
+	Nickname  string  `json:"nickname"`
+	Image     *string `json:"image" format:"uri"`
+	BlockedAt string  `json:"blocked_at" format:"date-time"`
+}
+type blocksOutput struct {
+	Body struct {
+		Blocks []blockItem `json:"blocks"`
+	}
+}
+type blockCreatedOutput struct {
+	Body struct {
+		PingID    string `json:"ping_id" pattern:"^[0-9]{12}$"`
+		BlockedAt string `json:"blocked_at" format:"date-time"`
+	}
+}
+type blockInput struct {
+	Body struct {
+		PingID string `json:"ping_id" pattern:"^[0-9]{12}$"`
+	}
+}
+type blockPathInput struct {
+	PingID string `path:"pingID" pattern:"^[0-9]{12}$"`
 }
 type document struct {
 	ID          string `json:"id" format:"uuid"`
@@ -602,7 +663,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.9.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.11.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -624,7 +685,7 @@ func newDocument() (*DocumentModel, error) {
 	register[refreshInput, refreshOutput](api, operation(http.MethodPost, "/v1/auth/refresh", "refreshSession", "Auth", "Rotate a refresh token.", 200, public))
 	register[passwordRecoveryStartInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/start", "startPasswordRecovery", "Auth", "Start privacy-preserving password recovery by username, ping ID, email, or phone.", 202, public))
 	register[passwordChallengeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/complete", "completePasswordRecovery", "Auth", "Complete password recovery with a one-time code.", 200, public))
-	register[passwordChangeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change", "changePassword", "Auth", "Change a password; verified contacts require a step-up code.", 200, bearer))
+	register[passwordChangeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change", "changePassword", "Auth", "Change a password in one step. The current session remains signed in and all other sessions are revoked; verified contacts do not add an OTP step.", 200, bearer))
 	register[passwordChangeVerifyInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change/verify", "verifyPasswordChange", "Auth", "Complete contact step-up for a password change.", 200, bearer))
 	challengeOperation := operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email or phone verification challenge. Requests are limited to one per minute and five per hour per contact and requester IP; throttled requests return 429 with Retry-After.", 202, public)
 	challengeOperation.Errors = append(challengeOperation.Errors, http.StatusTooManyRequests)
@@ -646,11 +707,12 @@ func newDocument() (*DocumentModel, error) {
 	register[struct{}, openIMChallengeOutput](api, operation(http.MethodPost, "/v1/openim/token/challenge", "createOpenIMTokenChallenge", "OpenIM", "Create a session-bound device-proof challenge.", 201, bearer))
 	register[issueOpenIMTokenInput, issueOpenIMTokenOutput](api, operation(http.MethodPost, "/v1/openim/token/issue", "issueOpenIMToken", "OpenIM", "Verify the signed device proof and issue an OpenIM token for this device.", 200, bearer))
 	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile asset URL.", 200, bearer))
+	register[struct{}, profileImageDeleteOutput](api, operation(http.MethodDelete, "/v1/profile/image", "deleteProfileImage", "Profile", "Remove the authenticated user's profile image and clear its OpenIM faceURL.", 200, bearer))
 	register[usernameInput, usernameUpdateOutput](api, operation(http.MethodPatch, "/v1/profile/username", "updateUsername", "Profile", "Set or change the optional unique username.", 200, bearer))
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
-	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Upload an image or video story (maximum 10 MiB per upload, 10 active stories, and 40 retained rows per user). Expiry defaults to 24 hours. The response media_url is a short-lived private S3 presigned URL.", 201, bearer)
+	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Create an image, video, or text status. Text statuses carry up to 700 characters and a required #RRGGBB background color; media responses use short-lived private S3 URLs.", 201, bearer)
 	storyCreate.MaxBodyBytes = 10 << 20
 	storyCreate.Errors = append(storyCreate.Errors, http.StatusTooManyRequests)
 	register[storyCreateInput, storyCreateOutput](api, storyCreate)
@@ -668,7 +730,12 @@ func newDocument() (*DocumentModel, error) {
 	register[documentPathInput, struct{}](api, operation(http.MethodDelete, "/v1/documents/{documentID}", "deleteDocument", "Documents", "Delete the S3 object while retaining a tombstone for message history. Expired objects are removed automatically after seven days.", 204, bearer))
 	register[documentMessageLinkInput, struct{}](api, operation(http.MethodPost, "/v1/documents/{documentID}/message-link", "linkDocumentMessage", "Documents", "Link an uploaded document to its OpenIM conversation sequence so disappearing-message cleanup can revoke the message before deleting S3 media.", 201, bearer))
 	register[discoverInput, discoverOutput](api, operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover registered contacts from supplied email addresses or phone numbers.", 200, bearer))
+	register[struct{}, friendsOutput](api, operation(http.MethodGet, "/v1/friends", "listFriends", "Friends", "List the authenticated user's OpenIM friends with public platform profile fields. The story viewed-by endpoint is GET /v1/stories/{storyID}/views.", 200, bearer))
 	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
+	register[struct{}, blocksOutput](api, operation(http.MethodGet, "/v1/blocks", "listBlocks", "Blocks", "List only users blocked by the authenticated user; OpenIM is the source of truth.", 200, bearer))
+	register[blockInput, blockCreatedOutput](api, operation(http.MethodPost, "/v1/blocks", "addBlock", "Blocks", "Block a user by PingID and synchronize the OpenIM blacklist.", 201, bearer))
+	register[blockPathInput, emptyOutput](api, operation(http.MethodDelete, "/v1/blocks/{pingID}", "removeBlock", "Blocks", "Unblock a user by PingID and synchronize the OpenIM blacklist.", 204, bearer))
+	register[accountDeleteInput, accountDeleteOutput](api, operation(http.MethodPost, "/v1/account/delete", "deleteAccount", "Account", "Delete application data after password confirmation and accept_terms=true. PingID, username, and linked contact identifiers remain reserved and cannot be reused.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))
 	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments", "listPayments", "Payments", "List visible payments newest-first. Use to=latest or a payment ID as the inclusive anchor, then last_known_payment_id and/or last_block_id as exclusive cursors; next_to and next_block_id continue the page.", 200, bearer))
 	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments/sync", "syncPayments", "Payments", "Synchronize visible payment projections with the same reverse-time cursor semantics; repeat-safe HTTP recovery source for the payment WebSocket.", 200, bearer))

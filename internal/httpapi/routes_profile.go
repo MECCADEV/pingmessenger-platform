@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"github.com/fasthttp/router"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/valyala/fasthttp"
 	"net/http"
@@ -19,6 +20,46 @@ func (a *API) registerProfileRoutes(r *router.Router) {
 	r.GET("/v1/profile/", a.profile)
 	r.PATCH("/v1/profile/username", a.updateUsername)
 	r.POST("/v1/profile/update", a.updateProfile)
+	r.DELETE("/v1/profile/image", a.deleteProfileImage)
+}
+
+func (a *API) deleteProfileImage(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "profile-delete", userID, profileDeleteUserLimit, profileDeleteIPLimit) {
+		return
+	}
+	asset, err := a.users.ActiveProfileAsset(context.Background(), userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "profile image not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load profile image"})
+		return
+	}
+	if err = a.objects.Delete(context.Background(), asset.StorageKey); err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not delete profile image"})
+		return
+	}
+	if err = a.users.DeleteProfileAsset(context.Background(), userID, asset.StorageKey); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not delete profile image metadata"})
+		return
+	}
+	openIMUserID, err := a.users.OpenIMUserID(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusOK, map[string]any{"image": nil, "sync": "pending"})
+		return
+	}
+	clearFaceURL := ""
+	if err = a.openIM.UpdateProfile(context.Background(), &openim.UpdateProfileRequest{UserID: openIMUserID, FaceURL: &clearFaceURL}); err != nil {
+		writeJSON(ctx, http.StatusAccepted, map[string]any{"image": nil, "sync": "pending"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"image": nil, "sync": "complete"})
 }
 func (a *API) profile(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)

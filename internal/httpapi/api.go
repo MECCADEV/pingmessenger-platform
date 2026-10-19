@@ -87,12 +87,14 @@ func (a *API) Router() fasthttp.RequestHandler {
 	r.GET("/healthz", a.health)
 	r.GET("/openapi.json", a.openAPIDocument)
 	a.registerAuthRoutes(r)
+	a.registerAccountRoutes(r)
 	a.registerUsernameAvailabilityWS(r)
 	a.registerPasswordRoutes(r)
 	a.registerMFARoutes(r)
 	a.registerSecurityRoutes(r)
 	a.registerProfileRoutes(r)
 	a.registerFriendRoutes(r)
+	a.registerBlockRoutes(r)
 	a.registerOpenIMRoutes(r)
 	a.registerPaymentRoutes(r)
 	a.registerDisappearingRoutes(r)
@@ -171,7 +173,7 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 	created, err := a.users.Create(context.Background(), &auth.CreateUserParams{Username: username, PasswordHash: passwordHash, Nickname: nickname, ContactKind: kind, ContactValue: value})
 	if err != nil {
 		var pgError *pgconn.PgError
-		if strings.Contains(err.Error(), "duplicate key") || (errors.As(err, &pgError) && pgError.Code == "23505") {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "identity already reserved") || (errors.As(err, &pgError) && pgError.Code == "23505") {
 			writeJSON(ctx, http.StatusConflict, map[string]string{"error": "username or contact already exists"})
 			return
 		}

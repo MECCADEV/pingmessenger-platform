@@ -87,31 +87,66 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	defer ctx.Request.RemoveMultipartFormFiles()
-	file, err := ctx.FormFile("media")
-	if err != nil {
-		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "media is required"})
-		return
-	}
-	contentType := strings.ToLower(strings.TrimSpace(file.Header.Get("Content-Type")))
-	mediaType, validMediaType := storyMediaType(contentType)
-	if !validMediaType {
-		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "media must be an image or video"})
-		return
-	}
-	stream, err := file.Open()
-	if err != nil {
-		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "could not read media"})
-		return
-	}
-	defer stream.Close()
-	data, err := storage.ReadLimited(stream, storyMaxBytes)
-	if err != nil {
-		writeJSON(ctx, http.StatusRequestEntityTooLarge, map[string]string{"error": err.Error()})
+	statusType := strings.ToLower(strings.TrimSpace(firstForm(form.Value, "type")))
+	file, fileErr := ctx.FormFile("media")
+	var mediaType stories.MediaType
+	var contentType string
+	var data []byte
+	var hasMedia bool
+	if fileErr == nil {
+		hasMedia = true
+		contentType = strings.ToLower(strings.TrimSpace(file.Header.Get("Content-Type")))
+		var validMediaType bool
+		mediaType, validMediaType = storyMediaType(contentType)
+		if !validMediaType {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "media must be an image or video"})
+			return
+		}
+		if statusType != "" && statusType != string(mediaType) {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "type does not match media"})
+			return
+		}
+		stream, err := file.Open()
+		if err != nil {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "could not read media"})
+			return
+		}
+		defer stream.Close()
+		data, err = storage.ReadLimited(stream, storyMaxBytes)
+		if err != nil {
+			writeJSON(ctx, http.StatusRequestEntityTooLarge, map[string]string{"error": err.Error()})
+			return
+		}
+	} else if statusType != string(stories.MediaText) {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "media is required unless type=text"})
 		return
 	}
 	caption := strings.TrimSpace(firstForm(form.Value, "caption"))
 	if len(caption) > 4096 {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "caption must be at most 4096 characters"})
+		return
+	}
+	textContent := strings.TrimSpace(firstForm(form.Value, "text"))
+	backgroundColor := strings.TrimSpace(firstForm(form.Value, "background_color"))
+	if !hasMedia {
+		if textContent == "" {
+			// `caption` is retained as a client-compatible alias for text-only
+			// statuses, but the canonical response field is `text`.
+			textContent = caption
+		}
+		if len(textContent) == 0 || len([]rune(textContent)) > 700 {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "text must be between 1 and 700 characters"})
+			return
+		}
+		if !validStoryBackgroundColor(backgroundColor) {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "background_color must be #RRGGBB for text statuses"})
+			return
+		}
+		mediaType = stories.MediaText
+		contentType = "text/plain"
+		caption = textContent
+	} else if textContent != "" || backgroundColor != "" {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "text and background_color are only valid for type=text"})
 		return
 	}
 	visibility := strings.TrimSpace(firstForm(form.Value, "visibility"))
@@ -177,31 +212,37 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 			}
 		}
 	}
-	randomID := make([]byte, 16)
-	if _, err = rand.Read(randomID); err != nil {
-		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create story"})
-		return
+	key := ""
+	privateStory := &stories.Story{}
+	if hasMedia {
+		randomID := make([]byte, 16)
+		if _, err = rand.Read(randomID); err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create story"})
+			return
+		}
+		key = path.Join("stories", userID, hex.EncodeToString(randomID))
+		if err = a.objects.Put(context.Background(), key, contentType, data); err != nil {
+			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not store story media"})
+			return
+		}
+		// Sign once before publishing the story so an unavailable private signer
+		// cannot create a story that clients can never download.
+		if !a.enforceRate(ctx, "story-signed-url", userID, signedURLUserLimit, signedURLIPLimit) {
+			_ = a.objects.Delete(context.Background(), key)
+			return
+		}
+		privateStory.StorageKey = key
+		if err := a.signStoryMedia(context.Background(), privateStory); err != nil {
+			_ = a.objects.Delete(context.Background(), key)
+			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not sign story media"})
+			return
+		}
 	}
-	key := path.Join("stories", userID, hex.EncodeToString(randomID))
-	if err = a.objects.Put(context.Background(), key, contentType, data); err != nil {
-		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not store story media"})
-		return
-	}
-	// Sign once before publishing the story so an unavailable private signer
-	// cannot create a story that clients can never download.
-	if !a.enforceRate(ctx, "story-signed-url", userID, signedURLUserLimit, signedURLIPLimit) {
-		_ = a.objects.Delete(context.Background(), key)
-		return
-	}
-	privateStory := &stories.Story{StorageKey: key}
-	if err := a.signStoryMedia(context.Background(), privateStory); err != nil {
-		_ = a.objects.Delete(context.Background(), key)
-		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not sign story media"})
-		return
-	}
-	story, err := a.stories.Create(context.Background(), stories.CreateParams{OwnerID: userID, MediaType: string(mediaType), StorageKey: key, MediaURL: "", ContentType: contentType, ByteSize: int64(len(data)), Caption: caption, Visibility: visibility, ExpiresAt: time.Now().Add(expires), Recipients: recipients, VisibilityUsers: ids})
+	story, err := a.stories.Create(context.Background(), stories.CreateParams{OwnerID: userID, MediaType: string(mediaType), StorageKey: key, MediaURL: "", ContentType: contentType, ByteSize: int64(len(data)), Caption: caption, Text: textContent, BackgroundColor: backgroundColor, Visibility: visibility, ExpiresAt: time.Now().Add(expires), Recipients: recipients, VisibilityUsers: ids})
 	if err != nil {
-		_ = a.objects.Delete(context.Background(), key)
+		if hasMedia {
+			_ = a.objects.Delete(context.Background(), key)
+		}
 		if errors.Is(err, stories.ErrActiveLimit) {
 			writeJSON(ctx, http.StatusTooManyRequests, map[string]string{"error": "maximum of 10 active stories per user reached"})
 			return
@@ -215,6 +256,18 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 	}
 	story.MediaURL = privateStory.MediaURL
 	writeJSON(ctx, http.StatusCreated, map[string]any{"story": story})
+}
+
+func validStoryBackgroundColor(value string) bool {
+	if len(value) != 7 || value[0] != '#' {
+		return false
+	}
+	for _, c := range value[1:] {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func storyMediaType(contentType string) (stories.MediaType, bool) {
@@ -595,6 +648,10 @@ func (a *API) RunStoryExpiry(ctx context.Context) {
 }
 
 func (a *API) deleteStoryMedia(ctx context.Context, storyID, storageKey string) {
+	if strings.TrimSpace(storageKey) == "" {
+		_ = a.stories.MarkMediaDeleted(ctx, storyID)
+		return
+	}
 	a.evictStoryMediaURL(storageKey)
 	if err := a.objects.Delete(ctx, storageKey); err != nil {
 		log.Printf("story media delete failed for %s: %v", storyID, err)

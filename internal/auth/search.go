@@ -18,6 +18,45 @@ type UserSearchResult struct {
 	Image        *string
 }
 
+type PublicProfile struct {
+	UserID       string
+	OpenIMUserID string
+	Username     string
+	PingID       string
+	Nickname     string
+	Image        *string
+}
+
+func (r *UserRepository) PublicProfilesByOpenIMIDs(ctx context.Context, openIMIDs []string) ([]*PublicProfile, error) {
+	if len(openIMIDs) == 0 {
+		return []*PublicProfile{}, nil
+	}
+	rows, err := r.pool.Query(ctx, `SELECT u.id::text,u.openim_user_id,COALESCE(u.username,''),u.ping_id,COALESCE(u.nickname,''),(
+		SELECT public_path FROM profile_assets WHERE user_id=u.id AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1
+	) FROM users u WHERE u.openim_user_id=ANY($1::text[]) AND u.status='active' AND u.deleted_at IS NULL ORDER BY u.username ASC,u.id ASC`, openIMIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	profiles := make([]*PublicProfile, 0, len(openIMIDs))
+	for rows.Next() {
+		p := new(PublicProfile)
+		if err = rows.Scan(&p.UserID, &p.OpenIMUserID, &p.Username, &p.PingID, &p.Nickname, &p.Image); err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, p)
+	}
+	return profiles, rows.Err()
+}
+
+func (r *UserRepository) UserByPingID(ctx context.Context, pingID string) (*PublicProfile, error) {
+	p := new(PublicProfile)
+	err := r.pool.QueryRow(ctx, `SELECT u.id::text,u.openim_user_id,COALESCE(u.username,''),u.ping_id,COALESCE(u.nickname,''),(
+		SELECT public_path FROM profile_assets WHERE user_id=u.id AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1
+	) FROM users u WHERE u.ping_id=$1 AND u.status='active' AND u.deleted_at IS NULL`, pingID).Scan(&p.UserID, &p.OpenIMUserID, &p.Username, &p.PingID, &p.Nickname, &p.Image)
+	return p, err
+}
+
 // SearchUsers searches the active, OpenIM-provisioned account directory. The
 // field is deliberately a closed set so the SQL remains parameterized rather
 // than interpolating a caller-controlled column or predicate.

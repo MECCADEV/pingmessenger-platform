@@ -20,23 +20,26 @@ type MediaType string
 const (
 	MediaImage MediaType = "image"
 	MediaVideo MediaType = "video"
+	MediaText  MediaType = "text"
 )
 
 type Story struct {
-	ID          string     `json:"id"`
-	OwnerID     string     `json:"owner_id"`
-	StorageKey  string     `json:"-"`
-	MediaType   MediaType  `json:"media_type"`
+	ID         string    `json:"id"`
+	OwnerID    string    `json:"owner_id"`
+	StorageKey string    `json:"-"`
+	MediaType  MediaType `json:"media_type"`
 	// MediaURL is populated only at the HTTP/WebSocket boundary with a
 	// short-lived presigned URL. It is not an authoritative persisted field.
-	MediaURL    string     `json:"media_url"`
-	ContentType string     `json:"content_type"`
-	ByteSize    int64      `json:"byte_size"`
-	Caption     string     `json:"caption"`
-	Visibility  Visibility `json:"visibility"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
+	MediaURL        string     `json:"media_url"`
+	ContentType     string     `json:"content_type"`
+	ByteSize        int64      `json:"byte_size"`
+	Caption         string     `json:"caption"`
+	Text            string     `json:"text,omitempty"`
+	BackgroundColor string     `json:"background_color,omitempty"`
+	Visibility      Visibility `json:"visibility"`
+	ExpiresAt       time.Time  `json:"expires_at"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
 }
 
 type Event struct {

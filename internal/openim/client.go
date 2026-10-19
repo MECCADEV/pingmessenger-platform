@@ -12,6 +12,10 @@ type Client interface {
 	RevokeSessions(context.Context, *RevokeSessionsRequest) error
 	DiscoverUsers(context.Context, *DiscoverUsersRequest) (*DiscoverUsersResponse, error)
 	ListFriendIDs(context.Context, *ListFriendIDsRequest) ([]string, error)
+	ListBlocks(context.Context, *ListBlocksRequest) ([]*BlockInfo, error)
+	AddBlock(context.Context, *BlockRequest) error
+	RemoveBlock(context.Context, *BlockRequest) error
+	DeleteUser(context.Context, *DeleteUserRequest) error
 	ListConversationUserIDs(context.Context, *ListConversationUserIDsRequest) ([]string, error)
 	GetUserToken(context.Context, *GetUserTokenRequest) (*GetUserTokenResponse, error)
 	KickTokens(context.Context, []string) error
@@ -45,6 +49,20 @@ type RevokeSessionsRequest struct {
 type DiscoverUsersRequest struct{ UserIDs []string }
 type DiscoverUsersResponse struct{ UserIDs []string }
 type ListFriendIDsRequest struct {
+	UserID string `json:"userID"`
+}
+type ListBlocksRequest struct {
+	UserID string `json:"userID"`
+}
+type BlockRequest struct {
+	OwnerUserID string `json:"ownerUserID"`
+	BlockUserID string `json:"blackUserID"`
+}
+type BlockInfo struct {
+	UserID    string `json:"userID"`
+	CreatedAt int64  `json:"createTime"`
+}
+type DeleteUserRequest struct {
 	UserID string `json:"userID"`
 }
 type ListConversationUserIDsRequest struct {

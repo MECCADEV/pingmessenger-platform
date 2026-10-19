@@ -6,12 +6,58 @@ import (
 	"github.com/valyala/fasthttp"
 	"net/http"
 	"net/mail"
+	"pingmessenger/internal/openim"
 	"strings"
 )
 
 func (a *API) registerFriendRoutes(r *router.Router) {
 	r.POST("/v1/friends/discover-network", a.discoverNetwork)
 	r.POST("/v1/friends/search", a.searchFriends)
+	r.GET("/v1/friends", a.listFriends)
+}
+
+type friendProfileResult struct {
+	UserID       string  `json:"user_id"`
+	OpenIMUserID string  `json:"openim_user_id"`
+	PingID       string  `json:"ping_id"`
+	Username     string  `json:"username,omitempty"`
+	Nickname     string  `json:"nickname"`
+	Image        *string `json:"image"`
+}
+
+func (a *API) listFriends(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "friends-list", userID, friendsListUserLimit, friendsListIPLimit) {
+		return
+	}
+	openIMID, err := a.users.OpenIMUserID(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
+		return
+	}
+	friendIDs, err := a.openIM.ListFriendIDs(context.Background(), &openim.ListFriendIDsRequest{UserID: openIMID})
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not load friends"})
+		return
+	}
+	profiles, err := a.users.PublicProfilesByOpenIMIDs(context.Background(), friendIDs)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load friend profiles"})
+		return
+	}
+	friends := make([]friendProfileResult, 0, len(profiles))
+	for _, p := range profiles {
+		nickname := p.Nickname
+		if nickname == "" {
+			nickname = p.Username
+		}
+		friends = append(friends, friendProfileResult{UserID: p.UserID, OpenIMUserID: p.OpenIMUserID, PingID: p.PingID, Username: p.Username, Nickname: nickname, Image: p.Image})
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"friends": friends})
 }
 
 type friendSearchRequest struct {

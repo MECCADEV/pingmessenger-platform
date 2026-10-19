@@ -23,7 +23,10 @@ type passwordRecoveryCompleteRequest struct {
 	NewPassword string `json:"new_password" validate:"required,min=12,max=256"`
 }
 type passwordChangeRequest struct {
-	CurrentPassword string `json:"current_password" validate:"required,min=12,max=256"`
+	// The current password is deliberately not subject to the new-password
+	// strength rule. A short legacy password must still authenticate and a
+	// mismatch is always classified as 401 rather than validation failure.
+	CurrentPassword string `json:"current_password" validate:"required,max=256"`
 	NewPassword     string `json:"new_password" validate:"required,min=12,max=256"`
 }
 type passwordChangeVerifyRequest struct {
@@ -127,7 +130,7 @@ func (a *API) passwordRecoveryComplete(ctx *fasthttp.RequestCtx) {
 }
 
 func (a *API) passwordChange(ctx *fasthttp.RequestCtx) {
-	userID, _, ok := a.authenticated(ctx)
+	userID, sessionID, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, 401, map[string]string{"error": "unauthorized"})
 		return
@@ -142,35 +145,16 @@ func (a *API) passwordChange(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, 401, map[string]string{"error": "invalid current password"})
 		return
 	}
-	contacts, err := a.users.VerifiedContacts(context.Background(), userID)
+	hash, err := auth.HashPassword(req.NewPassword)
 	if err != nil {
-		writeJSON(ctx, 500, map[string]string{"error": "could not load contacts"})
+		writeJSON(ctx, 500, map[string]string{"error": "could not secure password"})
 		return
 	}
-	if len(contacts) == 0 {
-		hash, e := auth.HashPassword(req.NewPassword)
-		if e != nil || a.users.ChangePassword(context.Background(), userID, hash) != nil {
-			writeJSON(ctx, 500, map[string]string{"error": "could not change password"})
-			return
-		}
-		writeJSON(ctx, 200, map[string]string{"status": "password changed; sessions revoked"})
+	if err = a.users.ChangePasswordKeepSession(context.Background(), userID, sessionID, hash); err != nil {
+		writeJSON(ctx, 500, map[string]string{"error": "could not change password"})
 		return
 	}
-	code, err := auth.NewOTP()
-	if err != nil {
-		writeJSON(ctx, 500, map[string]string{"error": "could not create challenge"})
-		return
-	}
-	challenge, err := a.users.CreatePasswordChallenge(context.Background(), userID, "change", auth.HashOTP(a.otpSecret, code), time.Now().Add(10*time.Minute))
-	if err != nil {
-		writeJSON(ctx, 500, map[string]string{"error": "could not create challenge"})
-		return
-	}
-	if err = a.sendPasswordCode(context.Background(), contacts, code, "PingMessenger password change code"); err != nil {
-		writeJSON(ctx, 502, map[string]string{"error": "could not deliver challenge"})
-		return
-	}
-	writeJSON(ctx, 202, map[string]string{"challenge_id": challenge, "status": "verification code sent"})
+	writeJSON(ctx, 200, map[string]string{"status": "password changed"})
 }
 
 func (a *API) passwordChangeVerify(ctx *fasthttp.RequestCtx) {

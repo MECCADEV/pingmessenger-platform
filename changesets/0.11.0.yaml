@@ -1,0 +1,65 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.10.1
+  next: 0.11.0
+  bump: minor
+  compatibility: additive-with-behavioral-hardening
+releaseDate: 2026-10-19
+summary: >-
+  Adds the selected PingChat account, status, friend, block, and deletion
+  workflows while making password changes single-step and session-preserving.
+changes:
+  - id: single-step-password-change
+    type: behavior
+    method: POST
+    path: /v1/auth/password/change
+    description: >-
+      Changes the password immediately after current-password verification,
+      keeps the current device session, revokes all other sessions, and returns
+      401 for every invalid current password regardless of its length.
+  - id: profile-image-delete
+    type: endpoint
+    method: DELETE
+    path: /v1/profile/image
+    description: >-
+      Deletes the authenticated user's profile object, clears the OpenIM
+      faceURL, and reports pending synchronization when OpenIM is unavailable.
+  - id: text-status
+    type: schema
+    method: POST
+    path: /v1/stories
+    description: >-
+      Supports multipart type=text statuses without media. The text is limited
+      to 700 characters and requires a #RRGGBB background_color; image/video
+      behavior remains unchanged. Text and background fields are present in
+      HTTP and WebSocket story payloads.
+  - id: friends-directory
+    type: endpoint
+    method: GET
+    path: /v1/friends
+    description: >-
+      Lists the authenticated user's OpenIM friends with public platform
+      profile fields for audience selection and status viewed-by rendering.
+      GET /v1/stories/{storyID}/views remains the owner-only viewed-by route.
+  - id: openim-blocks
+    type: endpoint
+    method: GET,POST,DELETE
+    path: /v1/blocks
+    description: >-
+      Lists, creates, and removes blocks by PingID while synchronizing the
+      OpenIM blacklist; only users blocked by the requester are returned.
+  - id: account-deletion-tombstone
+    type: endpoint
+    method: POST
+    path: /v1/account/delete
+    description: >-
+      Password-confirmed deletion removes application data, sessions, media,
+      contacts, stories, and profile state after accept_terms=true. PingID,
+      username, and linked email/phone identifiers are retained as non-login
+      tombstones and cannot be reused.
+  - id: schema-only-openapi
+    type: schema
+    description: >-
+      Regenerates the Huma schema-only OpenAPI document at version 0.11.0 with
+      the selected routes and multipart text-status fields.

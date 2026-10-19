@@ -200,3 +200,39 @@ func TestListConversationUserIDsUsesConversationGRPC(t *testing.T) {
 		t.Fatalf("ids = %#v", ids)
 	}
 }
+
+func TestBlockAndDeleteUserUseAdminRoutes(t *testing.T) {
+	paths := make([]string, 0, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/friend/get_black_list":
+			_, _ = w.Write([]byte(`{"errCode":0,"data":{"blacks":[{"blackUserInfo":{"userID":"u2"},"createTime":1700000000000}]}}`))
+		default:
+			_, _ = w.Write([]byte(`{"errCode":0,"data":{}}`))
+		}
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks, err := client.ListBlocks(context.Background(), &ListBlocksRequest{UserID: "u1"})
+	if err != nil || len(blocks) != 1 || blocks[0].UserID != "u2" {
+		t.Fatalf("blocks=%#v err=%v", blocks, err)
+	}
+	if err = client.AddBlock(context.Background(), &BlockRequest{OwnerUserID: "u1", BlockUserID: "u2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = client.RemoveBlock(context.Background(), &BlockRequest{OwnerUserID: "u1", BlockUserID: "u2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = client.DeleteUser(context.Background(), &DeleteUserRequest{UserID: "u1"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "/friend/get_black_list,/friend/add_black,/friend/remove_black,/user/delete_users"
+	if strings.Join(paths, ",") != want {
+		t.Fatalf("paths=%s want=%s", strings.Join(paths, ","), want)
+	}
+}

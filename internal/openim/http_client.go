@@ -130,6 +130,46 @@ func (c *HTTPClient) ListFriendIDs(ctx context.Context, request *ListFriendIDsRe
 	}
 	return response.FriendIDs, nil
 }
+func (c *HTTPClient) ListBlocks(ctx context.Context, request *ListBlocksRequest) ([]*BlockInfo, error) {
+	response := struct {
+		Blacks []struct {
+			BlackUserInfo struct {
+				UserID string `json:"userID"`
+			} `json:"blackUserInfo"`
+			CreateTime int64 `json:"createTime"`
+		} `json:"blacks"`
+	}{}
+	payload := struct {
+		UserID     string `json:"userID"`
+		Pagination struct {
+			PageNumber int32 `json:"pageNumber"`
+			ShowNumber int32 `json:"showNumber"`
+		} `json:"pagination"`
+	}{UserID: request.UserID}
+	payload.Pagination.PageNumber = 1
+	payload.Pagination.ShowNumber = 100
+	if err := c.call(ctx, "friend/get_black_list", payload, &response); err != nil {
+		return nil, err
+	}
+	blocks := make([]*BlockInfo, 0, len(response.Blacks))
+	for _, black := range response.Blacks {
+		if black.BlackUserInfo.UserID != "" {
+			blocks = append(blocks, &BlockInfo{UserID: black.BlackUserInfo.UserID, CreatedAt: black.CreateTime})
+		}
+	}
+	return blocks, nil
+}
+func (c *HTTPClient) AddBlock(ctx context.Context, request *BlockRequest) error {
+	return c.call(ctx, "friend/add_black", request, nil)
+}
+func (c *HTTPClient) RemoveBlock(ctx context.Context, request *BlockRequest) error {
+	return c.call(ctx, "friend/remove_black", request, nil)
+}
+func (c *HTTPClient) DeleteUser(ctx context.Context, request *DeleteUserRequest) error {
+	return c.call(ctx, "user/delete_users", struct {
+		UserIDs []string `json:"userIDs"`
+	}{UserIDs: []string{request.UserID}}, nil)
+}
 func (c *HTTPClient) ListConversationUserIDs(ctx context.Context, request *ListConversationUserIDsRequest) ([]string, error) {
 	if c.conversation != nil {
 		operationID := make([]byte, 12)

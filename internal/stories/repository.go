@@ -23,11 +23,11 @@ type Repository struct{ pool *pgxpool.Pool }
 func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: pool} }
 
 type CreateParams struct {
-	OwnerID, MediaType, StorageKey, MediaURL, ContentType, Caption, Visibility string
-	ByteSize                                                                   int64
-	ExpiresAt                                                                  time.Time
-	Recipients                                                                 []string
-	VisibilityUsers                                                            []string
+	OwnerID, MediaType, StorageKey, MediaURL, ContentType, Caption, Text, BackgroundColor, Visibility string
+	ByteSize                                                                                          int64
+	ExpiresAt                                                                                         time.Time
+	Recipients                                                                                        []string
+	VisibilityUsers                                                                                   []string
 }
 
 type Expired struct {
@@ -43,6 +43,13 @@ type Delivery struct {
 func valueOrEmpty(value *string) string {
 	if value == nil {
 		return ""
+	}
+	return *value
+}
+
+func valueOrZero(value *int64) int64 {
+	if value == nil {
+		return 0
 	}
 	return *value
 }
@@ -75,11 +82,11 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error)
 		return nil, ErrTotalLimit
 	}
 	var s Story
-	err = tx.QueryRow(ctx, `INSERT INTO stories (owner_id,media_type,storage_key,media_url,content_type,byte_size,caption,visibility,expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-		RETURNING id::text,owner_id::text,media_type::text,media_url,content_type,byte_size,caption,visibility::text,expires_at,created_at`,
-		p.OwnerID, p.MediaType, p.StorageKey, p.MediaURL, p.ContentType, p.ByteSize, p.Caption, p.Visibility, p.ExpiresAt).Scan(
-		&s.ID, &s.OwnerID, &s.MediaType, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Visibility, &s.ExpiresAt, &s.CreatedAt)
+	err = tx.QueryRow(ctx, `INSERT INTO stories (owner_id,media_type,storage_key,media_url,content_type,byte_size,caption,text_content,background_color,visibility,expires_at)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11)
+		RETURNING id::text,owner_id::text,media_type::text,COALESCE(storage_key,''),COALESCE(media_url,''),content_type,byte_size,caption,text_content,COALESCE(background_color,''),visibility::text,expires_at,created_at`,
+		p.OwnerID, p.MediaType, p.StorageKey, p.MediaURL, p.ContentType, p.ByteSize, p.Caption, p.Text, p.BackgroundColor, p.Visibility, p.ExpiresAt).Scan(
+		&s.ID, &s.OwnerID, &s.MediaType, &s.StorageKey, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Text, &s.BackgroundColor, &s.Visibility, &s.ExpiresAt, &s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -120,10 +127,10 @@ func (r *Repository) Delete(ctx context.Context, ownerID, storyID string) (*Stor
 	defer tx.Rollback(ctx)
 	var s Story
 	var deletedAt time.Time
-	err = tx.QueryRow(ctx, `UPDATE stories SET deleted_at=COALESCE(deleted_at,now()),media_cleanup_claimed_at=now(),updated_at=now()
+	err = tx.QueryRow(ctx, `UPDATE stories SET deleted_at=COALESCE(deleted_at,now()),media_cleanup_claimed_at=CASE WHEN storage_key IS NULL THEN NULL ELSE now() END,updated_at=now()
 		WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL
-		RETURNING id::text,owner_id::text,storage_key,media_type::text,media_url,content_type,byte_size,caption,visibility::text,expires_at,deleted_at,created_at`, storyID, ownerID).Scan(
-		&s.ID, &s.OwnerID, &s.StorageKey, &s.MediaType, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Visibility, &s.ExpiresAt, &deletedAt, &s.CreatedAt)
+		RETURNING id::text,owner_id::text,COALESCE(storage_key,''),media_type::text,COALESCE(media_url,''),content_type,byte_size,caption,text_content,COALESCE(background_color,''),visibility::text,expires_at,deleted_at,created_at`, storyID, ownerID).Scan(
+		&s.ID, &s.OwnerID, &s.StorageKey, &s.MediaType, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Text, &s.BackgroundColor, &s.Visibility, &s.ExpiresAt, &deletedAt, &s.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -175,10 +182,10 @@ func (r *Repository) View(ctx context.Context, viewerID, storyID, reaction strin
 
 func (r *Repository) MediaForRecipient(ctx context.Context, userID, storyID string) (*Story, error) {
 	var s Story
-	err := r.pool.QueryRow(ctx, `SELECT s.id::text,s.owner_id::text,s.storage_key,s.media_type::text,s.media_url,s.content_type,s.byte_size,s.caption,s.visibility::text,s.expires_at,s.deleted_at,s.created_at
+	err := r.pool.QueryRow(ctx, `SELECT s.id::text,s.owner_id::text,COALESCE(s.storage_key,''),s.media_type::text,COALESCE(s.media_url,''),s.content_type,s.byte_size,s.caption,s.text_content,COALESCE(s.background_color,''),s.visibility::text,s.expires_at,s.deleted_at,s.created_at
 		FROM stories s JOIN story_recipients sr ON sr.story_id=s.id
 		WHERE s.id=$1 AND sr.recipient_id=$2 AND s.deleted_at IS NULL AND s.expires_at>now()`, storyID, userID).Scan(
-		&s.ID, &s.OwnerID, &s.StorageKey, &s.MediaType, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Visibility, &s.ExpiresAt, &s.DeletedAt, &s.CreatedAt)
+		&s.ID, &s.OwnerID, &s.StorageKey, &s.MediaType, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Text, &s.BackgroundColor, &s.Visibility, &s.ExpiresAt, &s.DeletedAt, &s.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrForbidden
 	}
@@ -231,7 +238,7 @@ func (r *Repository) Sync(ctx context.Context, userID string, global int64, user
 	}
 	args = append(args, limit+1)
 	rows, err := r.pool.Query(ctx, `SELECT DISTINCT e.event_id,e.event_type,e.story_id::text,e.owner_id::text,e.created_at,
-		s.media_type::text,s.storage_key,s.media_url,s.content_type,s.byte_size,s.caption,s.visibility::text,s.expires_at,s.deleted_at,s.created_at
+		s.media_type::text,s.storage_key,s.media_url,s.content_type,s.byte_size,s.caption,s.text_content,s.background_color,s.visibility::text,s.expires_at,s.deleted_at,s.created_at
 		FROM story_events e LEFT JOIN stories s ON s.id=e.story_id
 		WHERE (`+strings.Join(where, " OR ")+`) AND (e.event_type='deleted' OR (s.deleted_at IS NULL AND s.expires_at>now())) ORDER BY e.event_id LIMIT $`+fmt.Sprint(argN), args...)
 	if err != nil {
@@ -249,18 +256,18 @@ func (r *Repository) Sync(ctx context.Context, userID string, global int64, user
 		}
 		var e Event
 		var typ, storyID, owner string
-		var mediaType, storageKey, mediaURL, contentType, caption, visibility *string
+		var mediaType, storageKey, mediaURL, contentType, caption, textContent, backgroundColor, visibility *string
 		var size *int64
 		var expires, deleted, storyCreated *time.Time
-		if err = rows.Scan(&e.EventID, &typ, &storyID, &owner, &e.CreatedAt, &mediaType, &storageKey, &mediaURL, &contentType, &size, &caption, &visibility, &expires, &deleted, &storyCreated); err != nil {
+		if err = rows.Scan(&e.EventID, &typ, &storyID, &owner, &e.CreatedAt, &mediaType, &storageKey, &mediaURL, &contentType, &size, &caption, &textContent, &backgroundColor, &visibility, &expires, &deleted, &storyCreated); err != nil {
 			return nil, err
 		}
 		e.Type, e.StoryID, e.OwnerID = typ, storyID, owner
 		if deleted != nil {
 			e.DeletedAt = deleted
 		}
-		if typ == "created" && storageKey != nil {
-			e.Story = &Story{ID: storyID, OwnerID: owner, StorageKey: *storageKey, MediaType: MediaType(*mediaType), MediaURL: valueOrEmpty(mediaURL), ContentType: *contentType, ByteSize: *size, Caption: *caption, Visibility: Visibility(*visibility), ExpiresAt: *expires, DeletedAt: deleted, CreatedAt: *storyCreated}
+		if typ == "created" && mediaType != nil {
+			e.Story = &Story{ID: storyID, OwnerID: owner, StorageKey: valueOrEmpty(storageKey), MediaType: MediaType(*mediaType), MediaURL: valueOrEmpty(mediaURL), ContentType: valueOrEmpty(contentType), ByteSize: valueOrZero(size), Caption: valueOrEmpty(caption), Text: valueOrEmpty(textContent), BackgroundColor: valueOrEmpty(backgroundColor), Visibility: Visibility(*visibility), ExpiresAt: *expires, DeletedAt: deleted, CreatedAt: *storyCreated}
 		}
 		out.Events = append(out.Events, &e)
 		if e.EventID > out.GlobalCursor {
@@ -330,16 +337,20 @@ func (r *Repository) Expire(ctx context.Context) ([]Expired, error) {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `UPDATE stories SET deleted_at=now(),media_cleanup_claimed_at=now(),updated_at=now() WHERE expires_at<=now() AND deleted_at IS NULL RETURNING id,storage_key`)
+	rows, err := tx.Query(ctx, `UPDATE stories SET deleted_at=now(),media_cleanup_claimed_at=CASE WHEN storage_key IS NULL THEN NULL ELSE now() END,updated_at=now() WHERE expires_at<=now() AND deleted_at IS NULL RETURNING id,storage_key`)
 	if err != nil {
 		return nil, err
 	}
 	var expired []Expired
 	for rows.Next() {
 		var item Expired
-		if err = rows.Scan(&item.ID, &item.StorageKey); err != nil {
+		var storageKey *string
+		if err = rows.Scan(&item.ID, &storageKey); err != nil {
 			rows.Close()
 			return nil, err
+		}
+		if storageKey != nil {
+			item.StorageKey = *storageKey
 		}
 		expired = append(expired, item)
 	}
@@ -383,14 +394,14 @@ func notifyStoryEvent(ctx context.Context, tx pgx.Tx, eventID int64) error {
 func (r *Repository) EventDelivery(ctx context.Context, eventID int64) (*Delivery, error) {
 	var d Delivery
 	var typ, storyID, owner string
-	var mediaType, storageKey, mediaURL, contentType, caption, visibility *string
+	var mediaType, storageKey, mediaURL, contentType, caption, textContent, backgroundColor, visibility *string
 	var size *int64
 	var expires, deleted, storyCreated *time.Time
 	var eventCreated time.Time
 	err := r.pool.QueryRow(ctx, `SELECT e.recipient_id::text,e.event_type,e.story_id::text,e.owner_id::text,e.created_at,
-		s.media_type::text,s.storage_key,s.media_url,s.content_type,s.byte_size,s.caption,s.visibility::text,s.expires_at,s.deleted_at,s.created_at
+		s.media_type::text,s.storage_key,s.media_url,s.content_type,s.byte_size,s.caption,s.text_content,s.background_color,s.visibility::text,s.expires_at,s.deleted_at,s.created_at
 		FROM story_events e LEFT JOIN stories s ON s.id=e.story_id WHERE e.event_id=$1`, eventID).Scan(
-		&d.RecipientID, &typ, &storyID, &owner, &eventCreated, &mediaType, &storageKey, &mediaURL, &contentType, &size, &caption, &visibility, &expires, &deleted, &storyCreated)
+		&d.RecipientID, &typ, &storyID, &owner, &eventCreated, &mediaType, &storageKey, &mediaURL, &contentType, &size, &caption, &textContent, &backgroundColor, &visibility, &expires, &deleted, &storyCreated)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -398,8 +409,8 @@ func (r *Repository) EventDelivery(ctx context.Context, eventID int64) (*Deliver
 		return nil, err
 	}
 	d.Event = &Event{EventID: eventID, Type: typ, StoryID: storyID, OwnerID: owner, CreatedAt: eventCreated, DeletedAt: deleted}
-	if typ == "created" && storageKey != nil {
-		d.Event.Story = &Story{ID: storyID, OwnerID: owner, StorageKey: *storageKey, MediaType: MediaType(*mediaType), MediaURL: valueOrEmpty(mediaURL), ContentType: *contentType, ByteSize: *size, Caption: *caption, Visibility: Visibility(*visibility), ExpiresAt: *expires, DeletedAt: deleted, CreatedAt: *storyCreated}
+	if typ == "created" && mediaType != nil {
+		d.Event.Story = &Story{ID: storyID, OwnerID: owner, StorageKey: valueOrEmpty(storageKey), MediaType: MediaType(*mediaType), MediaURL: valueOrEmpty(mediaURL), ContentType: valueOrEmpty(contentType), ByteSize: valueOrZero(size), Caption: valueOrEmpty(caption), Text: valueOrEmpty(textContent), BackgroundColor: valueOrEmpty(backgroundColor), Visibility: Visibility(*visibility), ExpiresAt: *expires, DeletedAt: deleted, CreatedAt: *storyCreated}
 	}
 	return &d, nil
 }
@@ -448,7 +459,7 @@ func (r *Repository) PendingMediaCleanup(ctx context.Context, limit int) ([]Expi
 	}
 	rows, err := r.pool.Query(ctx, `WITH picked AS (
 		SELECT id FROM stories
-		WHERE deleted_at IS NOT NULL AND media_deleted_at IS NULL
+		WHERE deleted_at IS NOT NULL AND storage_key IS NOT NULL AND media_deleted_at IS NULL
 		  AND (media_cleanup_claimed_at IS NULL OR media_cleanup_claimed_at<now()-interval '5 minutes')
 		ORDER BY deleted_at FOR UPDATE SKIP LOCKED LIMIT $1
 	)

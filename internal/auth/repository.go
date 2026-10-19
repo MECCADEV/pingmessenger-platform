@@ -312,6 +312,17 @@ func (r *UserRepository) RecordPasswordChallengeFailure(ctx context.Context, id 
 }
 
 func (r *UserRepository) ChangePassword(ctx context.Context, userID, passwordHash string) error {
+	return r.changePassword(ctx, userID, "", passwordHash)
+}
+
+// ChangePasswordKeepSession rotates the password while preserving the
+// authenticated session that performed the change. All other sessions are
+// revoked atomically with the password update.
+func (r *UserRepository) ChangePasswordKeepSession(ctx context.Context, userID, currentSessionID, passwordHash string) error {
+	return r.changePassword(ctx, userID, currentSessionID, passwordHash)
+}
+
+func (r *UserRepository) changePassword(ctx context.Context, userID, currentSessionID, passwordHash string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -320,7 +331,7 @@ func (r *UserRepository) ChangePassword(ctx context.Context, userID, passwordHas
 	if _, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, userID, passwordHash); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE device_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL`, userID); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE device_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL AND ($2='' OR id<>$2::uuid)`, userID, currentSessionID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -668,6 +679,30 @@ func (r *UserRepository) ProfilePath(ctx context.Context, userID string) (string
 	return path, err
 }
 
+type ProfileAsset struct {
+	StorageKey string
+}
+
+func (r *UserRepository) ActiveProfileAsset(ctx context.Context, userID string) (*ProfileAsset, error) {
+	asset := new(ProfileAsset)
+	err := r.pool.QueryRow(ctx, `SELECT storage_key FROM profile_assets WHERE user_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1`, userID).Scan(&asset.StorageKey)
+	return asset, err
+}
+
+// DeleteProfileAsset soft-deletes exactly the asset that the caller read. The
+// storage-key predicate prevents a stale removal request from deleting a
+// replacement uploaded concurrently.
+func (r *UserRepository) DeleteProfileAsset(ctx context.Context, userID, storageKey string) error {
+	result, err := r.pool.Exec(ctx, `UPDATE profile_assets SET deleted_at=now() WHERE user_id=$1 AND storage_key=$2 AND deleted_at IS NULL`, userID, storageKey)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("profile image not found")
+	}
+	return nil
+}
+
 type Profile struct {
 	Username, PingID, Nickname string
 	Image                      *string
@@ -785,6 +820,120 @@ func (r *UserRepository) ReplaceRecoveryCodes(ctx context.Context, userID string
 	return tx.Commit(ctx)
 }
 
+type AccountObject struct {
+	Key  string
+	Kind string
+}
+
+type AccountDeletion struct {
+	OpenIMUserID string
+	Objects      []AccountObject
+}
+
+// DeleteAccount removes application-owned rows in one transaction and leaves
+// a deleted user tombstone plus lifetime identity reservations. Payment rows
+// retain the tombstone foreign key so their audit trail remains referentially
+// valid without retaining profile, contact, or session data.
+func (r *UserRepository) DeleteAccount(ctx context.Context, userID string) (*AccountDeletion, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	var username, pingID, openIMUserID string
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(username,''),ping_id,COALESCE(openim_user_id,'') FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, userID).Scan(&username, &pingID, &openIMUserID); err != nil {
+		return nil, err
+	}
+	reserve := func(kind, value string) error {
+		if value == "" {
+			return nil
+		}
+		_, e := tx.Exec(ctx, `INSERT INTO account_identity_reservations(user_id,kind,value) VALUES($1,$2,$3)`, userID, kind, value)
+		return e
+	}
+	if err = reserve("ping_id", pingID); err != nil {
+		return nil, err
+	}
+	if err = reserve("username", username); err != nil {
+		return nil, err
+	}
+	contacts, err := tx.Query(ctx, `SELECT kind::text,value_normalized FROM user_contacts WHERE user_id=$1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	for contacts.Next() {
+		var kind, value string
+		if err = contacts.Scan(&kind, &value); err != nil {
+			contacts.Close()
+			return nil, err
+		}
+		if err = reserve(kind, value); err != nil {
+			contacts.Close()
+			return nil, err
+		}
+	}
+	if err = contacts.Err(); err != nil {
+		contacts.Close()
+		return nil, err
+	}
+	contacts.Close()
+	objects := make([]AccountObject, 0)
+	collect := func(query, kind string) error {
+		rows, e := tx.Query(ctx, query, userID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var key string
+			if e = rows.Scan(&key); e != nil {
+				return e
+			}
+			if key != "" {
+				objects = append(objects, AccountObject{Key: key, Kind: kind})
+			}
+		}
+		return rows.Err()
+	}
+	if err = collect(`SELECT storage_key FROM profile_assets WHERE user_id=$1 AND deleted_at IS NULL`, "profile"); err != nil {
+		return nil, err
+	}
+	if err = collect(`SELECT storage_key FROM stories WHERE owner_id=$1 AND storage_key IS NOT NULL`, "story"); err != nil {
+		return nil, err
+	}
+	if err = collect(`SELECT storage_key FROM message_documents WHERE owner_id=$1 AND deleted_at IS NULL`, "document"); err != nil {
+		return nil, err
+	}
+	for _, query := range []string{
+		`DELETE FROM story_views WHERE viewer_id=$1`,
+		`DELETE FROM story_sync_cursors WHERE user_id=$1`,
+		`DELETE FROM stories WHERE owner_id=$1`,
+		`DELETE FROM message_media_links WHERE owner_id=$1`,
+		`DELETE FROM message_documents WHERE owner_id=$1`,
+		`DELETE FROM conversation_disappearing_settings WHERE user_id=$1`,
+		`DELETE FROM profile_assets WHERE user_id=$1`,
+		`DELETE FROM recovery_codes WHERE user_id=$1`,
+		`DELETE FROM password_challenges WHERE user_id=$1`,
+		`DELETE FROM mfa_challenges WHERE user_id=$1`,
+		`DELETE FROM pending_login_challenges WHERE user_id=$1`,
+		`DELETE FROM mfa_enrollment_challenges WHERE user_id=$1`,
+		`DELETE FROM user_mfa_factors WHERE user_id=$1`,
+		`DELETE FROM user_contacts WHERE user_id=$1`,
+		`DELETE FROM device_sessions WHERE user_id=$1`,
+	} {
+		if _, err = tx.Exec(ctx, query, userID); err != nil {
+			return nil, err
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE users SET status='deleted',deleted_at=now(),password_hash='',openim_user_id=NULL,nickname='',updated_at=now() WHERE id=$1`, userID); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &AccountDeletion{OpenIMUserID: openIMUserID, Objects: objects}, nil
+}
+
 // Create executes parameterized PostgreSQL queries through raw pgx. It accepts
 // an already-derived Argon2id hash; callers must never pass plaintext passwords.
 func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (*CreatedUser, error) {
@@ -794,6 +943,24 @@ func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (*Crea
 	}
 	defer tx.Rollback(ctx)
 	created := new(CreatedUser)
+	if p.Username != "" {
+		var reserved bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM account_identity_reservations WHERE kind='username' AND value=$1)`, p.Username).Scan(&reserved); err != nil {
+			return nil, err
+		}
+		if reserved {
+			return nil, errors.New("identity already reserved")
+		}
+	}
+	if p.ContactKind != nil && p.ContactValue != nil {
+		var reserved bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM account_identity_reservations WHERE kind=$1 AND value=$2)`, *p.ContactKind, *p.ContactValue).Scan(&reserved); err != nil {
+			return nil, err
+		}
+		if reserved {
+			return nil, errors.New("identity already reserved")
+		}
+	}
 	err = tx.QueryRow(ctx, `INSERT INTO users (username, password_hash, nickname, openim_user_id, status) VALUES (NULLIF($1,''), $2, $3, NULLIF($4, ''), 'active') RETURNING id::text,ping_id`, p.Username, p.PasswordHash, p.Nickname, p.OpenIMUserID).Scan(&created.ID, &created.PingID)
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)

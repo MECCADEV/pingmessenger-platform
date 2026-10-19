@@ -39,3 +39,16 @@ func TestStoryMediaTypeAcceptsImagesAndVideosOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestValidStoryBackgroundColor(t *testing.T) {
+	for _, value := range []string{"#8619F5", "#000000", "#abcdef"} {
+		if !validStoryBackgroundColor(value) {
+			t.Errorf("expected %q to be valid", value)
+		}
+	}
+	for _, value := range []string{"", "8619F5", "#12345", "#1234567", "#12GG56"} {
+		if validStoryBackgroundColor(value) {
+			t.Errorf("expected %q to be invalid", value)
+		}
+	}
+}

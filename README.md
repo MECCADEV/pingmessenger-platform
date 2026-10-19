@@ -15,7 +15,7 @@ or deploy its example JWT secret. The initial database migration is run by the
 deployment migration step, not by each API replica at startup.
 
 Endpoint contracts and the phased implementation plan live in
-`.agents/plans/pingmessenger-auth-bootstrap/00-plan.md`.
+`.agents/plans/pingchat-backend-requests/00-plan.md`.
 
 The checked-in OpenAPI 3.1 contract is [openapi/openapi.json](openapi/openapi.json).
 Regenerate it with `make openapi`. It is generated from Huma typed schemas only;
@@ -25,7 +25,7 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.8.0`. Story uploads accept image/video MIME
+The current contract version is `0.11.0`. Story uploads accept image/video MIME
 types up to 10 MiB and are capped at 10 active stories per user; deleted or
 expired media is removed from S3 with retryable cleanup. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
@@ -124,6 +124,33 @@ ID; complete it with `POST /v1/mfa/verify`. A contact remains unverified until
 that challenge is consumed, and an existing verified contact cannot be
 replaced.
 
+Password changes use one authenticated request: `POST /v1/auth/password/change`
+with `current_password` and a new password. The current device remains signed
+in while every other session is revoked; wrong current passwords consistently
+return `401 invalid current password`, including short legacy passwords.
+
+`DELETE /v1/profile/image` removes the current profile object and clears the
+OpenIM faceURL. It returns `{ "image": null, "sync": "complete" }`, or
+`sync=pending` if OpenIM is temporarily unavailable.
+
+`GET /v1/friends` lists the authenticated user's OpenIM friends with public
+platform profile fields. The owner-only viewed-by endpoint for a status is
+`GET /v1/stories/{storyID}/views`; it returns `user_id`, `viewed_at`, and
+`reaction` records.
+
+Blocks are OpenIM-backed: `GET /v1/blocks` lists only the caller's blocks,
+`POST /v1/blocks` accepts `{ "ping_id": "000000000159" }`, and
+`DELETE /v1/blocks/{pingID}` removes one. All require a bearer session.
+
+Account deletion is `POST /v1/account/delete` with
+`{ "current_password": "…", "accept_terms": true }`. It removes platform
+profile, contact, MFA, session, story, and document data and requests removal
+of the OpenIM identity. The deployed OpenIM fork must expose the matching
+`user/delete_users` admin route before this destructive flow is enabled in
+production; the platform fails closed if that call fails. PingID, username,
+and linked email/phone values remain only as non-login tombstones and cannot be
+reused.
+
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
 that module. Development/test fixtures run through `make seed` and are refused
@@ -165,6 +192,11 @@ defaults to 24 hours and media is limited to 10 MiB. A story deletion or
 expiry is a durable `deleted` event, so offline clients do not retain stale
 stories. `POST /v1/stories/{storyID}/view` records an idempotent view/reaction;
 the owner can read those records from `GET /v1/stories/{storyID}/views`.
+
+Text statuses omit `media`, set `type=text`, and supply a 1–700 character
+`text` plus `background_color` in `#RRGGBB` form. `caption` is accepted as a
+compatibility alias for the text body. A media object or a background color is
+required; text status payloads are also included in story WebSocket events.
 
 Clients consume `/v1/stories/ws` with `sync` and `ack` frames. The server
 returns monotonic `event_id` cursors globally and per story owner, and rejects
