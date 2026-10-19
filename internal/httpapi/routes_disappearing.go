@@ -147,8 +147,23 @@ func (a *API) disappearingWebSocket(ctx *fasthttp.RequestCtx) {
 		conn.SetReadLimit(4096)
 		events, unsubscribe := a.disappearing.Subscribe(conversation)
 		defer unsubscribe()
+		lastUpdated := time.Time{}
+		hadSetting := false
+		writeSetting := func(setting *disappearing.Setting) error {
+			if setting == nil || (!setting.UpdatedAt.IsZero() && !setting.UpdatedAt.After(lastUpdated)) {
+				return nil
+			}
+			if err := conn.WriteJSON(disappearing.Event{Type: "disappearing.updated", ConversationID: conversation, UserID: userID, DurationSeconds: setting.DurationSeconds, Enabled: setting.Enabled, UpdatedAt: setting.UpdatedAt}); err != nil {
+				return err
+			}
+			lastUpdated = setting.UpdatedAt
+			hadSetting = true
+			return nil
+		}
 		if setting, err := a.disappearing.Get(context.Background(), userID, conversation); err == nil {
-			_ = conn.WriteJSON(disappearing.Event{Type: "disappearing.updated", ConversationID: conversation, UserID: userID, DurationSeconds: setting.DurationSeconds, Enabled: setting.Enabled, UpdatedAt: setting.UpdatedAt})
+			if err := writeSetting(setting); err != nil {
+				return
+			}
 		}
 		closed := make(chan struct{})
 		go func() {
@@ -159,18 +174,43 @@ func (a *API) disappearingWebSocket(ctx *fasthttp.RequestCtx) {
 				}
 			}
 		}()
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
+		pollTicker := time.NewTicker(time.Second)
+		defer pollTicker.Stop()
+		pingTicker := time.NewTicker(30 * time.Second)
+		defer pingTicker.Stop()
 		for {
 			select {
 			case event, open := <-events:
 				if !open {
 					return
 				}
+				if event.UserID != "" && event.UserID != userID {
+					continue
+				}
+				if !event.UpdatedAt.IsZero() && !event.UpdatedAt.After(lastUpdated) {
+					continue
+				}
+				if !event.UpdatedAt.IsZero() {
+					lastUpdated = event.UpdatedAt
+					hadSetting = true
+				}
 				if err := conn.WriteJSON(event); err != nil {
 					return
 				}
-			case <-ticker.C:
+			case <-pollTicker.C:
+				setting, err := a.disappearing.Get(context.Background(), userID, conversation)
+				if err == nil {
+					if err := writeSetting(setting); err != nil {
+						return
+					}
+				} else if err == disappearing.ErrNotFound && hadSetting {
+					if err := conn.WriteJSON(disappearing.Event{Type: "disappearing.updated", ConversationID: conversation, UserID: userID, DurationSeconds: 0, Enabled: false}); err != nil {
+						return
+					}
+					hadSetting = false
+					lastUpdated = time.Time{}
+				}
+			case <-pingTicker.C:
 				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 					return
 				}
