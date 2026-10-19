@@ -26,7 +26,7 @@ func (r *Repository) Create(ctx context.Context, req CreateRequest) (*Payment, e
 		INSERT INTO payments(payment_id,conversation_id,from_user_id,to_user_id,payment_type,chain_id,transaction_id,asset,amount_atomic,expires_at)
 		VALUES($1,$2,$3,$4,$5::payment_type,$6,$7,$8,$9,$10)
 		ON CONFLICT (payment_id) DO NOTHING
-		RETURNING id::text,payment_id,conversation_id,from_user_id::text,to_user_id::text,payment_type::text,status::text,chain_id,transaction_id,block_id,asset,amount_atomic,version,expires_at,created_at,updated_at,last_event_at`,
+		RETURNING id::text,payment_id,conversation_id,from_user_id::text,to_user_id::text,payment_type::text,status::text,update_reason,chain_id,transaction_id,block_id,asset,amount_atomic,version,expires_at,created_at,updated_at,last_event_at`,
 		req.PaymentID, req.ConversationID, req.FromUserID, req.ToUserID, req.PaymentType, req.ChainID, req.TransactionID, req.Asset, req.AmountAtomic, req.ExpiresAt,
 	).Scan(paymentScanArgs(&p)...)
 	if err == nil {
@@ -88,7 +88,7 @@ func (r *Repository) List(ctx context.Context, conversationID, userID, toID, las
 		limit = 100
 	}
 	const q = `
-		SELECT p.id::text,p.payment_id,p.conversation_id,p.from_user_id::text,p.to_user_id::text,p.payment_type::text,p.status::text,p.chain_id,p.transaction_id,p.block_id,p.asset,p.amount_atomic,p.version,p.expires_at,p.created_at,p.updated_at,p.last_event_at
+		SELECT p.id::text,p.payment_id,p.conversation_id,p.from_user_id::text,p.to_user_id::text,p.payment_type::text,p.status::text,p.update_reason,p.chain_id,p.transaction_id,p.block_id,p.asset,p.amount_atomic,p.version,p.expires_at,p.created_at,p.updated_at,p.last_event_at
 		FROM payments p
 		WHERE p.conversation_id=$1 AND (p.from_user_id=$2 OR p.to_user_id=$2)
 		  AND ($3='' OR NOT EXISTS (
@@ -163,7 +163,7 @@ func (r *Repository) FailStale(ctx context.Context, age time.Duration) ([]*Payme
 		if err != nil {
 			return nil, fmt.Errorf("marshal timeout event: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE payments SET status='failed',version=$2,updated_at=$3,last_event_at=$3 WHERE id=$1`, p.ID, version, now); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE payments SET status='failed',update_reason='timeout',version=$2,updated_at=$3,last_event_at=$3 WHERE id=$1`, p.ID, version, now); err != nil {
 			return nil, err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO payment_events(event_id,payment_id,status,version,payload,occurred_at) VALUES($1,$2,'failed'::payment_status,$3,$4::jsonb,$5) ON CONFLICT (event_id) DO NOTHING`, eventID, p.ID, version, payload, now); err != nil {
@@ -202,7 +202,7 @@ func (r *Repository) ApplyUpdate(ctx context.Context, update PaymentUpdate) (*Pa
 		if marshalErr != nil {
 			return nil, fmt.Errorf("marshal timeout event: %w", marshalErr)
 		}
-		_, err = tx.Exec(ctx, `UPDATE payments SET status='failed',version=$2,updated_at=$3,last_event_at=$3 WHERE id=$1`, p.ID, version, now)
+		_, err = tx.Exec(ctx, `UPDATE payments SET status='failed',update_reason='timeout',version=$2,updated_at=$3,last_event_at=$3 WHERE id=$1`, p.ID, version, now)
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +249,7 @@ func (r *Repository) ApplyUpdate(ctx context.Context, update PaymentUpdate) (*Pa
 	if update.AmountAtomic != "" {
 		amount = update.AmountAtomic
 	}
-	_, err = tx.Exec(ctx, `UPDATE payments SET status=$2::payment_status,block_id=COALESCE(NULLIF($3,''),block_id),amount_atomic=$4,version=$5,updated_at=now(),last_event_at=$6 WHERE id=$1`, p.ID, update.Status, update.BlockID, amount, update.Version, update.OccurredAt)
+	_, err = tx.Exec(ctx, `UPDATE payments SET status=$2::payment_status,update_reason='',block_id=COALESCE(NULLIF($3,''),block_id),amount_atomic=$4,version=$5,updated_at=now(),last_event_at=$6 WHERE id=$1`, p.ID, update.Status, update.BlockID, amount, update.Version, update.OccurredAt)
 	if err != nil {
 		return nil, err
 	}
@@ -263,10 +263,10 @@ func (r *Repository) ApplyUpdate(ctx context.Context, update PaymentUpdate) (*Pa
 	return &p, nil
 }
 
-const paymentSelect = `SELECT id::text,payment_id,conversation_id,from_user_id::text,to_user_id::text,payment_type::text,status::text,chain_id,transaction_id,block_id,asset,amount_atomic,version,expires_at,created_at,updated_at,last_event_at FROM payments`
+const paymentSelect = `SELECT id::text,payment_id,conversation_id,from_user_id::text,to_user_id::text,payment_type::text,status::text,update_reason,chain_id,transaction_id,block_id,asset,amount_atomic,version,expires_at,created_at,updated_at,last_event_at FROM payments`
 
 func paymentScanArgs(p *Payment) []any {
-	return []any{&p.ID, &p.PaymentID, &p.ConversationID, &p.FromUserID, &p.ToUserID, &p.PaymentType, &p.Status, &p.ChainID, &p.TransactionID, &p.BlockID, &p.Asset, &p.AmountAtomic, &p.Version, &p.ExpiresAt, &p.CreatedAt, &p.UpdatedAt, &p.LastEventAt}
+	return []any{&p.ID, &p.PaymentID, &p.ConversationID, &p.FromUserID, &p.ToUserID, &p.PaymentType, &p.Status, &p.UpdateReason, &p.ChainID, &p.TransactionID, &p.BlockID, &p.Asset, &p.AmountAtomic, &p.Version, &p.ExpiresAt, &p.CreatedAt, &p.UpdatedAt, &p.LastEventAt}
 }
 
 func validateCreate(req CreateRequest) error {

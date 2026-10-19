@@ -562,7 +562,7 @@ func postOpenIMJSON(t *testing.T, client *http.Client, base, path, token, payloa
 	}
 	defer resp.Body.Close()
 	var envelope map[string]any
-	if err = json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err = json.NewDecoder(resp.Body).Decode(&envelope); err != nil && err != io.EOF {
 		t.Fatalf("decode OpenIM %s response: %v", path, err)
 	}
 	if resp.StatusCode != http.StatusOK || envelope["errCode"] != float64(0) {

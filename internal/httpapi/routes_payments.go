@@ -269,11 +269,26 @@ func (a *API) paymentWebSocket(ctx *fasthttp.RequestCtx) {
 		conn.SetReadLimit(4096)
 		updates, unsubscribe := a.payments.Subscribe(conversation, userID)
 		defer unsubscribe()
+		// The in-process subscription is a low-latency hint, not the source of
+		// truth. API replicas do not share their subscriber hubs, so every
+		// connection also polls the Postgres ledger and deduplicates by version.
+		// This preserves delivery when create/update/expiry lands on another pod.
+		lastSent := make(map[string]int64)
+		writePayment := func(payment *payments.Payment) error {
+			if payment == nil || payment.Version <= lastSent[payment.PaymentID] {
+				return nil
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "payment.updated", "payment": payment}); err != nil {
+				return err
+			}
+			lastSent[payment.PaymentID] = payment.Version
+			return nil
+		}
 		// Subscribe before taking the snapshot so an update that races the
 		// snapshot is queued and cannot be lost. Clients deduplicate by version.
 		if snapshot, listErr := a.payments.List(context.Background(), conversation, userID, "", "", "", 100); listErr == nil {
 			for _, payment := range snapshot {
-				if err := conn.WriteJSON(map[string]any{"type": "payment.updated", "payment": payment}); err != nil {
+				if err := writePayment(payment); err != nil {
 					return
 				}
 			}
@@ -287,18 +302,33 @@ func (a *API) paymentWebSocket(ctx *fasthttp.RequestCtx) {
 				}
 			}
 		}()
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
+		pollTicker := time.NewTicker(time.Second)
+		defer pollTicker.Stop()
+		pingTicker := time.NewTicker(30 * time.Second)
+		defer pingTicker.Stop()
 		for {
 			select {
 			case p, open := <-updates:
 				if !open {
 					return
 				}
-				if err := conn.WriteJSON(map[string]any{"type": "payment.updated", "payment": p}); err != nil {
+				if err := writePayment(p); err != nil {
 					return
 				}
-			case <-ticker.C:
+			case <-pollTicker.C:
+				// A replica-local websocket must still observe writes made by a
+				// different API replica. The list query enforces participant
+				// authorization and returns the newest ledger versions.
+				payments, listErr := a.payments.List(context.Background(), conversation, userID, "", "", "", 100)
+				if listErr != nil {
+					continue
+				}
+				for _, payment := range payments {
+					if err := writePayment(payment); err != nil {
+						return
+					}
+				}
+			case <-pingTicker.C:
 				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 					return
 				}

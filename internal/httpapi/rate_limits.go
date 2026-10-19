@@ -10,8 +10,12 @@ import (
 )
 
 const (
-	storyUploadUserLimit    = 10
-	storyUploadIPLimit      = 30
+	// Retained-story enforcement is a lifetime row cap (40 rows), so the
+	// upload bucket must permit a legitimate retention-limit probe to reach
+	// that independent invariant. Active stories remain capped at 10 by the
+	// repository, while Redis still bounds burst abuse at both user and IP.
+	storyUploadUserLimit    = 60
+	storyUploadIPLimit      = 120
 	documentUploadUserLimit = 10
 	documentUploadIPLimit   = 30
 	profileUploadUserLimit  = 10

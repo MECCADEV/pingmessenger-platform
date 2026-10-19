@@ -37,6 +37,10 @@ func TestOpenIMModifyAndRevokeReceiverEvents(t *testing.T) {
 	defer senderSocket.Close()
 	receiverSocket := dialOpenIMClient(t, base, receiverToken, receiverID)
 	defer receiverSocket.Close()
+	// OpenIM publishes online presence through Redis asynchronously. Wait for
+	// that bounded propagation window before exercising delivery; otherwise a
+	// valid receiver can be treated as offline by the push worker.
+	time.Sleep(2 * time.Second)
 
 	conversationID := singleConversationID(senderID, receiverID)
 	original := `{"text":"original"}`
@@ -58,7 +62,9 @@ func TestOpenIMModifyAndRevokeReceiverEvents(t *testing.T) {
 
 	postOpenIMJSON(t, client, base, "/msg/modify_message", senderToken, fmt.Sprintf(`{"conversationID":%q,"seq":%d,"userID":%q,"oldContent":%q,"newContent":%q}`, conversationID, seq, senderID, original, `{"text":"edited"}`))
 	modified := readOpenIMNotification(t, receiverSocket, 2103, 20*time.Second)
-	if !bytes.Contains(modified, []byte(`{"text":"edited"}`)) {
+	// Notification content is the protocol's TipsComm envelope; newContent is
+	// JSON-escaped inside its detail field rather than copied as raw bytes.
+	if !bytes.Contains(modified, []byte(`newContent`)) || !bytes.Contains(modified, []byte(`edited`)) {
 		t.Fatalf("modify notification did not contain new content: %q", modified)
 	}
 
@@ -104,7 +110,7 @@ func readOpenIMMessageSeq(t *testing.T, conn *websocket.Conn, content string, ti
 		if !bytes.Contains(decoded, []byte(content)) {
 			continue
 		}
-		return int64(openIMFieldVarint(decoded, 14))
+		return int64(openIMFieldVarint(openIMMessageData(decoded), 14))
 	}
 	t.Fatal("timed out waiting for receiver message")
 	return 0
@@ -123,12 +129,57 @@ func readOpenIMNotification(t *testing.T, conn *websocket.Conn, contentType uint
 		if err != nil {
 			t.Fatal(err)
 		}
-		if openIMFieldVarint(decoded, 11) == contentType {
+		if openIMFieldVarint(openIMMessageData(decoded), 11) == contentType {
 			return decoded
 		}
 	}
 	t.Fatalf("timed out waiting for OpenIM contentType=%d notification", contentType)
 	return nil
+}
+
+// OpenIM wraps sdkws.MsgData in a push envelope before base64 encoding the
+// WebSocket payload. The outer envelope carries conversationID in field 1 and
+// a nested message wrapper in field 2; the wrapper carries MsgData in field 1.
+func openIMMessageData(data []byte) []byte {
+	for depth := 0; depth < 3; depth++ {
+		if payload, ok := openIMDelimitedField(data, 2); ok {
+			data = payload
+			continue
+		}
+		payload, ok := openIMDelimitedField(data, 1)
+		if !ok {
+			break
+		}
+		number, kind, n := protowire.ConsumeTag(payload)
+		if n < 0 || number != 1 || kind != protowire.BytesType {
+			break
+		}
+		data = payload
+	}
+	return data
+}
+
+func openIMDelimitedField(data []byte, wanted protowire.Number) ([]byte, bool) {
+	for len(data) > 0 {
+		number, kind, n := protowire.ConsumeTag(data)
+		if n < 0 {
+			return nil, false
+		}
+		data = data[n:]
+		if number == wanted && kind == protowire.BytesType {
+			payload, consumed := protowire.ConsumeBytes(data)
+			if consumed < 0 {
+				return nil, false
+			}
+			return payload, true
+		}
+		n = protowire.ConsumeFieldValue(number, kind, data)
+		if n < 0 {
+			return nil, false
+		}
+		data = data[n:]
+	}
+	return nil, false
 }
 
 func openIMFieldVarint(data []byte, wanted protowire.Number) uint64 {

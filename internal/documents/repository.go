@@ -147,8 +147,8 @@ func (r *Repository) ClaimExpiredMessageLinks(ctx context.Context, limit int) ([
 		ORDER BY expires_at FOR UPDATE SKIP LOCKED LIMIT $1
 	)
 	UPDATE message_media_links l SET cleanup_claimed_at=now(),revoke_attempts=revoke_attempts+1,updated_at=now()
-	FROM picked p JOIN message_documents d ON d.id=l.document_id
-	WHERE l.id=p.id
+	FROM picked p, message_documents d
+	WHERE l.id=p.id AND d.id=l.document_id
 		RETURNING l.id::text,l.document_id::text,d.storage_key,l.conversation_id,l.openim_user_id,l.seq,l.revoked_at IS NOT NULL,l.s3_deleted_at IS NOT NULL`, limit)
 	if err != nil {
 		return nil, err

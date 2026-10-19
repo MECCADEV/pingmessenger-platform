@@ -40,6 +40,10 @@ func TestPaymentCustomMessageReachesOpenIMReceiver(t *testing.T) {
 
 	receiverSocket := dialOpenIMClient(t, base, receiverOpenIMToken, receiverOpenIMID)
 	defer receiverSocket.Close()
+	// The gateway's online-presence fan-out is asynchronous. Give it the same
+	// bounded propagation window used by the general two-user protocol test so
+	// the payment projection is tested as an online WebSocket delivery.
+	time.Sleep(2 * time.Second)
 	conversationID := fmt.Sprintf("e2e-openim-payment-%d", time.Now().UnixNano())
 	paymentID := fmt.Sprintf("e2e-openim-payment-id-%d", time.Now().UnixNano())
 	postAuthenticatedJSON(t, client, base+"/v1/conversations/"+conversationID+"/payments", sender["access_token"].(string), fmt.Sprintf(`{"payment_id":%q,"to_user_id":%q,"payment_type":"direct","chain_id":"e2e-devnet","transaction_id":%q,"asset":"TEST","amount_atomic":"100"}`, paymentID, receiver["user_id"].(string), paymentID+"-tx"), http.StatusCreated)
@@ -70,6 +74,7 @@ func TestPaymentCustomMessageReachesOpenIMReceiver(t *testing.T) {
 }
 
 func openIMContentType(data []byte) uint64 {
+	data = openIMMessageData(data)
 	for len(data) > 0 {
 		number, kind, n := protowire.ConsumeTag(data)
 		if n < 0 {
