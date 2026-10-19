@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
@@ -43,10 +44,19 @@ func (a *API) deleteAccount(ctx *fasthttp.RequestCtx) {
 	openIMUserID, err := a.users.OpenIMUserID(context.Background(), userID)
 	if err == nil && openIMUserID != "" {
 		if err = a.openIM.DeleteUser(context.Background(), &openim.DeleteUserRequest{UserID: openIMUserID}); err != nil {
-			// Do not destroy the platform account while the messaging identity is
-			// still live; retrying the same request is safe and idempotent.
-			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not remove OpenIM account"})
-			return
+			// Older OpenIM deployments do not expose user/delete_users. The
+			// platform can still safely complete deletion after revoking every
+			// OpenIM session; a newer fork will remove the identity first.
+			// Network/authentication failures remain fail-closed.
+			if !strings.Contains(err.Error(), " returned 404:") && !strings.Contains(err.Error(), "Not Found") {
+				writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not remove OpenIM account"})
+				return
+			}
+			if revokeErr := a.openIM.RevokeSessions(context.Background(), &openim.RevokeSessionsRequest{UserID: openIMUserID}); revokeErr != nil {
+				writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not revoke OpenIM sessions"})
+				return
+			}
+			log.Printf("OpenIM user/delete_users is unavailable for %s; completed account deletion after revoking sessions", openIMUserID)
 		}
 	}
 	deletion, err := a.users.DeleteAccount(context.Background(), userID)

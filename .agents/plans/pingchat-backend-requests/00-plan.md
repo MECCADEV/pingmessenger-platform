@@ -20,4 +20,4 @@ This plan implements only request cards 1, 3.2, 5.1, 5.4, 6, and 7 from the past
 
 ## Known integration constraint
 
-The current OpenIM fork does not expose a native account-delete API in its HTTP router. The platform client boundary will call `user/delete_users`; deployment of the matching OpenIM fork endpoint is a prerequisite for enabling destructive account deletion in production.
+The current OpenIM fork does not expose a native account-delete API in its HTTP router. The platform first calls `user/delete_users`; when an older fork returns a route-level 404, it revokes every OpenIM session and completes the platform tombstone. Other OpenIM failures remain fail-closed. A matching fork endpoint is still required for physical OpenIM identity removal.

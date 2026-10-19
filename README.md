@@ -145,11 +145,11 @@ Blocks are OpenIM-backed: `GET /v1/blocks` lists only the caller's blocks,
 Account deletion is `POST /v1/account/delete` with
 `{ "current_password": "…", "accept_terms": true }`. It removes platform
 profile, contact, MFA, session, story, and document data and requests removal
-of the OpenIM identity. The deployed OpenIM fork must expose the matching
-`user/delete_users` admin route before this destructive flow is enabled in
-production; the platform fails closed if that call fails. PingID, username,
-and linked email/phone values remain only as non-login tombstones and cannot be
-reused.
+of the OpenIM identity. When the fork exposes `user/delete_users`, that route
+is used; older deployments fall back to revoking every OpenIM session and then
+complete the platform tombstone, while network/authentication failures remain
+fail-closed. PingID, username, and linked email/phone values remain only as
+non-login tombstones and cannot be reused.
 
 Schema history is maintained by [sqlmig](https://github.com/Shaik-Sirajuddin/sqlmig),
 not by calling `psql` manually: `make migrate` runs `cmd/db`, which delegates to
