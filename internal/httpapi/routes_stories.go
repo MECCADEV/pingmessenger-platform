@@ -81,6 +81,12 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 	if !a.enforceRate(ctx, "story-upload", userID, storyUploadUserLimit, storyUploadIPLimit) {
 		return
 	}
+	// The global server body ceiling is sized for documents; cap story
+	// multipart input before parsing to the media limit plus multipart overhead.
+	if int64(len(ctx.PostBody())) > storyMaxBytes+(1<<20) {
+		writeJSON(ctx, http.StatusRequestEntityTooLarge, map[string]string{"error": "story upload exceeds the maximum request size"})
+		return
+	}
 	form, err := ctx.Request.MultipartForm()
 	if err != nil {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "multipart/form-data is required"})

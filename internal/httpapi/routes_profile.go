@@ -16,6 +16,8 @@ import (
 	"strings"
 )
 
+const profileMultipartMaxBytes int64 = 6 << 20
+
 func (a *API) registerProfileRoutes(r *router.Router) {
 	r.GET("/v1/profile/", a.profile)
 	r.PATCH("/v1/profile/username", a.updateUsername)
@@ -102,6 +104,19 @@ func (a *API) updateProfile(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	// Bound multipart parsing itself. The server-wide body ceiling supports
+	// large documents, but profile updates only need room for a 5 MiB image
+	// plus multipart headers and the optional nickname.
+	if int64(len(ctx.PostBody())) > profileMultipartMaxBytes {
+		writeJSON(ctx, http.StatusRequestEntityTooLarge, map[string]string{"error": "profile update exceeds the maximum request size"})
+		return
+	}
+	// Rate-limit before MultipartForm parses files and fields. This endpoint
+	// accepts nickname-only updates too, so use its own generous bucket; image
+	// uploads still have the stricter upload bucket below.
+	if !a.enforceRate(ctx, "profile-update", userID, profileUpdateUserLimit, profileUpdateIPLimit) {
 		return
 	}
 	form, formErr := ctx.Request.MultipartForm()

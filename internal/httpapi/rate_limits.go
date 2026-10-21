@@ -20,6 +20,8 @@ const (
 	documentUploadIPLimit   = 30
 	profileUploadUserLimit  = 10
 	profileUploadIPLimit    = 30
+	profileUpdateUserLimit  = 60
+	profileUpdateIPLimit    = 120
 	profileDeleteUserLimit  = 30
 	profileDeleteIPLimit    = 60
 	friendsListUserLimit    = 60
