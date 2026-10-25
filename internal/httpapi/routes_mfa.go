@@ -11,10 +11,13 @@ import (
 	"net/mail"
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/notify"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+var e164PhonePattern = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
 
 func (a *API) registerMFARoutes(r *router.Router) {
 	r.POST("/v1/mfa/challenge", a.issueChallenge)
@@ -107,8 +110,8 @@ func normalizeContactValue(kind, value string) (string, error) {
 		}
 		return value, nil
 	case "phone":
-		if value == "" || len(value) > 32 {
-			return "", fmt.Errorf("value must be a valid phone number")
+		if !e164PhonePattern.MatchString(value) {
+			return "", fmt.Errorf("phone must use E.164 format, for example +14155552671")
 		}
 		return value, nil
 	default:
@@ -166,7 +169,13 @@ func (a *API) issueChallenge(ctx *fasthttp.RequestCtx) {
 	}
 	kind, value := "email", strings.ToLower(strings.TrimSpace(req.Email))
 	if req.Phone != "" {
-		kind, value = "phone", strings.TrimSpace(req.Phone)
+		kind = "phone"
+		normalized, normalizeErr := normalizeContactValue(kind, req.Phone)
+		if normalizeErr != nil {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": normalizeErr.Error()})
+			return
+		}
+		value = normalized
 	}
 	contact, err := a.users.FindContact(context.Background(), kind, value)
 	// Do not reveal account existence to an unauthenticated caller.

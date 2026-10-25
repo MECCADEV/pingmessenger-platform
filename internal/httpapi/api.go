@@ -166,7 +166,12 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 		kind, value = &k, &v
 	}
 	if request.Phone != "" {
-		k, v := "phone", strings.TrimSpace(request.Phone)
+		k := "phone"
+		v, phoneErr := normalizeContactValue(k, request.Phone)
+		if phoneErr != nil {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": phoneErr.Error()})
+			return
+		}
 		kind, value = &k, &v
 	}
 	nickname := strings.TrimSpace(request.Nickname)

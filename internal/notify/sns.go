@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -41,7 +42,10 @@ func (s *DirectSMS) SendSMS(ctx context.Context, msg *SMS) error {
 		},
 	})
 	if err != nil {
-		return err
+		// Never include the destination or OTP in logs. The provider error helps
+		// distinguish sandbox, quota, and invalid-destination failures.
+		log.Printf("SNS transactional SMS publish failed: %v", err)
+		return fmt.Errorf("publish transactional SMS: %w", err)
 	}
 	// Explicitly opt-in test sink; production leaves SMS_MIRROR_TOPIC_ARN empty.
 	if s.mirrorTopicARN != "" {

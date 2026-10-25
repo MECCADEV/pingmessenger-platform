@@ -66,7 +66,13 @@ func (a *API) passwordRecoveryStart(ctx *fasthttp.RequestCtx) {
 	}
 	if req.Phone != "" {
 		identifiers++
-		kind, value = "phone", strings.TrimSpace(req.Phone)
+		kind = "phone"
+		var phoneErr error
+		value, phoneErr = normalizeContactValue(kind, req.Phone)
+		if phoneErr != nil {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": phoneErr.Error()})
+			return
+		}
 	}
 	if identifiers != 1 {
 		writeJSON(ctx, 422, map[string]string{"error": "provide exactly one recovery identifier"})
