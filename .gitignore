@@ -26,5 +26,8 @@ go.work.sum
 *.swp
 .DS_Store
 
+# Keep agent execution plans out of the repository.
+.agents/plans/
+
 # Packaged Helm charts
 *.tgz
