@@ -118,7 +118,11 @@ func (a *API) startPendingMFA(ctx context.Context, userID string, factor *auth.M
 		if a.sms == nil {
 			return "", fmt.Errorf("SMS delivery is unavailable")
 		}
-		if err = a.sms.SendSMS(ctx, &notify.SMS{To: factor.ContactValue, Text: "Your PingMessenger login code is " + code + ". It expires in 10 minutes."}); err != nil {
+		phone, normalizeErr := normalizeContactValue("phone", factor.ContactValue)
+		if normalizeErr != nil {
+			return "", normalizeErr
+		}
+		if err = a.sms.SendSMS(ctx, &notify.SMS{To: phone, Text: "Your PingMessenger login code is " + code + ". It expires in 10 minutes."}); err != nil {
 			return "", err
 		}
 	}

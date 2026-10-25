@@ -104,7 +104,11 @@ func (a *API) sendPasswordCode(ctx context.Context, contacts []*auth.Contact, co
 		if contact.Kind == "email" {
 			err = a.email.Send(ctx, &notify.Email{To: contact.Value, Subject: subject, Text: "Your PingMessenger code is " + code + ". It expires in 10 minutes."})
 		} else if contact.Kind == "phone" && a.sms != nil {
-			err = a.sms.SendSMS(ctx, &notify.SMS{To: contact.Value, Text: "Your PingMessenger code is " + code + ". It expires in 10 minutes."})
+			phone, normalizeErr := normalizeContactValue("phone", contact.Value)
+			if normalizeErr != nil {
+				return normalizeErr
+			}
+			err = a.sms.SendSMS(ctx, &notify.SMS{To: phone, Text: "Your PingMessenger code is " + code + ". It expires in 10 minutes."})
 		}
 		if err != nil {
 			return err
