@@ -52,7 +52,11 @@ The PostgreSQL-backed regression `internal/stories/repository_sync_integration_t
 verifies that a page requested again before ACK replays the same event, ACKed
 pages advance bounded pagination, and both sync requests and acknowledgements
 reject cursor regression. This exercises the durable repository contract; it
-does not replace a live authenticated WebSocket/server integration test.
+is complemented by `internal/httpapi/routes_stories_ws_integration_test.go`,
+which exercises the authenticated `/v1/stories/ws` handler over a real local
+WebSocket, including reconnect replay, ACK, next-page delivery, and the
+`cursor_regression` wire error. These are local PostgreSQL/server integration
+tests; deployed WebSocket behavior remains unverified.
 
 ## Media and durable downloads
 
