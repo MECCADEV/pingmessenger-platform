@@ -63,16 +63,27 @@ Deployed WebSocket behavior remains unverified.
 ## Media and durable downloads
 
 Created story events include a private S3 `media_url` with a ten-minute
-presigned lifetime. Do not persist that URL as a durable background job source.
-Instead enqueue the documented authenticated route
+presigned lifetime. It is a temporary bearer capability, not a durable
+background-job credential: do not persist it or rely on it after expiry. There
+is no long-lived or signed-job media URL route. Instead, persist the story ID
+and enqueue the documented authenticated route
 `GET /v1/stories/{storyID}/media`; it streams the entire object as the response
-body, requires an active bearer session, and checks current recipient
-authorization on each request. Image and video content types are preserved.
-The proxy has no URL expiry but provides no byte ranges or cache validators;
-the current rate limits are 120 requests per authenticated user and 600 per
-peer IP per minute when Redis is configured. A mobile worker must wait for a
-valid signed-in session, and should treat 404 as terminal because the story may
-have expired, been deleted, or become unauthorized.
+body, requires a valid signed-in bearer session, and checks current recipient
+authorization on each request. A background worker must wait until it can use
+that valid session; it must not treat a stale cached access token as sufficient.
+Image and video content types are preserved. The proxy has no URL expiry but
+provides no byte ranges or cache validators; the current rate limits are 120
+requests per authenticated user and 600 per peer IP per minute when Redis is
+configured. Treat 404 as terminal because the story may have expired, been
+deleted, or become unauthorized.
+
+The documented `POST /v1/auth/refresh` rotates the refresh token: a successful
+rotation invalidates the presented token. It has no idempotency key, replay
+grace, or concurrent-refresh guarantee. Clients must serialize refresh
+attempts across foreground and background workers and durably persist the
+replacement access/refresh credentials before treating the rotation as
+committed. If a refresh response is lost, this API does not promise that
+replaying the old refresh token can recover the replacement credentials.
 
 ## Source of truth
 
