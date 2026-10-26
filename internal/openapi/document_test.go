@@ -112,7 +112,7 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		}
 	}
 	resolverBody := doc.Components.Schemas.Map()["NotificationResolveBody"]
-	if resolverBody == nil || resolverBody.Properties["openim_user_ids"] == nil || resolverBody.Properties["openim_user_ids"].Items == nil || resolverBody.Properties["openim_user_ids"].Items.MaxLength == nil || *resolverBody.Properties["openim_user_ids"].Items.MaxLength != 128 {
+	if resolverBody == nil || resolverBody.Properties["openim_user_ids"] == nil || resolverBody.Properties["openim_user_ids"].Nullable || resolverBody.Properties["openim_user_ids"].Items == nil || resolverBody.Properties["openim_user_ids"].Items.MaxLength == nil || *resolverBody.Properties["openim_user_ids"].Items.MaxLength != 128 {
 		t.Fatal("notification resolver must document the 128-character recipient ID limit")
 	}
 	settings := doc.Paths["/v1/settings/notifications"]

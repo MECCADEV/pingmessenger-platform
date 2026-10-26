@@ -832,6 +832,10 @@ func newDocument() (*DocumentModel, error) {
 	}
 	if notificationResolve := document.Components.Schemas.Map()["NotificationResolveBody"]; notificationResolve != nil {
 		if ids := notificationResolve.Properties["openim_user_ids"]; ids != nil && ids.Items != nil {
+			// The resolver requires a non-empty array and rejects JSON null at
+			// runtime. Go's slice schema is nullable by default, so make that
+			// contract explicit in the generated OpenAPI document.
+			ids.Nullable = false
 			maxLength := 128
 			ids.Items.MaxLength = &maxLength
 		}

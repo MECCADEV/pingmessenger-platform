@@ -60,6 +60,19 @@ func TestNotificationResolverRejectsRecipientIDLongerThanContractLimit(t *testin
 	}
 }
 
+func TestNotificationResolverRejectsNullRecipientIDs(t *testing.T) {
+	api := &API{openIMServiceToken: "configured-service-secret", validate: validator.New()}
+	ctx := new(fasthttp.RequestCtx)
+	ctx.Request.Header.Set("X-OpenIM-Service-Token", "configured-service-secret")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"openim_user_ids":null,"conversation_id":"conversation-1"}`)
+
+	api.resolveNotificationPreferences(ctx)
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", got)
+	}
+}
+
 func TestNotificationResolverIDLimitsCountUnicodeCharacters(t *testing.T) {
 	validID := strings.Repeat("界", 128)
 	if normalized, ok := normalizeOpenIMUserID(validID); !ok || normalized != validID {

@@ -68,8 +68,10 @@ Request:
 }
 ```
 
-There must be 1–1000 recipient IDs (each at most 128 characters);
-`conversation_id` is 1–256 characters. The response maps only known, active,
+`openim_user_ids` is required and must be a JSON array containing 1–1000
+recipient IDs (each at most 128 characters); omission, `null`, and an empty
+array are rejected with `422`. `conversation_id` is 1–256 characters. The
+response maps only known, active,
 non-deleted Platform users to their effective preference:
 
 ```json
