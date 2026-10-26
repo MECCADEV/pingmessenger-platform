@@ -60,4 +60,20 @@ func TestNotificationResolverRejectsRecipientIDLongerThanContractLimit(t *testin
 	}
 }
 
+func TestNotificationResolverIDLimitsCountUnicodeCharacters(t *testing.T) {
+	validID := strings.Repeat("界", 128)
+	if normalized, ok := normalizeOpenIMUserID(validID); !ok || normalized != validID {
+		t.Fatal("128-character UTF-8 recipient ID should be accepted")
+	}
+	if _, ok := normalizeOpenIMUserID(validID + "界"); ok {
+		t.Fatal("129-character UTF-8 recipient ID should be rejected")
+	}
+	if !validConversationID(strings.Repeat("界", 256)) {
+		t.Fatal("256-character UTF-8 conversation ID should be accepted")
+	}
+	if validConversationID(strings.Repeat("界", 257)) {
+		t.Fatal("257-character UTF-8 conversation ID should be rejected")
+	}
+}
+
 func intPointer(value int) *int { return &value }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
@@ -153,9 +154,9 @@ func (a *API) resolveNotificationPreferences(ctx *fasthttp.RequestCtx) {
 	}
 	ids := make([]string, 0, len(request.OpenIMUserIDs))
 	seen := make(map[string]struct{}, len(request.OpenIMUserIDs))
-	for _, id := range request.OpenIMUserIDs {
-		id = strings.TrimSpace(id)
-		if id == "" || len(id) > 128 {
+	for _, rawID := range request.OpenIMUserIDs {
+		id, ok := normalizeOpenIMUserID(rawID)
+		if !ok {
 			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "invalid openim_user_id"})
 			return
 		}
@@ -173,7 +174,18 @@ func (a *API) resolveNotificationPreferences(ctx *fasthttp.RequestCtx) {
 	writeJSON(ctx, http.StatusOK, notificationResolveResponse{Preferences: preferences})
 }
 
-func validConversationID(id string) bool { return len(id) > 0 && len(id) <= 256 }
+func normalizeOpenIMUserID(id string) (string, bool) {
+	if utf8.RuneCountInString(id) > 128 {
+		return "", false
+	}
+	id = strings.TrimSpace(id)
+	return id, id != ""
+}
+
+func validConversationID(id string) bool {
+	length := utf8.RuneCountInString(id)
+	return length > 0 && length <= 256
+}
 
 func validateNotificationInput(input notifications.Input) error {
 	if input.Enabled == nil && input.Mode == nil && input.Sound == nil && input.MaxUpdateFrequencySeconds == nil {
