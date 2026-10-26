@@ -48,6 +48,12 @@ requesting pages with the last committed cursors while `has_more` is true.
 This makes duplicate delivery safe and prevents an acknowledgement from
 skipping events lost before persistence.
 
+The PostgreSQL-backed regression `internal/stories/repository_sync_integration_test.go`
+verifies that a page requested again before ACK replays the same event, ACKed
+pages advance bounded pagination, and both sync requests and acknowledgements
+reject cursor regression. This exercises the durable repository contract; it
+does not replace a live authenticated WebSocket/server integration test.
+
 ## Media and durable downloads
 
 Created story events include a private S3 `media_url` with a ten-minute
