@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -408,7 +409,16 @@ func (r *Repository) Ack(ctx context.Context, userID string, global int64, users
 	for owner, cursor := range users {
 		values[owner] = cursor
 	}
-	for scope, cursor := range values {
+	// Every ACK can lock both the global and one or more owner cursors. Sort
+	// the scopes so concurrent ACKs acquire those rows in the same order and
+	// cannot deadlock because Go map iteration differs between transactions.
+	scopes := make([]string, 0, len(values))
+	for scope := range values {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	for _, scope := range scopes {
+		cursor := values[scope]
 		var old int64
 		err = tx.QueryRow(ctx, `SELECT cursor FROM story_sync_cursors WHERE user_id=$1 AND scope_key=$2 FOR UPDATE`, userID, scope).Scan(&old)
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -56,7 +56,9 @@ is complemented by `internal/httpapi/routes_stories_ws_integration_test.go`,
 which exercises the authenticated `/v1/stories/ws` handler over a real local
 WebSocket, including reconnect replay, ACK, next-page delivery, and the
 `cursor_regression` wire error. These are local PostgreSQL/server integration
-tests; deployed WebSocket behavior remains unverified.
+tests; concurrent global/per-owner ACK updates also use a deterministic scope
+lock order and are stress-tested to preserve the highest committed cursor.
+Deployed WebSocket behavior remains unverified.
 
 ## Media and durable downloads
 

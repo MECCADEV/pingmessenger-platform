@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,5 +74,56 @@ func TestSyncReplayAndAckCursorMonotonicityPostgres(t *testing.T) {
 	}
 	if err = repository.Ack(ctx, ownerID, second.GlobalCursor, second.UserCursors); err != nil {
 		t.Fatalf("ack committed second page: %v", err)
+	}
+
+	create("third")
+	create("fourth")
+	finalPage, err := repository.Sync(ctx, ownerID, second.GlobalCursor, second.UserCursors, 2)
+	if err != nil || len(finalPage.Events) != 2 {
+		t.Fatalf("concurrent ACK fixture=%+v err=%v; want two events", finalPage, err)
+	}
+	lowCursor := finalPage.Events[0].EventID
+	highCursor := finalPage.Events[1].EventID
+	const racingACKs = 20
+	start := make(chan struct{})
+	type ackResult struct {
+		cursor int64
+		err    error
+	}
+	results := make(chan ackResult, racingACKs*2)
+	var workers sync.WaitGroup
+	for range racingACKs {
+		for _, cursor := range []int64{lowCursor, highCursor} {
+			workers.Add(1)
+			go func(cursor int64) {
+				defer workers.Done()
+				<-start
+				results <- ackResult{cursor: cursor, err: repository.Ack(ctx, ownerID, cursor, map[string]int64{ownerID: cursor})}
+			}(cursor)
+		}
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	highestACKSucceeded := false
+	for result := range results {
+		if result.cursor == highCursor && result.err == nil {
+			highestACKSucceeded = true
+		} else if result.err != nil && !errors.Is(result.err, ErrCursorRegression) {
+			t.Fatalf("concurrent ACK returned unexpected error: %v", result.err)
+		}
+	}
+	if !highestACKSucceeded {
+		t.Fatal("no concurrent ACK committed the highest cursor")
+	}
+	var persistedGlobal, persistedOwner int64
+	if err = pool.QueryRow(ctx, `SELECT cursor FROM story_sync_cursors WHERE user_id=$1 AND scope_key='global'`, ownerID).Scan(&persistedGlobal); err != nil {
+		t.Fatalf("load persisted global cursor: %v", err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT cursor FROM story_sync_cursors WHERE user_id=$1 AND scope_key=$2`, ownerID, ownerID).Scan(&persistedOwner); err != nil {
+		t.Fatalf("load persisted owner cursor: %v", err)
+	}
+	if persistedGlobal != highCursor || persistedOwner != highCursor {
+		t.Fatalf("concurrent ACKs left global=%d owner=%d; want both=%d", persistedGlobal, persistedOwner, highCursor)
 	}
 }
