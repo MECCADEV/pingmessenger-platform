@@ -92,6 +92,19 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if len(resolver.Security) != 1 || resolver.Security[0]["openIMServiceAuth"] == nil {
 		t.Fatal("notification resolver must document dedicated service authentication")
 	}
+	for _, term := range []string{"successful partial result", "503", "storage/query failure 500", "fail-open or fail-closed"} {
+		if !strings.Contains(resolver.Description, term) {
+			t.Errorf("notification resolver description missing %q: %q", term, resolver.Description)
+		}
+	}
+	settings := doc.Paths["/v1/settings/notifications"]
+	for _, description := range []string{settings.Get.Description, settings.Put.Description} {
+		for _, term := range []string{"mentions_only", "native OS channel settings"} {
+			if !strings.Contains(description, term) {
+				t.Errorf("notification preference description missing %q: %q", term, description)
+			}
+		}
+	}
 	profile := doc.Paths["/v1/profile/update"].Post.RequestBody.Content["multipart/form-data"]
 	if profile == nil || profile.Schema == nil || profile.Schema.Properties["image"] == nil {
 		t.Fatal("profile upload must be documented as a multipart image field")

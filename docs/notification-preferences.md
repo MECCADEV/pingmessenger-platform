@@ -34,6 +34,19 @@ opaque conversation ID is scoped to that owner. The handler does not validate
 conversation membership against OpenIM; the value cannot read or modify any
 other user's settings.
 
+For push delivery, `enabled: false` and `mode: none` both suppress chat alerts;
+`all` allows every otherwise eligible message, while `mentions_only` allows a
+message only when OpenIM identifies that recipient as mentioned (including an
+`@all` mention). `sound` is a presentation preference: OpenIM maps `default`
+and `silent` to its Android chat notification channels and corresponding iOS
+APNs sound behavior. Android users can independently change a channel's sound
+in OS settings, so the stored value is not a guarantee that the OS will play a
+particular sound. The frequency is the minimum interval between emitted
+updates for one recipient and conversation: OpenIM sends the first eligible
+alert immediately and coalesces subsequent updates to the latest preview
+during the interval. These delivery semantics are implemented by OpenIM, not
+by the preference API itself.
+
 ## Private OpenIM resolver
 
 `POST /v1/internal/notifications/resolve` requires the dedicated
@@ -75,6 +88,12 @@ conversation ID and does not cross-check OpenIM membership. Platform OpenAPI
 documents this route with the dedicated service-auth scheme; generated
 `openapi/openapi.json` is checked in.
 
+An unset Platform service token returns `503`, an invalid token returns `401`,
+invalid input returns `422`, and a storage/query failure returns `500`; all
+error bodies have an `error` string. An omitted preference entry means the
+OpenIM user ID is unknown, inactive, or deleted, not that resolution failed.
+OpenIM must distinguish this successful partial result from a failed request.
+
 The SQL write uses one `INSERT ... ON CONFLICT` statement, merging supplied
 fields atomically so simultaneous updates to different fields do not lose each
 other. Database constraints enforce allowed values and frequency choices.
@@ -86,9 +105,14 @@ exercises overlapping updates, inheritance/reset, and resolver filtering with
 ## Delivery guarantees and remaining deployment work
 
 This contract only stores and resolves preferences. It does not itself send
-FCM, update native Android channels, coalesce pushes, clear OS notifications on
-read, or guarantee a background delivery. OpenIM's sender/coalescer must consume
+FCM, create native Android channels, coalesce pushes, clear OS notifications on
+read, or guarantee a background delivery. OpenIM's sender/coalescer consumes
 the resolver response. The failure mode (`fail-open` or `fail-closed`) must be
-explicitly configured on OpenIM; selecting a failure policy is a product
-decision not encoded by the API. End-to-end delivery, channel behavior, read
-cleanup, and restart/race behavior require deployment and integration tests.
+explicitly configured on OpenIM; Platform does not prescribe behavior during
+a resolver outage. Fail-open applies OpenIM's documented defaults for the
+failed lookup and can therefore send alerts that stored user preferences would
+otherwise suppress; fail-closed withholds the affected push attempt and relies
+on OpenIM's delivery retry. Choosing between these availability/privacy
+tradeoffs is a product/deployment decision, not an API default. End-to-end
+delivery, OS channel behavior, read cleanup, and restart/race behavior require
+deployment and integration tests.
