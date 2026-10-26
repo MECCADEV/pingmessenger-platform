@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -183,6 +184,66 @@ func TestStoryContractAgainstDeployedAPI(t *testing.T) {
 	}
 }
 
+func TestStoryCreateIdempotencyAgainstDeployedAPI(t *testing.T) {
+	base := os.Getenv("E2E_BASE_URL")
+	if base == "" {
+		t.Skip("E2E_BASE_URL is not configured")
+	}
+	c := &http.Client{Timeout: 30 * time.Second}
+	created := postJSON(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":"correct-horse-battery-staple"}`, fmt.Sprintf("story-idem-%d", time.Now().UnixNano())), http.StatusCreated)
+	access := created["access_token"].(string)
+	key := fmt.Sprintf("story-draft-%d", time.Now().UnixNano())
+	first, _, _ := postStoryWithKey(t, c, base, access, "image/png", []byte("same-payload"), nil, key, http.StatusCreated)
+	firstStory := first["story"].(map[string]any)
+	firstID := firstStory["id"].(string)
+	replay, replayHeader, _ := postStoryWithKey(t, c, base, access, "image/png", []byte("same-payload"), nil, key, http.StatusCreated)
+	if got := replay["story"].(map[string]any)["id"].(string); got != firstID || replayHeader != "true" {
+		t.Fatalf("sequential replay story=%q header=%q, want story=%q and replay marker", got, replayHeader, firstID)
+	}
+	postStoryWithKey(t, c, base, access, "image/png", []byte("changed-payload"), nil, key, http.StatusConflict)
+
+	concurrentKey := fmt.Sprintf("story-race-%d", time.Now().UnixNano())
+	const attempts = 4
+	type result struct {
+		id  string
+		err error
+	}
+	ids := make(chan result, attempts)
+	var group sync.WaitGroup
+	for range attempts {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			response, _, status, err := doPostStoryWithKey(c, base, access, "image/png", []byte("racing-payload"), nil, concurrentKey)
+			if err != nil {
+				ids <- result{err: err}
+				return
+			}
+			if status != http.StatusCreated {
+				ids <- result{err: fmt.Errorf("status=%d, want=%d", status, http.StatusCreated)}
+				return
+			}
+			ids <- result{id: response["story"].(map[string]any)["id"].(string)}
+		}()
+	}
+	group.Wait()
+	close(ids)
+	winner := ""
+	for response := range ids {
+		if response.err != nil {
+			t.Fatal(response.err)
+		}
+		if winner == "" {
+			winner = response.id
+		} else if response.id != winner {
+			t.Fatalf("concurrent same-key creates returned different stories: %q and %q", winner, response.id)
+		}
+	}
+	deleteStory(t, c, base, access, firstID, http.StatusOK)
+	deleteStory(t, c, base, access, winner, http.StatusOK)
+	postStoryWithKey(t, c, base, access, "image/png", []byte("same-payload"), nil, key, http.StatusGone)
+}
+
 func TestStoryLiveFanoutAgainstDeployedAPI(t *testing.T) {
 	base := os.Getenv("E2E_BASE_URL")
 	if base == "" {
@@ -285,7 +346,23 @@ func sendOpenIMStoryProbe(t *testing.T, base, token, senderID, receiverID string
 }
 
 func postStory(t *testing.T, c *http.Client, base, access, contentType string, media []byte, fields map[string]string, want int) map[string]any {
+	result, _, _ := postStoryWithKey(t, c, base, access, contentType, media, fields, "", want)
+	return result
+}
+
+func postStoryWithKey(t *testing.T, c *http.Client, base, access, contentType string, media []byte, fields map[string]string, key string, want int) (map[string]any, string, int) {
 	t.Helper()
+	result, replayHeader, status, err := doPostStoryWithKey(c, base, access, contentType, media, fields, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != want {
+		t.Fatalf("story upload status=%d want=%d", status, want)
+	}
+	return result, replayHeader, status
+}
+
+func doPostStoryWithKey(c *http.Client, base, access, contentType string, media []byte, fields map[string]string, key string) (map[string]any, string, int, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	header := textproto.MIMEHeader{}
@@ -293,42 +370,41 @@ func postStory(t *testing.T, c *http.Client, base, access, contentType string, m
 	header.Set("Content-Type", contentType)
 	part, err := writer.CreatePart(header)
 	if err != nil {
-		t.Fatal(err)
+		return nil, "", 0, err
 	}
 	if _, err = part.Write(media); err != nil {
-		t.Fatal(err)
+		return nil, "", 0, err
 	}
 	for key, value := range fields {
 		if err = writer.WriteField(key, value); err != nil {
-			t.Fatal(err)
+			return nil, "", 0, err
 		}
 	}
 	if err = writer.Close(); err != nil {
-		t.Fatal(err)
+		return nil, "", 0, err
 	}
 	req, err := http.NewRequest(http.MethodPost, base+"/v1/stories", &body)
 	if err != nil {
-		t.Fatal(err)
+		return nil, "", 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+access)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
 	resp, err := c.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return nil, "", 0, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != want {
-		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		t.Fatalf("story upload status=%d want=%d content_type=%s bytes=%d body=%s", resp.StatusCode, want, contentType, len(media), detail)
-	}
-	if want != http.StatusCreated {
-		return nil
+	if resp.StatusCode != http.StatusCreated {
+		return nil, resp.Header.Get("Idempotency-Replayed"), resp.StatusCode, nil
 	}
 	var result map[string]any
 	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatal(err)
+		return nil, "", resp.StatusCode, err
 	}
-	return result
+	return result, resp.Header.Get("Idempotency-Replayed"), resp.StatusCode, nil
 }
 
 func deleteStory(t *testing.T, c *http.Client, base, access, storyID string, want int) map[string]any {

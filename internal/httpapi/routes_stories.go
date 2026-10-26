@@ -78,6 +78,11 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	idempotencyKey, err := parseStoryIdempotencyKey(string(ctx.Request.Header.Peek("Idempotency-Key")))
+	if err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
 	if !a.enforceRate(ctx, "story-upload", userID, storyUploadUserLimit, storyUploadIPLimit) {
 		return
 	}
@@ -177,6 +182,41 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 		}
 		expires = time.Duration(n) * time.Second
 	}
+	var requestHash string
+	if idempotencyKey != "" {
+		requestHash, err = hashStoryCreateRequest(string(mediaType), contentType, data, caption, textContent, backgroundColor, visibility, ids, int64(expires/time.Second))
+		if err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not fingerprint story request"})
+			return
+		}
+		existing, lookupErr := a.stories.FindIdempotent(context.Background(), userID, idempotencyKey, requestHash)
+		if errors.Is(lookupErr, stories.ErrIdempotencyConflict) {
+			writeJSON(ctx, http.StatusConflict, map[string]string{"error": lookupErr.Error()})
+			return
+		}
+		if errors.Is(lookupErr, stories.ErrIdempotencyGone) {
+			writeJSON(ctx, http.StatusGone, map[string]string{"error": lookupErr.Error()})
+			return
+		}
+		if lookupErr != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load idempotent story result"})
+			return
+		}
+		if existing != nil {
+			if existing.StorageKey != "" {
+				if !a.enforceRate(ctx, "story-signed-url", userID, signedURLUserLimit, signedURLIPLimit) {
+					return
+				}
+				if err := a.signStoryMedia(context.Background(), existing); err != nil {
+					writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not sign story media"})
+					return
+				}
+			}
+			ctx.Response.Header.Set("Idempotency-Replayed", "true")
+			writeJSON(ctx, http.StatusCreated, map[string]any{"story": existing})
+			return
+		}
+	}
 	openID, err := a.users.OpenIMUserID(context.Background(), userID)
 	if err != nil {
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
@@ -244,7 +284,7 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	story, err := a.stories.Create(context.Background(), stories.CreateParams{OwnerID: userID, MediaType: string(mediaType), StorageKey: key, MediaURL: "", ContentType: contentType, ByteSize: int64(len(data)), Caption: caption, Text: textContent, BackgroundColor: backgroundColor, Visibility: visibility, ExpiresAt: time.Now().Add(expires), Recipients: recipients, VisibilityUsers: ids})
+	story, created, err := a.stories.CreateIdempotent(context.Background(), stories.CreateParams{OwnerID: userID, MediaType: string(mediaType), StorageKey: key, MediaURL: "", ContentType: contentType, ByteSize: int64(len(data)), Caption: caption, Text: textContent, BackgroundColor: backgroundColor, Visibility: visibility, ExpiresAt: time.Now().Add(expires), Recipients: recipients, VisibilityUsers: ids, IdempotencyKey: idempotencyKey, RequestHash: requestHash})
 	if err != nil {
 		if hasMedia {
 			_ = a.objects.Delete(context.Background(), key)
@@ -257,10 +297,33 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 			writeJSON(ctx, http.StatusTooManyRequests, map[string]string{"error": "maximum of 40 retained stories per user reached"})
 			return
 		}
+		if errors.Is(err, stories.ErrIdempotencyConflict) {
+			writeJSON(ctx, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, stories.ErrIdempotencyGone) {
+			writeJSON(ctx, http.StatusGone, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not persist story"})
 		return
 	}
-	story.MediaURL = privateStory.MediaURL
+	if !created {
+		if hasMedia && key != story.StorageKey {
+			if deleteErr := a.objects.Delete(context.Background(), key); deleteErr != nil {
+				log.Printf("failed to delete losing idempotent story upload %s: %v", key, deleteErr)
+			}
+		}
+		if story.StorageKey != "" {
+			if err := a.signStoryMedia(context.Background(), story); err != nil {
+				writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not sign story media"})
+				return
+			}
+		}
+		ctx.Response.Header.Set("Idempotency-Replayed", "true")
+	} else {
+		story.MediaURL = privateStory.MediaURL
+	}
 	writeJSON(ctx, http.StatusCreated, map[string]any{"story": story})
 }
 
@@ -648,6 +711,11 @@ func (a *API) RunStoryExpiry(ctx context.Context) {
 				log.Printf("story row cleanup failed: %v", err)
 			} else if removed > 0 {
 				log.Printf("removed %d story rows older than 24 hours", removed)
+			}
+			if removed, err := a.stories.CleanupExpiredIdempotency(ctx, 500); err != nil {
+				log.Printf("story idempotency cleanup failed: %v", err)
+			} else if removed > 0 {
+				log.Printf("removed %d expired story idempotency records", removed)
 			}
 		}
 	}

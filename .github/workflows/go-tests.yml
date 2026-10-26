@@ -1,0 +1,61 @@
+name: Go tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go tests and database-backed reliability cases
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: platform_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d platform_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/platform_test?sslmode=disable
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/platform_test?sslmode=disable
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Apply schema migrations
+        run: go run ./cmd/db -mode=migrate
+
+      - name: Run tests with the race detector
+        run: go test -race -count=1 ./...
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Verify generated OpenAPI
+        run: |
+          go run ./cmd/openapi -output "$RUNNER_TEMP/openapi.json"
+          cmp --silent openapi/openapi.json "$RUNNER_TEMP/openapi.json"

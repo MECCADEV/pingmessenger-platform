@@ -10,9 +10,11 @@ import (
 )
 
 var (
-	ErrCountLimit = errors.New("document count limit reached")
-	ErrQuotaLimit = errors.New("document upload quota reached")
-	ErrNotFound   = errors.New("document not found")
+	ErrCountLimit          = errors.New("document count limit reached")
+	ErrQuotaLimit          = errors.New("document upload quota reached")
+	ErrNotFound            = errors.New("document not found")
+	ErrIdempotencyConflict = errors.New("idempotency key was already used for a different document")
+	ErrIdempotencyGone     = errors.New("idempotent document result is no longer available")
 )
 
 type Repository struct{ pool *pgxpool.Pool }
@@ -22,27 +24,60 @@ func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: po
 // Reserve serializes reservations per user and records the document before
 // the S3 write. A failed object write is moved to the normal cleanup path.
 func (r *Repository) Reserve(ctx context.Context, ownerID, key, name, contentType string, size int64, policy Policy) (*Document, error) {
+	doc, _, err := r.ReserveIdempotent(ctx, ownerID, key, name, contentType, size, policy, "", "")
+	return doc, err
+}
+
+// ReserveIdempotent binds a client key and request fingerprint to the reserved
+// document in the same transaction. Replays return the original row before
+// quota accounting, including tombstones so deleted uploads cannot resurrect.
+func (r *Repository) ReserveIdempotent(ctx context.Context, ownerID, key, name, contentType string, size int64, policy Policy, idempotencyKey, requestHash string) (*Document, bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
 	if _, err = tx.Exec(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, ownerID); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if idempotencyKey != "" {
+		var existing Document
+		var storedHash string
+		var deletedAt *time.Time
+		lookupErr := tx.QueryRow(ctx, `SELECT d.id::text,d.owner_id::text,d.storage_key,d.file_name,d.content_type,d.byte_size,d.created_at,d.expires_at,d.deleted_at,u.request_hash
+			FROM message_documents d JOIN message_document_upload_idempotency u ON u.document_id=d.id
+			WHERE d.owner_id=$1 AND u.idempotency_key=$2 FOR UPDATE OF d,u`, ownerID, idempotencyKey).Scan(
+			&existing.ID, &existing.OwnerID, &existing.StorageKey, &existing.FileName, &existing.ContentType, &existing.ByteSize, &existing.CreatedAt, &existing.ExpiresAt, &deletedAt, &storedHash)
+		if lookupErr == nil {
+			if storedHash != requestHash {
+				return nil, false, ErrIdempotencyConflict
+			}
+			existing.DeletedAt = deletedAt
+			if deletedAt != nil || !existing.ExpiresAt.After(time.Now()) {
+				return nil, false, ErrIdempotencyGone
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return nil, false, err
+			}
+			return &existing, false, nil
+		}
+		if !errors.Is(lookupErr, pgx.ErrNoRows) {
+			return nil, false, lookupErr
+		}
 	}
 	var count int
 	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM message_documents WHERE owner_id=$1 AND deleted_at IS NULL AND expires_at>now()`, ownerID).Scan(&count); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if count >= policy.MaxCount {
-		return nil, ErrCountLimit
+		return nil, false, ErrCountLimit
 	}
 	var bytes int64
 	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(byte_size),0) FROM message_documents WHERE owner_id=$1 AND created_at>now()-interval '24 hours'`, ownerID).Scan(&bytes); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if bytes > policy.MaxBytes24h-size {
-		return nil, ErrQuotaLimit
+		return nil, false, ErrQuotaLimit
 	}
 	var d Document
 	err = tx.QueryRow(ctx, `INSERT INTO message_documents (owner_id,storage_key,file_name,content_type,byte_size,expires_at)
@@ -50,12 +85,17 @@ func (r *Repository) Reserve(ctx context.Context, ownerID, key, name, contentTyp
 		RETURNING id::text,owner_id::text,storage_key,file_name,content_type,byte_size,created_at,expires_at`, ownerID, key, name, contentType, size, policy.Retention.String()).Scan(
 		&d.ID, &d.OwnerID, &d.StorageKey, &d.FileName, &d.ContentType, &d.ByteSize, &d.CreatedAt, &d.ExpiresAt)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if idempotencyKey != "" {
+		if _, err = tx.Exec(ctx, `INSERT INTO message_document_upload_idempotency(owner_id,idempotency_key,request_hash,document_id) VALUES ($1,$2,$3,$4)`, ownerID, idempotencyKey, requestHash, d.ID); err != nil {
+			return nil, false, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &d, nil
+	return &d, true, nil
 }
 
 func (r *Repository) MarkDeleteRequested(ctx context.Context, ownerID, id string) (*CleanupItem, error) {

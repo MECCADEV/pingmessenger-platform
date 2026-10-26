@@ -197,8 +197,18 @@ multipart upload (`media`, optional `caption`, `visibility=contacts|allow|exclud
 optional JSON-array `user_ids`, and optional `expires_in_seconds`); expiry
 defaults to 24 hours and media is limited to 10 MiB. A story deletion or
 expiry is a durable `deleted` event, so offline clients do not retain stale
-stories. `POST /v1/stories/{storyID}/view` records an idempotent view/reaction;
-the owner can read those records from `GET /v1/stories/{storyID}/views`.
+stories. An optional owner-scoped `Idempotency-Key` makes a same-payload retry
+return the original story for 30 days. Reusing a key with changed payload
+returns 409; replaying a deleted/expired result returns 410 and never
+recreates it. Requests without the header retain legacy non-idempotent behavior.
+Clients should persist the key before sending and reuse it only for retries of
+the same unchanged draft. `POST /v1/stories/{storyID}/view` upserts one row per
+story/viewer, so repeated requests do not create duplicate view rows; however,
+each request refreshes `viewed_at` and replaces the reaction (including clearing
+it when omitted/empty). It is therefore not idempotent as a state update. The
+owner can read the current records from `GET /v1/stories/{storyID}/views`.
+See [story retry semantics](docs/story-retry-semantics.md) for the detailed
+server behavior and client retry guidance.
 
 Text statuses omit `media`, set `type=text`, and supply a 1–700 character
 `text` plus `background_color` in `#RRGGBB` form. `caption` is accepted as a
@@ -225,8 +235,15 @@ user and peer IP. The controlled download routes are `GET
 /v1/stories/{storyID}/media` and `GET /v1/documents/{documentID}/download`.
 Direct S3 presigned GETs cannot be counted by this API after the client leaves
 the service; use the proxy routes when API-enforced download throttling is
-required. Without `REDIS_URL`, only a process-local development limiter is
-used.
+required. The story-media proxy URI has no signed-URL TTL: each request checks
+the current bearer session and story recipient relationship. It returns the
+complete object bytes directly, with the stored MIME type and byte size; it
+does not redirect, support Range or conditional requests, or set explicit
+cache-control/validator headers. Expired, deleted, or otherwise unavailable
+stories return 404. With `REDIS_URL`, the proxy permits 120 requests per
+authenticated user and 600 per peer IP per minute; without it, only a
+process-local development limiter is used. The `media_url` in create responses
+and story events is separate: it is a cached 10-minute S3 presigned bearer URL.
 
 ## Document messages
 

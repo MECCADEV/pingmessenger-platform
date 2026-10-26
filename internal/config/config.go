@@ -29,6 +29,7 @@ type Config struct {
 	OpenIMAPIBaseURL             string
 	OpenIMConversationGRPCTarget string
 	OpenIMAPIToken               string
+	OpenIMServiceToken           string
 	OpenIMSharedSecret           string
 	OpenIMAdminUserID            string
 	OpenIMWebhookGRPCAddr        string
@@ -86,7 +87,7 @@ func Load() (Config, error) {
 		S3Bucket: os.Getenv("S3_BUCKET"), DocumentS3Bucket: value("DOCUMENT_S3_BUCKET", os.Getenv("S3_BUCKET")), S3Endpoint: os.Getenv("S3_ENDPOINT"), RedisURL: os.Getenv("REDIS_URL"),
 		DocumentMaxBytes: documentMaxBytes, DocumentMaxCount: documentMaxCount, DocumentMaxBytes24h: documentMaxBytes24h, DocumentRetention: documentRetention,
 		DocumentAllowedMIMEs: value("DOCUMENT_ALLOWED_MIMES", "application/pdf,application/rtf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain,text/csv,application/zip"),
-		OpenIMAPIToken:       os.Getenv("OPENIM_API_TOKEN"), OpenIMSharedSecret: os.Getenv("OPENIM_SHARED_SECRET"), OpenIMAdminUserID: value("OPENIM_ADMIN_USER_ID", "imAdmin"), OpenIMWebhookGRPCAddr: value("OPENIM_WEBHOOK_GRPC_ADDR", ":9090"),
+		OpenIMAPIToken:       os.Getenv("OPENIM_API_TOKEN"), OpenIMServiceToken: os.Getenv("OPENIM_SERVICE_TOKEN"), OpenIMSharedSecret: os.Getenv("OPENIM_SHARED_SECRET"), OpenIMAdminUserID: value("OPENIM_ADMIN_USER_ID", "imAdmin"), OpenIMWebhookGRPCAddr: value("OPENIM_WEBHOOK_GRPC_ADDR", ":9090"),
 		DeviceTokenEncryptionKey: os.Getenv("DEVICE_TOKEN_ENCRYPTION_KEY"),
 		EmailProvider:            value("EMAIL_PROVIDER", "smtp"), SMTPAddress: os.Getenv("SMTP_ADDRESS"), SMTPFrom: os.Getenv("SMTP_FROM"), EmailMirrorSMTPAddress: os.Getenv("EMAIL_MIRROR_SMTP_ADDRESS"), EmailMirrorFrom: value("EMAIL_MIRROR_FROM", "e2e-mirror@pingmessenger.local"), AWSRegion: os.Getenv("AWS_REGION"), AWSSNSTopicARN: os.Getenv("AWS_SNS_TOPIC_ARN"), AWSSESFromEmail: os.Getenv("AWS_SES_FROM_EMAIL"), SMSMirrorTopicARN: os.Getenv("SMS_MIRROR_TOPIC_ARN"), PingPayEventSecret: os.Getenv("PINGPAY_EVENT_SECRET"),
 		// No public RPC fallback in a deployed process; local development can opt
@@ -98,6 +99,9 @@ func Load() (Config, error) {
 	}
 	if len(c.JWTSigningSecret) < 32 {
 		return Config{}, fmt.Errorf("JWT_SIGNING_SECRET must contain at least 32 bytes")
+	}
+	if c.OpenIMServiceToken != "" && len(c.OpenIMServiceToken) < 32 {
+		return Config{}, fmt.Errorf("OPENIM_SERVICE_TOKEN must contain at least 32 bytes when configured")
 	}
 	if c.DeviceTokenEncryptionKey == "" {
 		return Config{}, fmt.Errorf("DEVICE_TOKEN_ENCRYPTION_KEY is required")

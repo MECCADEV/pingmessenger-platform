@@ -2,6 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"path"
@@ -38,7 +41,12 @@ func (a *API) uploadDocument(ctx *fasthttp.RequestCtx) {
 	if !a.enforceRate(ctx, "document-upload", ownerID, documentUploadUserLimit, documentUploadIPLimit) {
 		return
 	}
-	_, err := ctx.Request.MultipartForm()
+	idempotencyKey, err := parseStoryIdempotencyKey(string(ctx.Request.Header.Peek("Idempotency-Key")))
+	if err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "invalid Idempotency-Key"})
+		return
+	}
+	_, err = ctx.Request.MultipartForm()
 	if err != nil {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "multipart/form-data is required"})
 		return
@@ -74,19 +82,34 @@ func (a *API) uploadDocument(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "document filename is invalid"})
 		return
 	}
+	requestHash := ""
+	if idempotencyKey != "" {
+		requestHash, err = hashDocumentUploadRequest(name, contentType, data)
+		if err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not fingerprint document"})
+			return
+		}
+	}
 	key := path.Join("message-documents", ownerID, uuid.NewString())
-	doc, err := a.documents.Reserve(context.Background(), ownerID, key, name, contentType, int64(len(data)), a.documentPolicy)
+	doc, created, err := a.documents.ReserveIdempotent(context.Background(), ownerID, key, name, contentType, int64(len(data)), a.documentPolicy, idempotencyKey, requestHash)
 	if err != nil {
 		switch {
 		case errors.Is(err, documents.ErrCountLimit), errors.Is(err, documents.ErrQuotaLimit):
 			writeJSON(ctx, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+		case errors.Is(err, documents.ErrIdempotencyConflict):
+			writeJSON(ctx, http.StatusConflict, map[string]string{"error": err.Error()})
+		case errors.Is(err, documents.ErrIdempotencyGone):
+			writeJSON(ctx, http.StatusGone, map[string]string{"error": err.Error()})
 		default:
 			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not reserve document"})
 		}
 		return
 	}
+	key = doc.StorageKey
 	if err = a.documentObjects.Put(context.Background(), key, contentType, data); err != nil {
-		a.abandonDocument(context.Background(), ownerID, doc.ID, err)
+		if idempotencyKey == "" {
+			a.abandonDocument(context.Background(), ownerID, doc.ID, err)
+		}
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not store document"})
 		return
 	}
@@ -94,19 +117,47 @@ func (a *API) uploadDocument(ctx *fasthttp.RequestCtx) {
 		// The row was reserved before the second limiter. Mark it deleted before
 		// removing the object; otherwise a rejected request leaves an active
 		// database row pointing at a deleted object.
-		a.abandonDocument(context.Background(), ownerID, doc.ID, errors.New("signed URL rate limit exceeded"))
+		if idempotencyKey == "" {
+			a.abandonDocument(context.Background(), ownerID, doc.ID, errors.New("signed URL rate limit exceeded"))
+		}
 		return
 	}
 	doc.SourceURL, err = a.documentSourceURL(context.Background(), key)
 	if err != nil {
-		a.abandonDocument(context.Background(), ownerID, doc.ID, err)
+		if idempotencyKey == "" {
+			a.abandonDocument(context.Background(), ownerID, doc.ID, err)
+		}
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not sign document URL"})
 		return
 	}
-	writeJSON(ctx, http.StatusCreated, map[string]any{
+	status := http.StatusCreated
+	if !created {
+		status = http.StatusOK
+	}
+	writeJSON(ctx, status, map[string]any{
 		"document": doc,
 		"fileElem": map[string]any{"sourceUrl": doc.SourceURL, "fileName": doc.FileName, "fileSize": doc.ByteSize, "uuid": doc.ID},
 	})
+}
+
+type documentUploadFingerprint struct {
+	FileName      string `json:"file_name"`
+	ContentType   string `json:"content_type"`
+	ByteSize      int    `json:"byte_size"`
+	ContentSHA256 string `json:"content_sha256"`
+}
+
+func hashDocumentUploadRequest(name, contentType string, data []byte) (string, error) {
+	contentHash := sha256.Sum256(data)
+	canonical, err := json.Marshal(documentUploadFingerprint{
+		FileName: name, ContentType: strings.ToLower(strings.TrimSpace(contentType)),
+		ByteSize: len(data), ContentSHA256: hex.EncodeToString(contentHash[:]),
+	})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func (a *API) getDocument(ctx *fasthttp.RequestCtx) {

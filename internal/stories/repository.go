@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,10 @@ var ErrNotFound = errors.New("story not found")
 var ErrForbidden = errors.New("story is not available to this user")
 var ErrActiveLimit = errors.New("maximum active stories reached")
 var ErrTotalLimit = errors.New("maximum retained stories reached")
+var ErrIdempotencyConflict = errors.New("idempotency key was already used for a different story request")
+var ErrIdempotencyGone = errors.New("idempotent story result is no longer available")
+
+const StoryCreateIdempotencyRetention = 30 * 24 * time.Hour
 
 type Repository struct{ pool *pgxpool.Pool }
 
@@ -24,6 +29,7 @@ func NewRepository(pool *pgxpool.Pool) *Repository { return &Repository{pool: po
 
 type CreateParams struct {
 	OwnerID, MediaType, StorageKey, MediaURL, ContentType, Caption, Text, BackgroundColor, Visibility string
+	IdempotencyKey, RequestHash                                                                       string
 	ByteSize                                                                                          int64
 	ExpiresAt                                                                                         time.Time
 	Recipients                                                                                        []string
@@ -55,9 +61,42 @@ func valueOrZero(value *int64) int64 {
 }
 
 func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error) {
-	tx, err := r.pool.Begin(ctx)
+	story, _, err := r.CreateIdempotent(ctx, p)
+	return story, err
+}
+
+// FindIdempotent returns a completed create result before the caller uploads
+// media. The transaction-level check in CreateIdempotent remains authoritative
+// because two first attempts can race past this read.
+func (r *Repository) FindIdempotent(ctx context.Context, ownerID, key, requestHash string) (*Story, error) {
+	if key == "" {
+		return nil, nil
+	}
+	var storedHash string
+	var storyID string
+	err := r.pool.QueryRow(ctx, `SELECT request_hash,story_id::text FROM story_create_idempotency WHERE owner_id=$1 AND idempotency_key=$2 AND retain_until>now()`, ownerID, key).Scan(&storedHash, &storyID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
+	}
+	if storedHash != requestHash {
+		return nil, ErrIdempotencyConflict
+	}
+	if storyID == "" {
+		return nil, ErrIdempotencyGone
+	}
+	return r.loadReplay(ctx, ownerID, storyID)
+}
+
+// CreateIdempotent stores the idempotency record and story/event rows in one
+// transaction. Owner-row locking serializes requests across server replicas.
+// The bool reports whether this call created a new story.
+func (r *Repository) CreateIdempotent(ctx context.Context, p CreateParams) (*Story, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
 	}
 	defer tx.Rollback(ctx)
 	// Serialize creates for this owner so concurrent requests cannot exceed the
@@ -65,21 +104,54 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error)
 	// has not marked them deleted yet.
 	var lockedOwner string
 	if err = tx.QueryRow(ctx, `SELECT id::text FROM users WHERE id=$1 FOR UPDATE`, p.OwnerID).Scan(&lockedOwner); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if p.IdempotencyKey != "" {
+		// Keys may be reused only after the published retention window. Keeping
+		// the ledger separate from stories lets deletion leave a non-resurrection
+		// tombstone until that window expires.
+		if _, err = tx.Exec(ctx, `DELETE FROM story_create_idempotency WHERE owner_id=$1 AND idempotency_key=$2 AND retain_until<=now()`, p.OwnerID, p.IdempotencyKey); err != nil {
+			return nil, false, err
+		}
+		var requestHash, storyID string
+		lookupErr := tx.QueryRow(ctx, `SELECT request_hash,COALESCE(story_id::text,'') FROM story_create_idempotency WHERE owner_id=$1 AND idempotency_key=$2 AND retain_until>now() FOR UPDATE`, p.OwnerID, p.IdempotencyKey).Scan(&requestHash, &storyID)
+		if lookupErr == nil {
+			if requestHash != p.RequestHash {
+				return nil, false, ErrIdempotencyConflict
+			}
+			if storyID == "" {
+				return nil, false, ErrIdempotencyGone
+			}
+			var existing Story
+			existing, err = scanStory(tx.QueryRow(ctx, `SELECT id::text,owner_id::text,media_type::text,COALESCE(storage_key,''),COALESCE(media_url,''),content_type,byte_size,caption,text_content,COALESCE(background_color,''),visibility::text,expires_at,created_at,deleted_at FROM stories WHERE id=$1 AND owner_id=$2`, storyID, p.OwnerID))
+			if errors.Is(err, pgx.ErrNoRows) || (err == nil && (existing.DeletedAt != nil || !existing.ExpiresAt.After(time.Now()))) {
+				return nil, false, ErrIdempotencyGone
+			}
+			if err != nil {
+				return nil, false, err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return nil, false, err
+			}
+			return &existing, false, nil
+		}
+		if !errors.Is(lookupErr, pgx.ErrNoRows) {
+			return nil, false, lookupErr
+		}
 	}
 	var active int
 	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM stories WHERE owner_id=$1 AND deleted_at IS NULL AND expires_at>now()`, p.OwnerID).Scan(&active); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if active >= MaxActiveStories {
-		return nil, ErrActiveLimit
+		return nil, false, ErrActiveLimit
 	}
 	var total int
 	if err = tx.QueryRow(ctx, `SELECT COUNT(*) FROM stories WHERE owner_id=$1`, p.OwnerID).Scan(&total); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if total >= MaxTotalStories {
-		return nil, ErrTotalLimit
+		return nil, false, ErrTotalLimit
 	}
 	var s Story
 	err = tx.QueryRow(ctx, `INSERT INTO stories (owner_id,media_type,storage_key,media_url,content_type,byte_size,caption,text_content,background_color,visibility,expires_at)
@@ -88,12 +160,17 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error)
 		p.OwnerID, p.MediaType, p.StorageKey, p.MediaURL, p.ContentType, p.ByteSize, p.Caption, p.Text, p.BackgroundColor, p.Visibility, p.ExpiresAt).Scan(
 		&s.ID, &s.OwnerID, &s.MediaType, &s.StorageKey, &s.MediaURL, &s.ContentType, &s.ByteSize, &s.Caption, &s.Text, &s.BackgroundColor, &s.Visibility, &s.ExpiresAt, &s.CreatedAt)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s.StorageKey = p.StorageKey
+	if p.IdempotencyKey != "" {
+		if _, err = tx.Exec(ctx, `INSERT INTO story_create_idempotency(owner_id,idempotency_key,request_hash,story_id,retain_until) VALUES ($1,$2,$3,$4,now()+($5 * interval '1 second'))`, p.OwnerID, p.IdempotencyKey, p.RequestHash, s.ID, int64(StoryCreateIdempotencyRetention.Seconds())); err != nil {
+			return nil, false, err
+		}
+	}
 	for _, id := range p.VisibilityUsers {
 		if _, err = tx.Exec(ctx, `INSERT INTO story_visibility_users (story_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, s.ID, id); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	seen := make(map[string]struct{}, len(p.Recipients)+1)
@@ -103,20 +180,41 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Story, error)
 		}
 		seen[id] = struct{}{}
 		if _, err = tx.Exec(ctx, `INSERT INTO story_recipients (story_id,recipient_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, s.ID, id); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var eventID int64
 		if err = tx.QueryRow(ctx, `INSERT INTO story_events (story_id,owner_id,recipient_id,event_type) VALUES ($1,$2,$3,'created') RETURNING event_id`, s.ID, p.OwnerID, id).Scan(&eventID); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if err = notifyStoryEvent(ctx, tx, eventID); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return &s, true, nil
+}
+
+func (r *Repository) loadReplay(ctx context.Context, ownerID, storyID string) (*Story, error) {
+	story, err := scanStory(r.pool.QueryRow(ctx, `SELECT id::text,owner_id::text,media_type::text,COALESCE(storage_key,''),COALESCE(media_url,''),content_type,byte_size,caption,text_content,COALESCE(background_color,''),visibility::text,expires_at,created_at,deleted_at FROM stories WHERE id=$1 AND owner_id=$2`, storyID, ownerID))
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (story.DeletedAt != nil || !story.ExpiresAt.After(time.Now()))) {
+		return nil, ErrIdempotencyGone
+	}
+	if err != nil {
 		return nil, err
 	}
-	return &s, nil
+	return &story, nil
+}
+
+type storyRow interface {
+	Scan(dest ...any) error
+}
+
+func scanStory(row storyRow) (Story, error) {
+	var story Story
+	err := row.Scan(&story.ID, &story.OwnerID, &story.MediaType, &story.StorageKey, &story.MediaURL, &story.ContentType, &story.ByteSize, &story.Caption, &story.Text, &story.BackgroundColor, &story.Visibility, &story.ExpiresAt, &story.CreatedAt, &story.DeletedAt)
+	return story, err
 }
 
 func (r *Repository) Delete(ctx context.Context, ownerID, storyID string) (*Story, error) {
@@ -311,7 +409,16 @@ func (r *Repository) Ack(ctx context.Context, userID string, global int64, users
 	for owner, cursor := range users {
 		values[owner] = cursor
 	}
-	for scope, cursor := range values {
+	// Every ACK can lock both the global and one or more owner cursors. Sort
+	// the scopes so concurrent ACKs acquire those rows in the same order and
+	// cannot deadlock because Go map iteration differs between transactions.
+	scopes := make([]string, 0, len(values))
+	for scope := range values {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	for _, scope := range scopes {
+		cursor := values[scope]
 		var old int64
 		err = tx.QueryRow(ctx, `SELECT cursor FROM story_sync_cursors WHERE user_id=$1 AND scope_key=$2 FOR UPDATE`, userID, scope).Scan(&old)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -444,6 +551,21 @@ func (r *Repository) CleanupDeleted(ctx context.Context, before time.Time, limit
 	result, err := r.pool.Exec(ctx, `WITH doomed AS (
 		SELECT id FROM stories WHERE deleted_at IS NOT NULL AND deleted_at<$1 AND media_deleted_at IS NOT NULL ORDER BY deleted_at LIMIT $2
 	) DELETE FROM stories s USING doomed WHERE s.id=doomed.id`, before, limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+func (r *Repository) CleanupExpiredIdempotency(ctx context.Context, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	result, err := r.pool.Exec(ctx, `WITH expired AS (
+		SELECT owner_id,idempotency_key FROM story_create_idempotency
+		WHERE retain_until<=now() ORDER BY retain_until LIMIT $1
+	) DELETE FROM story_create_idempotency AS ledger
+	USING expired WHERE ledger.owner_id=expired.owner_id AND ledger.idempotency_key=expired.idempotency_key`, limit)
 	if err != nil {
 		return 0, err
 	}

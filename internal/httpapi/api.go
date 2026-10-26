@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"pingmessenger/internal/chainindex"
 	"pingmessenger/internal/disappearing"
 	"pingmessenger/internal/documents"
+	"pingmessenger/internal/notifications"
 	"pingmessenger/internal/notify"
 	"pingmessenger/internal/openapi"
 	"pingmessenger/internal/openim"
@@ -31,38 +33,52 @@ import (
 )
 
 type API struct {
-	db                 Pinger
-	openIM             openim.Client
-	payments           *payments.Service
-	disappearing       *disappearing.Service
-	timers             *timers.Repository
-	users              *auth.UserRepository
-	email              notify.EmailSender
-	sms                notify.SMSSender
-	otpSecret          string
-	tokens             *auth.TokenManager
-	deviceTokenCipher  *auth.DeviceTokenCipher
-	objects            storage.ObjectStore
-	documentObjects    storage.ObjectStore
-	assetBase          string
-	paymentEventSecret string
-	chainIndexer       *chainindex.IndexerService
-	stories            *stories.Repository
-	documents          *documents.Repository
-	documentPolicy     documents.Policy
-	storyGraphMu       sync.RWMutex
-	storyGraph         map[string]map[string]struct{}
-	storySubsMu        sync.RWMutex
-	storySubs          map[string]map[*storySubscription]struct{}
-	storyURLMu         sync.Mutex
-	storyURLs          map[string]storyURLCacheEntry
-	validate           *validator.Validate
-	limiter            ratelimit.Limiter
+	db                      Pinger
+	openIM                  openim.Client
+	payments                *payments.Service
+	disappearing            *disappearing.Service
+	timers                  *timers.Repository
+	users                   *auth.UserRepository
+	email                   notify.EmailSender
+	sms                     notify.SMSSender
+	otpSecret               string
+	tokens                  *auth.TokenManager
+	deviceTokenCipher       *auth.DeviceTokenCipher
+	objects                 storage.ObjectStore
+	documentObjects         storage.ObjectStore
+	assetBase               string
+	paymentEventSecret      string
+	chainIndexer            *chainindex.IndexerService
+	stories                 *stories.Repository
+	notificationPreferences *notifications.Repository
+	openIMServiceToken      string
+	documents               *documents.Repository
+	documentPolicy          documents.Policy
+	storyGraphMu            sync.RWMutex
+	storyGraph              map[string]map[string]struct{}
+	storySubsMu             sync.RWMutex
+	storySubs               map[string]map[*storySubscription]struct{}
+	storyURLMu              sync.Mutex
+	storyURLs               map[string]storyURLCacheEntry
+	validate                *validator.Validate
+	limiter                 ratelimit.Limiter
 }
 
 // ConfigureChainIndexer attaches the optional chain observation path. The
 // platform still serves payment intents when no RPC provider is configured.
 func (a *API) ConfigureChainIndexer(indexer *chainindex.IndexerService) { a.chainIndexer = indexer }
+
+// ConfigureOpenIMServiceToken enables the private OpenIM notification resolver.
+func (a *API) ConfigureOpenIMServiceToken(token string) {
+	a.openIMServiceToken = strings.TrimSpace(token)
+}
+
+func (a *API) validOpenIMServiceToken(candidate string) bool {
+	if a.openIMServiceToken == "" || len(candidate) != len(a.openIMServiceToken) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(a.openIMServiceToken)) == 1
+}
 
 type Pinger interface{ Ping(context.Context) error }
 
@@ -71,7 +87,7 @@ func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms
 }
 
 func NewWithDocuments(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects, documentObjects storage.ObjectStore, assetBase, paymentEventSecret string, documentPolicy documents.Policy) *API {
-	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, documentObjects: documentObjects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), documents: documents.NewRepository(pool), documentPolicy: documentPolicy, storyGraph: make(map[string]map[string]struct{}), storySubs: make(map[string]map[*storySubscription]struct{}), storyURLs: make(map[string]storyURLCacheEntry), validate: validator.New(), limiter: ratelimit.NewLocal()}
+	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, documentObjects: documentObjects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), notificationPreferences: notifications.NewRepository(pool), documents: documents.NewRepository(pool), documentPolicy: documentPolicy, storyGraph: make(map[string]map[string]struct{}), storySubs: make(map[string]map[*storySubscription]struct{}), storyURLs: make(map[string]storyURLCacheEntry), validate: validator.New(), limiter: ratelimit.NewLocal()}
 }
 
 // ConfigureRateLimiter replaces the development-local limiter with the shared
@@ -100,6 +116,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	a.registerDisappearingRoutes(r)
 	a.registerStoryRoutes(r)
 	a.registerDocumentRoutes(r)
+	a.registerNotificationRoutes(r)
 	return r.Handler
 }
 
