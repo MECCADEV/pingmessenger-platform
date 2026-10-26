@@ -28,7 +28,7 @@ type passwordLoginRequest struct {
 	Username   string `json:"username" validate:"omitempty,min=3,max=64"`
 	Email      string `json:"email" validate:"omitempty,email,max=254"`
 	PingID     string `json:"ping_id" validate:"omitempty,len=12,numeric"`
-	Password   string `json:"password" validate:"required,min=12,max=256"`
+	Password   string `json:"password" validate:"required,min=6,max=256"`
 	PlatformID string `json:"platform_id" validate:"required,max=64"`
 	DeviceName string `json:"device_name" validate:"omitempty,max=128"`
 	DeviceID   string `json:"device_id" validate:"omitempty,max=128"`
@@ -47,9 +47,7 @@ func (a *API) loginPassword(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "unsupported platform_id"})
 		return
 	}
-	username := strings.ToLower(strings.TrimSpace(req.Username))
-	email := strings.ToLower(strings.TrimSpace(req.Email))
-	pingID := strings.TrimSpace(req.PingID)
+	username, email, pingID := normalizePasswordLoginIdentifiers(req)
 	identifiers := 0
 	if username != "" {
 		identifiers++
@@ -64,6 +62,16 @@ func (a *API) loginPassword(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "provide exactly one of username, email, or ping_id"})
 		return
 	}
+	throttleCtx, cancelThrottle := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelThrottle()
+	ip := requestIP(ctx)
+	if retryAfter, throttleErr := a.users.PasswordLoginRetryAfter(throttleCtx, "", ip); throttleErr != nil {
+		writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "login protection unavailable"})
+		return
+	} else if retryAfter > 0 {
+		writePasswordLoginThrottle(ctx, retryAfter)
+		return
+	}
 	var account *auth.PasswordLogin
 	var err error
 	if username != "" {
@@ -73,8 +81,47 @@ func (a *API) loginPassword(ctx *fasthttp.RequestCtx) {
 	} else {
 		account, err = a.users.PasswordLoginByPingID(context.Background(), pingID)
 	}
-	if err != nil || !auth.VerifyPassword(req.Password, account.PasswordHash) {
+	if errors.Is(err, pgx.ErrNoRows) {
+		account = nil
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "login service unavailable"})
+		return
+	}
+	if account != nil {
+		if retryAfter, throttleErr := a.users.PasswordLoginRetryAfter(throttleCtx, account.UserID, ip); throttleErr != nil {
+			writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "login protection unavailable"})
+			return
+		} else if retryAfter > 0 {
+			writePasswordLoginThrottle(ctx, retryAfter)
+			return
+		}
+	}
+	passwordOK := false
+	if account != nil {
+		passwordOK = auth.VerifyPassword(req.Password, account.PasswordHash)
+	} else {
+		auth.BurnPasswordVerification(req.Password)
+	}
+	if account == nil || !passwordOK {
+		accountID := ""
+		if account != nil {
+			accountID = account.UserID
+		}
+		retryAfter, throttleErr := a.users.RecordPasswordLoginFailure(throttleCtx, accountID, ip)
+		if throttleErr != nil {
+			writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "login protection unavailable"})
+			return
+		}
+		if retryAfter > 0 {
+			writePasswordLoginThrottle(ctx, retryAfter)
+			return
+		}
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
+		return
+	}
+	if _, err = a.users.ResetPasswordLoginFailures(throttleCtx, account.UserID); err != nil {
+		writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "login protection unavailable"})
 		return
 	}
 	factor, factorErr := a.users.PreferredMFAFactor(context.Background(), account.UserID)
@@ -92,6 +139,10 @@ func (a *API) loginPassword(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	a.issueLoginSession(ctx, account.UserID, platform, req.DeviceName, req.DeviceID)
+}
+
+func normalizePasswordLoginIdentifiers(req passwordLoginRequest) (username, email, pingID string) {
+	return strings.ToLower(strings.TrimSpace(req.Username)), strings.ToLower(strings.TrimSpace(req.Email)), strings.TrimSpace(req.PingID)
 }
 
 func (a *API) startPendingMFA(ctx context.Context, userID string, factor *auth.MFAFactor, platform, deviceName, deviceID string) (string, error) {
@@ -239,6 +290,11 @@ func (a *API) loginVerify(ctx *fasthttp.RequestCtx) {
 }
 
 func (a *API) issueLoginSession(ctx *fasthttp.RequestCtx, userID, platform, deviceName, deviceID string) {
+	pingID, err := a.users.PingIDForUser(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load account identity"})
+		return
+	}
 	tokens, err := a.newSession(userID, platform, deviceName, deviceID)
 	if err != nil {
 		if errors.Is(err, auth.ErrAccountUnavailable) {
@@ -248,7 +304,13 @@ func (a *API) issueLoginSession(ctx *fasthttp.RequestCtx, userID, platform, devi
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
 	}
+	tokens["ping_id"] = pingID
 	writeJSON(ctx, http.StatusOK, tokens)
+}
+
+func writePasswordLoginThrottle(ctx *fasthttp.RequestCtx, retryAfter int) {
+	ctx.Response.Header.Set("Retry-After", fmt.Sprint(retryAfter))
+	writeJSON(ctx, http.StatusTooManyRequests, map[string]any{"error": "too many incorrect passwords", "retry_after_seconds": retryAfter})
 }
 
 func (a *API) newSession(userID, platform, deviceName, deviceID string) (map[string]string, error) {
@@ -292,5 +354,10 @@ func (a *API) refresh(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not issue access token"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]string{"access_token": access, "refresh_token": raw, "session_id": session.ID})
+	pingID, err := a.users.PingIDForUser(context.Background(), session.UserID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load account identity"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]string{"access_token": access, "refresh_token": raw, "session_id": session.ID, "ping_id": pingID})
 }

@@ -20,19 +20,19 @@ type passwordRecoveryStartRequest struct {
 type passwordRecoveryCompleteRequest struct {
 	ChallengeID string `json:"challenge_id" validate:"required,uuid4"`
 	Code        string `json:"code" validate:"required,len=6,numeric"`
-	NewPassword string `json:"new_password" validate:"required,min=12,max=256"`
+	NewPassword string `json:"new_password" validate:"required,min=6,max=256"`
 }
 type passwordChangeRequest struct {
 	// The current password is deliberately not subject to the new-password
 	// strength rule. A short legacy password must still authenticate and a
 	// mismatch is always classified as 401 rather than validation failure.
 	CurrentPassword string `json:"current_password" validate:"required,max=256"`
-	NewPassword     string `json:"new_password" validate:"required,min=12,max=256"`
+	NewPassword     string `json:"new_password" validate:"required,min=6,max=256"`
 }
 type passwordChangeVerifyRequest struct {
 	ChallengeID string `json:"challenge_id" validate:"required,uuid4"`
 	Code        string `json:"code" validate:"required,len=6,numeric"`
-	NewPassword string `json:"new_password" validate:"required,min=12,max=256"`
+	NewPassword string `json:"new_password" validate:"required,min=6,max=256"`
 }
 
 func (a *API) registerPasswordRoutes(r interface {
