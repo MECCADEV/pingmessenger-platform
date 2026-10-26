@@ -36,6 +36,41 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if doc.Components.SecuritySchemes["openIMServiceAuth"] == nil || doc.Components.SecuritySchemes["openIMServiceAuth"].Name != "X-OpenIM-Service-Token" {
 		t.Fatal("missing dedicated OpenIM notification resolver auth scheme")
 	}
+	login := doc.Paths["/v1/auth/login"].Post
+	if login == nil {
+		t.Fatal("password login operation is missing")
+	}
+	loginThrottle := login.Responses["429"]
+	if loginThrottle == nil || loginThrottle.Content["application/json"] == nil {
+		t.Fatal("password login must document a JSON 429 response")
+	}
+	throttleSchema := loginThrottle.Content["application/json"].Schema
+	if throttleSchema.Properties["retry_after_seconds"] == nil || throttleSchema.Properties["retry_after_seconds"].Type != "integer" {
+		t.Fatal("password login 429 response must include integer retry_after_seconds")
+	}
+	if loginThrottle.Headers["Retry-After"] == nil {
+		t.Fatal("password login 429 response must document Retry-After")
+	}
+	schemas := doc.Components.Schemas.Map()
+	for _, schemaName := range []string{"SignupBody", "PasswordLoginBody", "PasswordChallengeBody", "PasswordChangeBody"} {
+		schema := schemas[schemaName]
+		if schema == nil {
+			t.Errorf("missing password request schema %q", schemaName)
+			continue
+		}
+		field := "password"
+		if schemaName == "PasswordChallengeBody" || schemaName == "PasswordChangeBody" {
+			field = "new_password"
+		}
+		password := schema.Properties[field]
+		if password == nil || password.MinLength == nil || *password.MinLength != 6 || password.MaxLength == nil || *password.MaxLength != 256 {
+			t.Errorf("%s.%s must document minLength 6 and maxLength 256", schemaName, field)
+		}
+	}
+	token := schemas["TokenResponse"]
+	if token == nil || token.Properties["ping_id"] == nil {
+		t.Fatal("successful session response must document ping_id")
+	}
 	discovery := doc.Paths["/v1/friends/discover-network"].Post
 	if len(discovery.Security) != 1 || discovery.Security[0]["bearerAuth"] == nil {
 		t.Fatal("contact discovery must require bearer authentication")

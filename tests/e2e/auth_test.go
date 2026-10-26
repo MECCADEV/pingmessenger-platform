@@ -29,7 +29,7 @@ func TestProductionTOTPLoginMFA(t *testing.T) {
 	c := &http.Client{Timeout: 15 * time.Second}
 	user := fmt.Sprintf("totp-%d", time.Now().UnixNano())
 	pass := "correct-horse-battery-staple"
-	post(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, user, pass), http.StatusCreated)
+	created := postJSON(t, c, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, user, pass), http.StatusCreated)
 	tokens := postJSON(t, c, base+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"password":%q,"platform_id":"web"}`, user, pass), http.StatusOK)
 	access := tokens["access_token"].(string)
 	enrolled := postAuthenticatedJSON(t, c, base+"/v1/security/mfa/factors", access, `{"kind":"totp","label":"e2e"}`, http.StatusCreated)
@@ -41,6 +41,9 @@ func TestProductionTOTPLoginMFA(t *testing.T) {
 	verified := postJSON(t, c, base+"/v1/auth/login/mfa/verify", fmt.Sprintf(`{"challenge_id":%q,"code":%q}`, challenge, totpCode(secret, time.Now())), http.StatusOK)
 	if verified["access_token"] == "" || verified["refresh_token"] == "" {
 		t.Fatalf("MFA login did not return tokens: %#v", verified)
+	}
+	if verified["ping_id"] != created["ping_id"] {
+		t.Fatalf("MFA login ping_id=%v, want account MyPing %v", verified["ping_id"], created["ping_id"])
 	}
 }
 
@@ -86,11 +89,17 @@ func TestAuthProtocolAgainstDeployedAPI(t *testing.T) {
 	if tokens["access_token"] == "" || tokens["refresh_token"] == "" {
 		t.Fatalf("direct password login did not return tokens: %#v", tokens)
 	}
+	if tokens["ping_id"] != created["ping_id"] {
+		t.Fatalf("username login ping_id=%v, want account MyPing %v", tokens["ping_id"], created["ping_id"])
+	}
 	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"email":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-email"}`, email), http.StatusUnauthorized, "unverified email password login")
 	assertStatus(t, client, http.MethodPost, baseURL+"/v1/mfa/contacts", fmt.Sprintf(`{"kind":"email","value":%q}`, email), http.StatusUnauthorized, "unauthenticated contact enrollment")
 	pingIDTokens := postJSON(t, client, baseURL+"/v1/auth/login", fmt.Sprintf(`{"ping_id":%q,"password":"correct-horse-battery-staple","platform_id":"web","device_name":"e2e-ping-id"}`, created["ping_id"]), http.StatusOK)
 	if pingIDTokens["access_token"] == "" || pingIDTokens["refresh_token"] == "" {
 		t.Fatalf("ping_id password login did not return tokens: %#v", pingIDTokens)
+	}
+	if pingIDTokens["ping_id"] != created["ping_id"] {
+		t.Fatalf("MyPing login ping_id=%v, want account MyPing %v", pingIDTokens["ping_id"], created["ping_id"])
 	}
 	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", fmt.Sprintf(`{"username":%q,"email":%q,"password":"correct-horse-battery-staple","platform_id":"web"}`, username, email), http.StatusUnprocessableEntity, "multiple login identifiers")
 	assertStatus(t, client, http.MethodPost, baseURL+"/v1/auth/login", `{"ping_id":"not-a-ping-id","password":"correct-horse-battery-staple","platform_id":"web"}`, http.StatusUnprocessableEntity, "invalid ping_id")

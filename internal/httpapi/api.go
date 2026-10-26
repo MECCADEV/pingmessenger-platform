@@ -140,7 +140,7 @@ func (a *API) openAPIDocument(ctx *fasthttp.RequestCtx) {
 
 type signupRequest struct {
 	Username   string `json:"username" validate:"omitempty,min=3,max=64"`
-	Password   string `json:"password" validate:"required,min=12,max=256"`
+	Password   string `json:"password" validate:"required,min=6,max=256"`
 	Nickname   string `json:"nickname" validate:"omitempty,max=128"`
 	Email      string `json:"email" validate:"omitempty,email,max=254"`
 	Phone      string `json:"phone" validate:"omitempty,max=32"`

@@ -27,7 +27,7 @@ type errorBody struct {
 
 type signupBody struct {
 	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Optional unique account name."`
-	Password   string `json:"password" minLength:"12" maxLength:"256" doc:"Password used for direct username/password login."`
+	Password   string `json:"password" minLength:"6" maxLength:"256" doc:"Password used for direct username/password login."`
 	Nickname   string `json:"nickname,omitempty" maxLength:"128" doc:"Optional non-unique display name."`
 	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Optional email contact."`
 	Phone      string `json:"phone,omitempty" maxLength:"32" doc:"Optional phone contact."`
@@ -71,7 +71,7 @@ type passwordLoginBody struct {
 	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Use exactly one of username, email, or ping_id."`
 	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Use exactly one of username, email, or ping_id."`
 	PingID     string `json:"ping_id,omitempty" pattern:"^[0-9]{12}$" doc:"Use exactly one of username, email, or ping_id."`
-	Password   string `json:"password" minLength:"12" maxLength:"256"`
+	Password   string `json:"password" minLength:"6" maxLength:"256"`
 	PlatformID string `json:"platform_id" maxLength:"64"`
 	DeviceName string `json:"device_name,omitempty" maxLength:"128"`
 	DeviceID   string `json:"device_id,omitempty" maxLength:"128"`
@@ -105,6 +105,7 @@ type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	SessionID    string `json:"session_id" format:"uuid"`
+	PingID       string `json:"ping_id" pattern:"^[0-9]{12}$"`
 }
 type loginVerifyOutput struct{ Body tokenResponse }
 
@@ -124,12 +125,12 @@ type passwordRecoveryStartInput struct{ Body passwordRecoveryStartBody }
 type passwordChallengeBody struct {
 	ChallengeID string `json:"challenge_id" format:"uuid"`
 	Code        string `json:"code" minLength:"6" maxLength:"6" pattern:"^[0-9]{6}$"`
-	NewPassword string `json:"new_password" minLength:"12" maxLength:"256"`
+	NewPassword string `json:"new_password" minLength:"6" maxLength:"256"`
 }
 type passwordChallengeInput struct{ Body passwordChallengeBody }
 type passwordChangeBody struct {
 	CurrentPassword string `json:"current_password" maxLength:"256" doc:"The existing password; mismatch always returns 401, including short legacy passwords."`
-	NewPassword     string `json:"new_password" minLength:"12" maxLength:"256"`
+	NewPassword     string `json:"new_password" minLength:"6" maxLength:"256"`
 }
 type passwordChangeInput struct{ Body passwordChangeBody }
 type passwordChangeVerifyInput struct{ Body passwordChallengeBody }
@@ -683,7 +684,8 @@ func newDocument() (*DocumentModel, error) {
 	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username is optional and unique when supplied; signup returns device-bound tokens.", 201, public))
 	register[usernameInput, usernameOutput](api, operation(http.MethodPost, "/v1/auth/verify-username", "verifyUsername", "Auth", "Check whether a username is available.", 200, public))
 	register[struct{}, usernameAvailabilityWSOutput](api, operation(http.MethodGet, "/v1/auth/username/availability", "usernameAvailabilityWebSocket", "Auth", "Upgrade to a WebSocket and send check_username JSON frames for availability results.", 101, public))
-	register[passwordLoginInput, passwordLoginOutput](api, operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username, email, or ping_id plus a password. Email login is allowed only after the email contact is OTP-verified; email is optional at signup.", 200, public))
+	loginOperation := operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username, email, or ping_id plus a password of 6 to 256 characters. Email login is allowed only after the email contact is OTP-verified; email is optional at signup. Five incorrect passwords for an account or peer IP trigger a 15-minute lockout; 429 responses include retry_after_seconds.", 200, public)
+	register[passwordLoginInput, passwordLoginOutput](api, loginOperation)
 	register[loginStartInput, loginStartOutput](api, operation(http.MethodPost, "/v1/auth/login/start", "startLogin", "Auth", "Start passwordless email login.", 202, public))
 	register[loginVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/verify", "verifyLogin", "Auth", "Verify a passwordless login code and create a session.", 200, public))
 	register[refreshInput, refreshOutput](api, operation(http.MethodPost, "/v1/auth/refresh", "refreshSession", "Auth", "Rotate a refresh token. A successful rotation atomically replaces and invalidates the presented refresh token. This operation has no idempotency key, replay grace, or concurrent-refresh guarantee. Clients must serialize refresh attempts and durably persist the returned replacement credentials before treating rotation as committed; replaying the old token after a lost response is not guaranteed to recover the replacement credentials.", 200, public))
@@ -795,6 +797,23 @@ func newDocument() (*DocumentModel, error) {
 	register[notificationResolveInput, notificationResolveOutput](api, resolveNotification)
 
 	document := api.OpenAPI()
+	if login := document.Paths["/v1/auth/login"].Post; login != nil {
+		login.Responses["429"] = &huma.Response{
+			Description: "Too Many Requests; incorrect-password lockout is active.",
+			Headers: map[string]*huma.Param{
+				"Retry-After": {Schema: &huma.Schema{Type: "integer", Format: "int32"}},
+			},
+			Content: map[string]*huma.MediaType{
+				"application/json": {Schema: &huma.Schema{
+					Type: "object", Required: []string{"error", "retry_after_seconds"},
+					Properties: map[string]*huma.Schema{
+						"error":               {Type: "string"},
+						"retry_after_seconds": {Type: "integer", Format: "int32"},
+					},
+				}},
+			},
+		}
+	}
 	if discover := document.Components.Schemas.Map()["DiscoverBody"]; discover != nil {
 		// Huma's field tags describe per-field constraints. The runtime also
 		// requires at least one non-empty contact list, which is a relationship
