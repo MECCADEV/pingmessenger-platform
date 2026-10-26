@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/valyala/fasthttp"
 	"pingmessenger/internal/notifications"
 )
@@ -43,6 +45,19 @@ func TestNotificationResolverRequiresDedicatedServiceToken(t *testing.T) {
 			t.Fatalf("status = %d, want 401", got)
 		}
 	})
+}
+
+func TestNotificationResolverRejectsRecipientIDLongerThanContractLimit(t *testing.T) {
+	api := &API{openIMServiceToken: "configured-service-secret", validate: validator.New()}
+	ctx := new(fasthttp.RequestCtx)
+	ctx.Request.Header.Set("X-OpenIM-Service-Token", "configured-service-secret")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"openim_user_ids":["` + strings.Repeat("x", 129) + `"],"conversation_id":"conversation-1"}`)
+
+	api.resolveNotificationPreferences(ctx)
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", got)
+	}
 }
 
 func intPointer(value int) *int { return &value }

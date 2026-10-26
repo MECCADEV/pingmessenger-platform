@@ -88,6 +88,20 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 			t.Errorf("missing documented notification preference path %s", path)
 		}
 	}
+	notificationPath := doc.Paths["/v1/conversations/{conversationID}/notifications"]
+	if notificationPath.Delete.RequestBody != nil {
+		t.Fatal("deleting conversation notification overrides must not require a request body")
+	}
+	preferencesBody := doc.Components.Schemas.Map()["NotificationPreferencesBody"]
+	if preferencesBody == nil || preferencesBody.MinProperties == nil || *preferencesBody.MinProperties != 1 || len(preferencesBody.AnyOf) != 4 {
+		t.Fatal("notification preference updates must require at least one supplied field")
+	}
+	for i, field := range []string{"enabled", "mode", "sound", "max_update_frequency_seconds"} {
+		branch := preferencesBody.AnyOf[i]
+		if len(branch.Required) != 1 || branch.Required[0] != field {
+			t.Errorf("notification preference update must accept a body containing %q", field)
+		}
+	}
 	resolver := doc.Paths["/v1/internal/notifications/resolve"].Post
 	if len(resolver.Security) != 1 || resolver.Security[0]["openIMServiceAuth"] == nil {
 		t.Fatal("notification resolver must document dedicated service authentication")
@@ -96,6 +110,10 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		if !strings.Contains(resolver.Description, term) {
 			t.Errorf("notification resolver description missing %q: %q", term, resolver.Description)
 		}
+	}
+	resolverBody := doc.Components.Schemas.Map()["NotificationResolveBody"]
+	if resolverBody == nil || resolverBody.Properties["openim_user_ids"] == nil || resolverBody.Properties["openim_user_ids"].Items == nil || resolverBody.Properties["openim_user_ids"].Items.MaxLength == nil || *resolverBody.Properties["openim_user_ids"].Items.MaxLength != 128 {
+		t.Fatal("notification resolver must document the 128-character recipient ID limit")
 	}
 	settings := doc.Paths["/v1/settings/notifications"]
 	for _, description := range []string{settings.Get.Description, settings.Put.Description} {

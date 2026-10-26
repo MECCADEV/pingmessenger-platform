@@ -780,16 +780,16 @@ func newDocument() (*DocumentModel, error) {
 	register[disappearingInput, emptyOutput](api, operation(http.MethodDelete, "/v1/conversations/{conversationID}/disappearing", "deleteDisappearingSetting", "Messages", "Disable disappearing messages for a conversation.", 204, bearer))
 	register[disappearingInput, disappearingWebSocketOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/disappearing/ws", "disappearingWebSocket", "Messages", "Receive disappearing-message setting notifications for a conversation.", 101, bearer))
 	register[struct{}, notificationPreferencesOutput](api, operation(http.MethodGet, "/v1/settings/notifications", "getNotificationPreferences", "Settings", "Get account-wide chat notification preferences; absent settings default to enabled/all/default sound/2-second grouping. For push delivery, enabled=false and mode=none suppress alerts; mentions_only allows only recipient mentions (including @all). OpenIM treats sound as a presentation preference and the frequency as a minimum interval between updates for a recipient and conversation; it sends the first eligible alert immediately and coalesces later updates to the latest preview. Actual sound remains subject to native OS channel settings.", 200, bearer))
-	register[notificationPreferencesInput, notificationPreferencesOutput](api, operation(http.MethodPut, "/v1/settings/notifications", "putNotificationPreferences", "Settings", "Atomically update supplied account-wide chat notification fields. Valid modes are all, mentions_only, none; sound is default or silent; update frequency is 2, 5, or 10 seconds. OpenIM applies these preferences to push delivery; the preference API itself does not send or coalesce notifications. Actual sound remains subject to native OS channel settings.", 200, bearer))
+	register[notificationPreferencesInput, notificationPreferencesOutput](api, operation(http.MethodPut, "/v1/settings/notifications", "putNotificationPreferences", "Settings", "Atomically update supplied account-wide chat notification fields; provide at least one field. Valid modes are all, mentions_only, none; sound is default or silent; update frequency is 2, 5, or 10 seconds. OpenIM applies these preferences to push delivery; the preference API itself does not send or coalesce notifications. Actual sound remains subject to native OS channel settings.", 200, bearer))
 	getConversationNotifications := operation(http.MethodGet, "/v1/conversations/{conversationID}/notifications", "getConversationNotificationPreferences", "Settings", "Get the effective account and per-conversation notification settings.", 200, bearer)
 	getConversationNotifications.Errors = append(getConversationNotifications.Errors, http.StatusBadRequest)
 	register[notificationConversationPathInput, notificationPreferencesOutput](api, getConversationNotifications)
-	putConversationNotifications := operation(http.MethodPut, "/v1/conversations/{conversationID}/notifications", "putConversationNotificationPreferences", "Settings", "Atomically update supplied per-conversation overrides; omitted fields retain existing overrides and deleting the override restores account defaults.", 200, bearer)
+	putConversationNotifications := operation(http.MethodPut, "/v1/conversations/{conversationID}/notifications", "putConversationNotificationPreferences", "Settings", "Atomically update supplied per-conversation overrides; provide at least one field. Omitted fields retain existing overrides and deleting the override restores account defaults.", 200, bearer)
 	putConversationNotifications.Errors = append(putConversationNotifications.Errors, http.StatusBadRequest)
 	register[notificationConversationInput, notificationPreferencesOutput](api, putConversationNotifications)
-	deleteConversationNotifications := operation(http.MethodDelete, "/v1/conversations/{conversationID}/notifications", "deleteConversationNotificationPreferences", "Settings", "Remove all per-conversation overrides and inherit account-wide notification settings.", 204, bearer)
+	deleteConversationNotifications := operation(http.MethodDelete, "/v1/conversations/{conversationID}/notifications", "deleteConversationNotificationPreferences", "Settings", "Remove all per-conversation overrides without a request body and inherit account-wide notification settings.", 204, bearer)
 	deleteConversationNotifications.Errors = append(deleteConversationNotifications.Errors, http.StatusBadRequest)
-	register[notificationConversationInput, emptyOutput](api, deleteConversationNotifications)
+	register[notificationConversationPathInput, emptyOutput](api, deleteConversationNotifications)
 	resolveNotification := operation(http.MethodPost, "/v1/internal/notifications/resolve", "resolveNotificationPreferences", "Internal", "Resolve active Platform user preferences for OpenIM push delivery. The response preferences map may omit unknown, inactive, or deleted OpenIM IDs; omission is a successful partial result, not an outage. An unset Platform service token returns 503, an invalid token 401, invalid input 422, and a storage/query failure 500. This endpoint trusts the authenticated OpenIM service to supply the conversation and recipient set. Resolver outage policy (OpenIM fail-open or fail-closed) must be explicitly configured by deployment and is not selected by Platform.", 200, []map[string][]string{{"openIMServiceAuth": {}}})
 	resolveNotification.Errors = append(resolveNotification.Errors, http.StatusServiceUnavailable)
 	register[notificationResolveInput, notificationResolveOutput](api, resolveNotification)
@@ -814,6 +814,26 @@ func newDocument() (*DocumentModel, error) {
 		if phones := discover.Properties["mobile_no"]; phones != nil && phones.Items != nil {
 			maxLength := 32
 			phones.Items.MaxLength = &maxLength
+		}
+	}
+	if notificationPreferences := document.Components.Schemas.Map()["NotificationPreferencesBody"]; notificationPreferences != nil {
+		// Runtime partial-update validation rejects an empty object, while each
+		// individual preference remains optional. Represent that cross-field
+		// rule in the request schema.
+		one := 1
+		notificationPreferences.MinProperties = &one
+		notificationPreferences.AnyOf = make([]*huma.Schema, 0, 4)
+		for _, field := range []string{"enabled", "mode", "sound", "max_update_frequency_seconds"} {
+			notificationPreferences.AnyOf = append(notificationPreferences.AnyOf, &huma.Schema{
+				Type:     "object",
+				Required: []string{field},
+			})
+		}
+	}
+	if notificationResolve := document.Components.Schemas.Map()["NotificationResolveBody"]; notificationResolve != nil {
+		if ids := notificationResolve.Properties["openim_user_ids"]; ids != nil && ids.Items != nil {
+			maxLength := 128
+			ids.Items.MaxLength = &maxLength
 		}
 	}
 	return document, nil

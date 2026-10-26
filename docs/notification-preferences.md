@@ -7,12 +7,14 @@ they are merged and rolled out.
 ## Authenticated user routes
 
 - `GET /v1/settings/notifications` returns effective account defaults.
-- `PUT /v1/settings/notifications` updates one or more supplied fields.
+- `PUT /v1/settings/notifications` updates one or more supplied fields; an
+  empty JSON object is rejected with `422`.
 - `GET /v1/conversations/{conversationID}/notifications` returns the effective
   account settings after per-conversation overrides.
 - `PUT /v1/conversations/{conversationID}/notifications` updates the supplied
-  override fields. Omitted fields are preserved. `DELETE` on the same path
-  removes all overrides and restores inheritance from account settings.
+  override fields. Omitted fields are preserved and an empty JSON object is
+  rejected with `422`. `DELETE` on the same path takes no request body, removes
+  all overrides, and restores inheritance from account settings.
 
 All user routes require the Platform Bearer token. Supported settings are:
 
@@ -25,7 +27,9 @@ All user routes require the Platform Bearer token. Supported settings are:
 }
 ```
 
-`mode` is `all`, `mentions_only`, or `none`; `sound` is `default` or `silent`;
+`mode` is `all`, `mentions_only`, or `none`; `sound` is `default` or `silent`
+(these are the only supported sound choices; arbitrary/custom sound names are
+not accepted);
 the frequency is 2, 5, or 10 seconds. Missing account rows resolve to
 `enabled/all/default/2`. Conversation overrides inherit each unset field.
 Deleting an override resets every field to the account-level value. This is
