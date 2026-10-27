@@ -673,6 +673,47 @@ func (r *UserRepository) DiscoverOpenIMUsers(ctx context.Context, requesterID st
 	}
 	return ids, rows.Err()
 }
+
+// AddDiscoveredContacts records client-discovered accounts as an additive set.
+// The API resolves OpenIM identities to active Platform accounts before calling it.
+func (r *UserRepository) AddDiscoveredContacts(ctx context.Context, userID string, contactUserIDs []string) error {
+	if len(contactUserIDs) == 0 {
+		return nil
+	}
+	_, err := r.pool.Exec(ctx, `INSERT INTO discovered_contacts(user_id,contact_user_id)
+		SELECT $1,$2::uuid FROM unnest($3::uuid[]) AS candidate(id)
+		JOIN users u ON u.id=candidate.id AND u.deleted_at IS NULL AND u.status='active'
+		WHERE candidate.id<>$1::uuid ON CONFLICT(user_id,contact_user_id) DO NOTHING`, userID, contactUserIDs)
+	return err
+}
+
+// DiscoveredOpenIMIDs lists the persisted, active discovered accounts for a user.
+func (r *UserRepository) DiscoveredOpenIMIDs(ctx context.Context, userID string) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT u.openim_user_id FROM discovered_contacts d
+		JOIN users u ON u.id=d.contact_user_id
+		WHERE d.user_id=$1 AND u.deleted_at IS NULL AND u.status='active'
+		ORDER BY d.created_at,u.id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ClearDiscoveredContacts removes the authenticated user's persisted set.
+func (r *UserRepository) ClearDiscoveredContacts(ctx context.Context, userID string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM discovered_contacts WHERE user_id=$1`, userID)
+	return err
+}
+
 func (r *UserRepository) StoreProfileAsset(ctx context.Context, userID, key, path, contentType string, size int64) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

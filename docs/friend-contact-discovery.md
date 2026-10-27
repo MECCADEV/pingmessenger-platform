@@ -51,6 +51,34 @@ This is a read-only lookup, but it is not a snapshot: results can change as
 contacts are verified, accounts change status, or OpenIM identities are linked.
 The handler does not currently enforce a discovery-specific rate limit.
 
+## Persisted discovered contacts
+
+Clients can maintain the discovered IDs they want to use in their contact
+list. After calling discovery, add the returned OpenIM IDs with:
+
+```http
+POST /v1/contacts/discovered
+Authorization: Bearer <access-token>
+Content-Type: application/json
+
+{"openim_user_ids":["openim-user-id"]}
+```
+
+The request accepts 1–1000 OpenIM IDs and is **additive**. Repeated IDs are
+deduplicated, prior IDs remain stored, unknown or inactive accounts are
+ignored, and the authenticated user's own ID is excluded. The response is
+`{"contacts":[...]}` using the same public profile fields as `GET /v1/friends`.
+Use `GET /v1/contacts/discovered` to list the persisted set. Use
+`DELETE /v1/contacts/discovered` to explicitly clear it; posting an empty list
+is invalid and never clears prior contacts.
+
+For a story posted with `visibility=contacts`, the server snapshots the union
+of the owner's current OpenIM friends and persisted discovered contacts into
+that story's recipients. `allow` and `exclude` select from that same union.
+Changing either list later affects future stories, not the recipient snapshot
+of stories already posted. OpenIM friendship remains sourced live from OpenIM;
+the discovered list is stored by Platform.
+
 ## Errors
 
 | HTTP status | Meaning |

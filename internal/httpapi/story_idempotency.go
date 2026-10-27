@@ -60,3 +60,15 @@ func hashStoryCreateRequest(mediaType, contentType string, data []byte, caption,
 	digest := sha256.Sum256(canonical)
 	return hex.EncodeToString(digest[:]), nil
 }
+
+func hashStoryViewRequest(storyID, reaction string) (string, error) {
+	canonical, err := json.Marshal(struct {
+		StoryID  string `json:"story_id"`
+		Reaction string `json:"reaction"`
+	}{StoryID: storyID, Reaction: reaction})
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
+}

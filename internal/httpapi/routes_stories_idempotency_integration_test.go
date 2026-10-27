@@ -28,6 +28,12 @@ type idempotencyTestObjectStore struct {
 	presigns int
 }
 
+type idempotencyTestView struct {
+	UserID   string    `json:"user_id"`
+	ViewedAt time.Time `json:"viewed_at"`
+	Reaction string    `json:"reaction"`
+}
+
 func (s *idempotencyTestObjectStore) Put(_ context.Context, key, _ string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -95,11 +101,10 @@ func TestCreateStoryHTTPIdempotencyConcurrentReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := &API{
-		users:      auth.NewUserRepository(pool),
-		tokens:     tokens,
-		stories:    stories.NewRepository(pool),
-		limiter:    ratelimit.NewLocal(),
-		storyGraph: map[string]map[string]struct{}{ownerID: {}},
+		users:   auth.NewUserRepository(pool),
+		tokens:  tokens,
+		stories: stories.NewRepository(pool),
+		limiter: ratelimit.NewLocal(),
 	}
 
 	const requests = 6
@@ -204,12 +209,11 @@ func TestCreateMediaStoryHTTPIdempotencyConcurrentReplayCleansLosingUploads(t *t
 	}
 	objects := &idempotencyTestObjectStore{objects: make(map[string][]byte)}
 	api := &API{
-		users:      auth.NewUserRepository(pool),
-		tokens:     tokens,
-		stories:    stories.NewRepository(pool),
-		objects:    objects,
-		limiter:    ratelimit.NewLocal(),
-		storyGraph: map[string]map[string]struct{}{ownerID: {}},
+		users:   auth.NewUserRepository(pool),
+		tokens:  tokens,
+		stories: stories.NewRepository(pool),
+		objects: objects,
+		limiter: ratelimit.NewLocal(),
 	}
 
 	const requests = 6
@@ -300,6 +304,103 @@ func TestCreateMediaStoryHTTPIdempotencyConcurrentReplayCleansLosingUploads(t *t
 	}
 	if afterPuts, afterRetained, afterDeletes, afterPresigns := objects.counts(); afterPuts != putAttempts || afterRetained != retainedObjects || afterDeletes != deletes || afterPresigns != presigns {
 		t.Fatalf("conflicting replay touched object store puts=%d retained=%d deletes=%d presigns=%d", afterPuts, afterRetained, afterDeletes, afterPresigns)
+	}
+}
+
+func TestViewStoryHTTPIdempotencyReplayConflictAndGone(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL is not configured")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	ownerID := uuid.NewString()
+	sessionID := uuid.NewString()
+	username := "story-view-http-idempotency-" + strings.ReplaceAll(ownerID, "-", "")
+	if _, err = pool.Exec(ctx, `INSERT INTO users(id,username,password_hash,openim_user_id,status) VALUES ($1,$2,'test',$3,'active')`, ownerID, username, "openim-"+ownerID); err != nil {
+		t.Fatalf("insert test user: %v", err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO device_sessions(id,user_id,refresh_token_hash,platform_id,expires_at) VALUES ($1,$2,$3,'test',now()+interval '1 hour')`, sessionID, ownerID, uuid.NewString()); err != nil {
+		t.Fatalf("insert test session: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, ownerID) })
+
+	tokens := auth.NewTokenManager(strings.Repeat("s", 40), "story-view-test", time.Hour, time.Hour)
+	accessToken, _, err := tokens.IssueAccess(ownerID, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	story, created, err := stories.NewRepository(pool).CreateIdempotent(ctx, stories.CreateParams{
+		OwnerID: ownerID, MediaType: "text", ContentType: "text/plain", Caption: "view target", Text: "view target",
+		BackgroundColor: "#FFFFFF", Visibility: "contacts", ExpiresAt: time.Now().Add(time.Hour),
+		Recipients: []string{ownerID}, IdempotencyKey: "http-view-story", RequestHash: strings.Repeat("a", 64),
+	})
+	if err != nil || !created {
+		t.Fatalf("create target story=%v created=%v err=%v", story, created, err)
+	}
+	api := &API{
+		users:   auth.NewUserRepository(pool),
+		tokens:  tokens,
+		stories: stories.NewRepository(pool),
+		limiter: ratelimit.NewLocal(),
+	}
+	request := func(key, reaction string) *fasthttp.RequestCtx {
+		var requestCtx fasthttp.RequestCtx
+		requestCtx.Request.Header.SetMethod("POST")
+		requestCtx.Request.Header.Set("Authorization", "Bearer "+accessToken)
+		if key != "" {
+			requestCtx.Request.Header.Set("Idempotency-Key", key)
+		}
+		requestCtx.Request.SetBodyString(`{"reaction":"` + reaction + `"}`)
+		requestCtx.SetUserValue("storyID", story.ID)
+		api.viewStory(&requestCtx)
+		return &requestCtx
+	}
+	viewFrom := func(response *fasthttp.RequestCtx) idempotencyTestView {
+		var decoded struct {
+			View idempotencyTestView `json:"view"`
+		}
+		if err := json.Unmarshal(response.Response.Body(), &decoded); err != nil {
+			t.Fatalf("decode view response: %v body=%s", err, response.Response.Body())
+		}
+		return decoded.View
+	}
+
+	first := request("open-one", "heart")
+	if first.Response.StatusCode() != 200 || first.Response.Header.Peek("Idempotency-Replayed") != nil {
+		t.Fatalf("first response status=%d replay=%q body=%s", first.Response.StatusCode(), first.Response.Header.Peek("Idempotency-Replayed"), first.Response.Body())
+	}
+	original := viewFrom(first)
+	replayed := request("open-one", "heart")
+	if replayed.Response.StatusCode() != 200 || string(replayed.Response.Header.Peek("Idempotency-Replayed")) != "true" {
+		t.Fatalf("replay response status=%d replay=%q body=%s", replayed.Response.StatusCode(), replayed.Response.Header.Peek("Idempotency-Replayed"), replayed.Response.Body())
+	}
+	if got := viewFrom(replayed); got.ViewedAt != original.ViewedAt || got.Reaction != original.Reaction {
+		t.Fatalf("replay view=%+v; want original %+v", got, original)
+	}
+	if conflict := request("open-one", "fire"); conflict.Response.StatusCode() != 409 {
+		t.Fatalf("changed request status=%d body=%s, want conflict", conflict.Response.StatusCode(), conflict.Response.Body())
+	}
+	if later := request("open-two", "fire"); later.Response.StatusCode() != 200 || viewFrom(later).Reaction != "fire" {
+		t.Fatalf("later explicit open status=%d body=%s", later.Response.StatusCode(), later.Response.Body())
+	}
+	if oldRetry := request("open-one", "heart"); oldRetry.Response.StatusCode() != 200 || viewFrom(oldRetry).ViewedAt != original.ViewedAt {
+		t.Fatalf("old retry changed response status=%d body=%s", oldRetry.Response.StatusCode(), oldRetry.Response.Body())
+	}
+	var currentReaction string
+	if err = pool.QueryRow(ctx, `SELECT reaction FROM story_views WHERE story_id=$1 AND viewer_id=$2`, story.ID, ownerID).Scan(&currentReaction); err != nil || currentReaction != "fire" {
+		t.Fatalf("current reaction=%q err=%v; old retry must not overwrite it", currentReaction, err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE stories SET expires_at=now()-interval '1 second' WHERE id=$1`, story.ID); err != nil {
+		t.Fatal(err)
+	}
+	if gone := request("open-two", "fire"); gone.Response.StatusCode() != 410 {
+		t.Fatalf("expired story replay status=%d body=%s, want gone", gone.Response.StatusCode(), gone.Response.Body())
 	}
 }
 

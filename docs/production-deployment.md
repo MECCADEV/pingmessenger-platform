@@ -64,6 +64,41 @@ recreate the production database or application Secret.
 The feature-specific AWS and IRSA record is
 [`docs/config/deployment/document-message-storage.md`](config/deployment/document-message-storage.md).
 
+## Public profile photos
+
+Profile photos use stable URLs under `S3_PUBLIC_BASE_URL/profiles/`. The
+application saves these URLs in `profile_assets` and OpenIM `faceURL`; friends,
+search results, and profile responses reuse the same URL. Keep the configured
+host and `/profiles/` path readable without login. For the AWS bucket configured
+by `storage.bucket`, one option is this bucket policy, replacing the bucket
+name with the deployed value:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "PublicReadProfilePhotosOnly",
+    "Effect": "Allow",
+    "Principal": "*",
+    "Action": "s3:GetObject",
+    "Resource": "arn:aws:s3:::pingmessenger-openim-403048695675-ap-south-1/profiles/*"
+  }]
+}
+```
+
+This grants anonymous reads only for `profiles/*`; it does not grant access to
+story media or documents. If S3 Block Public Access prevents this policy, keep
+the bucket private and configure the CDN with an origin access identity scoped
+to `profiles/*`, then point `storage.publicBaseURL` at that CDN. Do not use a
+public bucket-wide policy. The current URL shape stays unchanged, so existing
+database URLs and OpenIM `faceURL` values need no rewrite.
+
+The S3 adapter also supports expiring presigned GET URLs (`PresignGet`). The
+platform uses those for private story and document downloads, but profile
+photos do not have a signed-URL issuance endpoint. A presigned URL is a bearer
+link that expires, so it should not be stored in profile or OpenIM records as a
+permanent avatar URL.
+
 The platform document API uses a dedicated private S3 bucket (for example
 `pingmessenger-message-documents-production`) and a pod workload identity/IRSA
 role. OpenIM's `openim-rpc-third` object service keeps its existing separate

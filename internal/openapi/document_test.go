@@ -13,14 +13,14 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if doc.OpenAPI != "3.1.0" {
 		t.Fatalf("OpenAPI version = %q", doc.OpenAPI)
 	}
-	if doc.Info.Version != "0.11.0" {
+	if doc.Info.Version != "0.12.0" {
 		t.Fatalf("API version = %q", doc.Info.Version)
 	}
 	for _, path := range []string{
 		"/v1/auth/signup", "/v1/auth/verify-username", "/v1/auth/login", "/v1/auth/login/start", "/v1/auth/login/verify", "/v1/auth/refresh",
 		"/v1/mfa/challenge", "/v1/mfa/verify", "/v1/security/backup-codes", "/v1/security/backup-codes/regenerate",
 		"/v1/mfa/contacts",
-		"/v1/security/activity", "/v1/security/revoke", "/v1/profile/", "/v1/profile/update", "/v1/profile/image", "/v1/friends", "/v1/friends/discover-network", "/v1/friends/search", "/v1/blocks", "/v1/blocks/{pingID}", "/v1/account/delete",
+		"/v1/security/activity", "/v1/security/revoke", "/v1/profile/", "/v1/profile/update", "/v1/profile/image", "/v1/friends", "/v1/friends/discover-network", "/v1/friends/search", "/v1/contacts/discovered", "/v1/blocks", "/v1/blocks/{pingID}", "/v1/account/delete",
 		"/v1/conversations/{conversationID}/payments", "/v1/conversations/{conversationID}/payments/ws",
 		"/v1/payments/{paymentID}/chain",
 		"/v1/stories", "/v1/stories/{storyID}", "/v1/stories/{storyID}/view", "/v1/stories/{storyID}/views", "/v1/stories/ws",
@@ -50,6 +50,13 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	}
 	if !strings.Contains(discovery.Description, "at least one non-empty array") || !strings.Contains(discovery.Description, "OpenIM user IDs") || !strings.Contains(discovery.Description, "docs/friend-contact-discovery.md") {
 		t.Fatalf("contact discovery description is missing contract details: %q", discovery.Description)
+	}
+	discovered := doc.Paths["/v1/contacts/discovered"]
+	if discovered.Get == nil || discovered.Post == nil || discovered.Delete == nil {
+		t.Fatal("discovered contacts must expose GET, POST, and DELETE")
+	}
+	if !strings.Contains(discovered.Post.Description, "additive") || !strings.Contains(discovered.Delete.Description, "Clear") {
+		t.Fatal("discovered contacts must document additive POST and explicit DELETE semantics")
 	}
 	discoveryBody := doc.Components.Schemas.Map()["DiscoverBody"]
 	if discoveryBody == nil {
@@ -171,8 +178,27 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		}
 	}
 	storyView := doc.Paths["/v1/stories/{storyID}/view"].Post
-	if !strings.Contains(storyView.Description, "prevents duplicate rows") || !strings.Contains(storyView.Description, "not idempotent") {
-		t.Fatal("story view contract must distinguish row deduplication from retry idempotency")
+	for _, term := range []string{"Idempotency-Key", "original view snapshot", "different input returns 409", "story deletion or expiry returns 410", "fresh key"} {
+		if !strings.Contains(storyView.Description, term) {
+			t.Errorf("story view retry contract missing %q: %q", term, storyView.Description)
+		}
+	}
+	var storyViewHasOptionalKey bool
+	for _, parameter := range storyView.Parameters {
+		if parameter.In == "header" && parameter.Name == "Idempotency-Key" && !parameter.Required {
+			storyViewHasOptionalKey = true
+		}
+	}
+	if !storyViewHasOptionalKey {
+		t.Fatal("story view must expose an optional Idempotency-Key header")
+	}
+	if storyView.Responses["200"].Headers["Idempotency-Replayed"] == nil {
+		t.Fatal("story view must document its idempotency replay response header")
+	}
+	for _, status := range []string{"409", "410"} {
+		if storyView.Responses[status] == nil {
+			t.Fatalf("story view must document response %s", status)
+		}
 	}
 	storyMedia := doc.Paths["/v1/stories/{storyID}/media"].Get
 	if !strings.Contains(storyMedia.Description, "raw response body") || !strings.Contains(storyMedia.Description, "does not implement byte ranges") {

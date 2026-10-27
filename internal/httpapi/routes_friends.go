@@ -6,6 +6,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"net/http"
 	"net/mail"
+	"pingmessenger/internal/auth"
 	"pingmessenger/internal/openim"
 	"strings"
 )
@@ -14,6 +15,9 @@ func (a *API) registerFriendRoutes(r *router.Router) {
 	r.POST("/v1/friends/discover-network", a.discoverNetwork)
 	r.POST("/v1/friends/search", a.searchFriends)
 	r.GET("/v1/friends", a.listFriends)
+	r.GET("/v1/contacts/discovered", a.listDiscoveredContacts)
+	r.POST("/v1/contacts/discovered", a.addDiscoveredContacts)
+	r.DELETE("/v1/contacts/discovered", a.clearDiscoveredContacts)
 }
 
 type friendProfileResult struct {
@@ -79,6 +83,106 @@ type friendSearchResult struct {
 type discoverRequest struct {
 	Emails   []string `json:"emails" validate:"max=100,dive,email"`
 	MobileNo []string `json:"mobile_no" validate:"max=100,dive,max=32"`
+}
+
+type discoveredContactsRequest struct {
+	OpenIMUserIDs []string `json:"openim_user_ids" validate:"required,min=1,max=1000,dive,required,max=128"`
+}
+
+func (a *API) listDiscoveredContacts(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	ids, err := a.users.DiscoveredOpenIMIDs(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered contacts"})
+		return
+	}
+	profiles, err := a.users.PublicProfilesByOpenIMIDs(context.Background(), ids)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered contact profiles"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"contacts": friendProfiles(profiles)})
+}
+
+func (a *API) addDiscoveredContacts(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req discoveredContactsRequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	openIMIDs := make([]string, 0, len(req.OpenIMUserIDs))
+	seen := make(map[string]struct{}, len(req.OpenIMUserIDs))
+	for _, id := range req.OpenIMUserIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "openim_user_ids must not contain empty IDs"})
+			return
+		}
+		if _, exists := seen[id]; !exists {
+			seen[id] = struct{}{}
+			openIMIDs = append(openIMIDs, id)
+		}
+	}
+	platformIDs, err := a.users.PlatformUserIDsByOpenIM(context.Background(), openIMIDs)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not resolve discovered contacts"})
+		return
+	}
+	contactIDs := make([]string, 0, len(platformIDs))
+	for _, id := range platformIDs {
+		if id != userID {
+			contactIDs = append(contactIDs, id)
+		}
+	}
+	if err := a.users.AddDiscoveredContacts(context.Background(), userID, contactIDs); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not save discovered contacts"})
+		return
+	}
+	ids, err := a.users.DiscoveredOpenIMIDs(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered contacts"})
+		return
+	}
+	profiles, err := a.users.PublicProfilesByOpenIMIDs(context.Background(), ids)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered contact profiles"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"contacts": friendProfiles(profiles)})
+}
+
+func (a *API) clearDiscoveredContacts(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if err := a.users.ClearDiscoveredContacts(context.Background(), userID); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not clear discovered contacts"})
+		return
+	}
+	ctx.SetStatusCode(http.StatusNoContent)
+}
+
+func friendProfiles(profiles []*auth.PublicProfile) []friendProfileResult {
+	result := make([]friendProfileResult, 0, len(profiles))
+	for _, p := range profiles {
+		nickname := p.Nickname
+		if nickname == "" {
+			nickname = p.Username
+		}
+		result = append(result, friendProfileResult{UserID: p.UserID, OpenIMUserID: p.OpenIMUserID, PingID: p.PingID, Username: p.Username, Nickname: nickname, Image: p.Image})
+	}
+	return result
 }
 
 func (a *API) discoverNetwork(ctx *fasthttp.RequestCtx) {

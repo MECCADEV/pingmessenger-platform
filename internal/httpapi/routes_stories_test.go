@@ -56,6 +56,22 @@ func TestValidStoryBackgroundColor(t *testing.T) {
 	}
 }
 
+func TestStoryAudienceSetUnionsFriendsAndDiscoveredContacts(t *testing.T) {
+	owner := "owner"
+	got := storyAudienceSet(owner, []string{"friend", "shared", owner}, []string{"discovered", "shared", ""})
+	if len(got) != 3 {
+		t.Fatalf("story audience has %d members, want 3: %v", len(got), got)
+	}
+	for _, id := range []string{"friend", "shared", "discovered"} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("story audience missing %q", id)
+		}
+	}
+	if _, ok := got[owner]; ok {
+		t.Error("story audience must not contain its owner")
+	}
+}
+
 func TestParseStoryIdempotencyKey(t *testing.T) {
 	for _, key := range []string{"", "draft-01J0ABCXYZ", "0123456789abcdef"} {
 		got, err := parseStoryIdempotencyKey(key)

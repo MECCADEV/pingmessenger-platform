@@ -39,14 +39,26 @@ needed to guarantee orphan cleanup. This is not covered by story idempotency.
 
 ## View and reaction (`POST /v1/stories/{storyID}/view`)
 
-The database primary key `(story_id, viewer_id)` and repository upsert ensure
-there is at most one current view row for each viewer/story pair. A subsequent
-request updates that row's `viewed_at` timestamp and replaces its `reaction`.
-The request's omitted or empty reaction is stored as an empty string, so
-replaying an earlier request can clear a later reaction and refresh the timestamp.
-This is row-deduplicated, but not idempotent as a state update. `GET
-/v1/stories/{storyID}/views` exposes the current rows to the story owner; there
-is no per-request replay result or event history for view/reaction updates.
+The database primary key `(story_id, viewer_id)` ensures there is at most one
+current view row for each viewer/story pair. Legacy requests without
+`Idempotency-Key` retain the prior behavior: each request refreshes
+`viewed_at` and replaces its `reaction`, with an omitted or empty reaction
+stored as an empty string.
+
+Clients may send an optional owner-scoped (viewer-scoped) `Idempotency-Key` of
+1–128 visible non-whitespace ASCII characters. The server fingerprints the
+normalized `(story_id, reaction)` request and transactionally persists the key,
+the view mutation, and the original response snapshot. A repeated key with the
+same story and reaction returns that original `viewed_at` and reaction without
+reapplying the mutation; reusing it with different input returns `409`. Keys
+are retained for 30 days. A replay after story deletion or expiry returns
+`410`; a fresh key represents a later intentional story open and may update the
+current row. `Idempotency-Replayed: true` identifies a replay response.
+
+The ledger is keyed by `(viewer_id, idempotency_key)`, so the same key cannot
+be reused for a different story by that viewer. `GET
+/v1/stories/{storyID}/views` continues to expose only the current view row to
+the story owner; it is not a per-request event history.
 
 ## Story sync and media
 
@@ -90,15 +102,17 @@ created stories and retained deletion events.
 
 ## Evidence and scope
 
-- `internal/httpapi/routes_stories.go` parses and validates the optional header,
-  fingerprints the normalized multipart request, and returns replay/conflict
-  responses.
+- `internal/httpapi/routes_stories.go` parses and validates optional story
+  create/view keys, fingerprints their normalized requests, and returns
+  replay/conflict/gone responses.
 - `internal/stories/repository.go` stores create keys and story/event rows in
   one transaction and upserts views with `viewed_at=now()` and
   `reaction=EXCLUDED.reaction`.
 - `migrations/0010_stories.sql` defines the `(story_id, viewer_id)` primary key.
 - `migrations/0026_story_create_idempotency.sql` stores owner-scoped fingerprints
   and 30-day tombstones independent of story retention.
+- `migrations/0029_story_view_idempotency.sql` stores viewer-scoped view
+  snapshots for 30 days, with a tombstone after story deletion.
 - `openapi/openapi.json` is generated from `internal/openapi/huma.go` with
   `make openapi`; the operation documents `Idempotency-Key`, 409, and 410.
 - `docs/story-sync-contract.md` and the `/v1/stories/ws` OpenAPI description

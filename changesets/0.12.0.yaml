@@ -1,0 +1,60 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.11.0
+  next: 0.12.0
+  bump: minor
+  compatibility: additive-with-behavioral-hardening
+releaseDate: 2026-10-27
+summary: >-
+  Persists client-discovered contacts and includes them with current OpenIM
+  friends in the recipient snapshot for newly posted statuses.
+changes:
+  - id: discovered-contact-list
+    type: endpoint
+    method: GET,POST,DELETE
+    path: /v1/contacts/discovered
+    description: >-
+      Adds discovered OpenIM IDs to a durable per-user set, lists the saved
+      profile records, and explicitly clears the set. POST is additive and
+      never removes prior entries; DELETE clears the list.
+  - id: status-audience-friends-and-discovered
+    type: behavior
+    method: POST
+    path: /v1/stories
+    description: >-
+      New statuses snapshot the union of the owner's current OpenIM friend list
+      and persisted discovered contacts. OpenIM friend membership is read live
+      when a status is posted; conversation history and process-local caches
+      are not used as the audience source. Existing status recipient snapshots
+      are unchanged.
+  - id: discovered-contact-storage
+    type: schema
+    description: >-
+      Migration 0030 adds the discovered_contacts relation keyed by owner and
+      active account, with foreign-key cleanup on account deletion.
+  - id: story-view-idempotency
+    type: behavior
+    method: POST
+    path: /v1/stories/{storyID}/view
+    description: >-
+      Supports optional viewer-scoped Idempotency-Key replay for explicit story
+      opens. Matching retries return their original view snapshot; key reuse
+      with different input returns 409, and replay after story expiry/deletion
+      returns 410. Requests without a key keep the legacy upsert behavior.
+      Migration 0029 stores the 30-day replay ledger.
+  - id: audience-openapi
+    type: schema
+    description: >-
+      Updates the generated OpenAPI contract to 0.12.0 and documents the
+      discovered-contact endpoints and their additive/clear semantics.
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:status-audience-20261027
+  helm:
+    chart: deploy/helm/pingmessenger
+    release: pingmessenger
+    namespace: pingmessenger
+verification:
+  - go test -count=1 ./...
+  - make openapi
+  - git diff --check

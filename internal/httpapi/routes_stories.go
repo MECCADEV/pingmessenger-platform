@@ -228,10 +228,17 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not load story contacts"})
 		return
 	}
-	friendSet := make(map[string]struct{}, len(friends))
-	for _, id := range friends {
-		friendSet[id] = struct{}{}
+	discoveredOpenIDs, err := a.users.DiscoveredOpenIMIDs(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered story contacts"})
+		return
 	}
+	discoveredPlatformIDs, err := a.users.PlatformUserIDsByOpenIM(context.Background(), discoveredOpenIDs)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not resolve discovered story contacts"})
+		return
+	}
+	friendSet := storyAudienceSet(userID, friends, mapValues(discoveredPlatformIDs))
 	recipients := make([]string, 0, len(friendSet))
 	switch visibility {
 	case string(stories.VisibilityContacts):
@@ -327,6 +334,24 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 	writeJSON(ctx, http.StatusCreated, map[string]any{"story": story})
 }
 
+func storyAudienceSet(ownerID string, friendIDs, discoveredIDs []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(friendIDs)+len(discoveredIDs))
+	for _, id := range append(append([]string(nil), friendIDs...), discoveredIDs...) {
+		if id != "" && id != ownerID {
+			set[id] = struct{}{}
+		}
+	}
+	return set
+}
+
+func mapValues(values map[string]string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+	return result
+}
+
 func validStoryBackgroundColor(value string) bool {
 	if len(value) != 7 || value[0] != '#' {
 		return false
@@ -351,21 +376,11 @@ func storyMediaType(contentType string) (stories.MediaType, bool) {
 	}
 }
 
-// storyFriends keeps the hot path in memory while retaining a lazy OpenIM
-// snapshot fallback after a platform restart.
+// storyFriends reads OpenIM's current relation list for each story create.
+// Conversation history and process-local caches are not a source of truth for
+// the contacts audience.
 func (a *API) storyFriends(ctx context.Context, platformID, openIMID string) ([]string, error) {
-	a.storyGraphMu.RLock()
-	set, cached := a.storyGraph[platformID]
-	if cached {
-		ids := make([]string, 0, len(set))
-		for id := range set {
-			ids = append(ids, id)
-		}
-		a.storyGraphMu.RUnlock()
-		return ids, nil
-	}
-	a.storyGraphMu.RUnlock()
-	openIDs, err := a.openIM.ListConversationUserIDs(ctx, &openim.ListConversationUserIDsRequest{UserID: openIMID})
+	openIDs, err := a.openIM.ListFriendIDs(ctx, &openim.ListFriendIDsRequest{UserID: openIMID})
 	if err != nil {
 		return nil, err
 	}
@@ -373,13 +388,12 @@ func (a *API) storyFriends(ctx context.Context, platformID, openIMID string) ([]
 	if err != nil {
 		return nil, err
 	}
-	set = make(map[string]struct{}, len(mapped))
+	set := make(map[string]struct{}, len(mapped))
 	for _, id := range mapped {
-		set[id] = struct{}{}
+		if id != platformID {
+			set[id] = struct{}{}
+		}
 	}
-	a.storyGraphMu.Lock()
-	a.storyGraph[platformID] = set
-	a.storyGraphMu.Unlock()
 	ids := make([]string, 0, len(set))
 	for id := range set {
 		ids = append(ids, id)
@@ -387,79 +401,11 @@ func (a *API) storyFriends(ctx context.Context, platformID, openIMID string) ([]
 	return ids, nil
 }
 
-// HandleOpenIMWebhook is the platform-side callback boundary used by the
-// optional OpenIM webhook gRPC transport. Payloads remain the existing JSON
-// callback DTOs, so HTTP and gRPC modes have identical semantics.
+// HandleOpenIMWebhook is the platform-side callback boundary used by OpenIM's
+// webhook gRPC transport. Story audience membership is resolved from OpenIM
+// and the persisted discovered-contact table, so callbacks need no process
+// local graph mutation.
 func (a *API) HandleOpenIMWebhook(ctx context.Context, command string, payload []byte) ([]byte, error) {
-	var event struct {
-		OwnerUserID    string   `json:"ownerUserID"`
-		OwnerUserIDAlt string   `json:"ownerUserId"`
-		FriendUserID   string   `json:"friendUserID"`
-		FromUserID     string   `json:"fromUserID"`
-		ToUserID       string   `json:"toUserID"`
-		FriendUserIDs  []string `json:"friendUserIDs"`
-		UserID         string   `json:"userId"`
-	}
-	if err := json.Unmarshal(payload, &event); err != nil {
-		return nil, err
-	}
-	add := func(owner, friend string) {
-		if owner == "" || friend == "" {
-			return
-		}
-		ownerID, err := a.users.PlatformUserIDByOpenIM(ctx, owner)
-		if err != nil {
-			return
-		}
-		friendID, err := a.users.PlatformUserIDByOpenIM(ctx, friend)
-		if err != nil {
-			return
-		}
-		a.storyGraphMu.Lock()
-		if a.storyGraph[ownerID] == nil {
-			a.storyGraph[ownerID] = map[string]struct{}{}
-		}
-		a.storyGraph[ownerID][friendID] = struct{}{}
-		a.storyGraphMu.Unlock()
-	}
-	remove := func(owner, friend string) {
-		if owner == "" || friend == "" {
-			return
-		}
-		ownerID, err := a.users.PlatformUserIDByOpenIM(ctx, owner)
-		if err != nil {
-			return
-		}
-		friendID, err := a.users.PlatformUserIDByOpenIM(ctx, friend)
-		if err != nil {
-			return
-		}
-		a.storyGraphMu.Lock()
-		if a.storyGraph[ownerID] != nil {
-			delete(a.storyGraph[ownerID], friendID)
-		}
-		a.storyGraphMu.Unlock()
-	}
-	switch command {
-	case "callbackAfterAddFriendCommand", "callbackAfterAddFriendAgreeCommand":
-		add(event.FromUserID, event.ToUserID)
-		add(event.ToUserID, event.FromUserID)
-	case "callbackAfterDeleteFriendCommand":
-		remove(event.OwnerUserID, event.FriendUserID)
-		remove(event.FriendUserID, event.OwnerUserID)
-	case "callbackAfterImportFriendsCommand":
-		for _, friend := range event.FriendUserIDs {
-			add(event.OwnerUserID, friend)
-			add(friend, event.OwnerUserID)
-		}
-	case "callbackAfterCreateSingleChatConversationsCommand":
-		owner := event.OwnerUserID
-		if owner == "" {
-			owner = event.OwnerUserIDAlt
-		}
-		add(owner, event.UserID)
-		add(event.UserID, owner)
-	}
 	return []byte(`{"errCode":0,"errMsg":""}`), nil
 }
 
@@ -535,14 +481,40 @@ func (a *API) viewStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "reaction must be at most 64 characters"})
 		return
 	}
-	v, err := a.stories.View(context.Background(), userID, strings.TrimSpace(ctx.UserValue("storyID").(string)), strings.TrimSpace(req.Reaction))
+	storyID := strings.TrimSpace(ctx.UserValue("storyID").(string))
+	reaction := strings.TrimSpace(req.Reaction)
+	idempotencyKey, err := parseStoryIdempotencyKey(string(ctx.Request.Header.Peek("Idempotency-Key")))
+	if err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "invalid Idempotency-Key"})
+		return
+	}
+	requestHash := ""
+	if idempotencyKey != "" {
+		requestHash, err = hashStoryViewRequest(storyID, reaction)
+		if err != nil {
+			writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not fingerprint story view"})
+			return
+		}
+	}
+	v, replayed, err := a.stories.ViewIdempotent(context.Background(), userID, storyID, reaction, idempotencyKey, requestHash)
 	if errors.Is(err, stories.ErrForbidden) {
 		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "story is not available"})
+		return
+	}
+	if errors.Is(err, stories.ErrIdempotencyConflict) {
+		writeJSON(ctx, http.StatusConflict, map[string]string{"error": "Idempotency-Key was already used for a different story view"})
+		return
+	}
+	if errors.Is(err, stories.ErrIdempotencyGone) {
+		writeJSON(ctx, http.StatusGone, map[string]string{"error": "idempotent story view result is no longer available"})
 		return
 	}
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not record view"})
 		return
+	}
+	if replayed {
+		ctx.Response.Header.Set("Idempotency-Replayed", "true")
 	}
 	writeJSON(ctx, http.StatusOK, map[string]any{"view": v})
 }

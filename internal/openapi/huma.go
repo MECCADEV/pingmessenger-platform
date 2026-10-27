@@ -365,8 +365,9 @@ type storyDeleteOutput struct {
 	}
 }
 type storyViewInput struct {
-	StoryID string `path:"storyID" format:"uuid"`
-	Body    struct {
+	StoryID        string `path:"storyID" format:"uuid"`
+	IdempotencyKey string `header:"Idempotency-Key" maxLength:"128" doc:"Optional key for replay-safe retry of one explicit story open. Reuse this key only for the same story and reaction; retained for 30 days. Replays return the original view snapshot. Reuse with different input returns 409; replay after story deletion or expiry returns 410. A fresh key represents a later intentional open."`
+	Body           struct {
 		Reaction string `json:"reaction,omitempty" maxLength:"64"`
 	}
 }
@@ -410,6 +411,16 @@ type friendProfile struct {
 type friendsOutput struct {
 	Body struct {
 		Friends []friendProfile `json:"friends"`
+	}
+}
+type discoveredContactsInput struct {
+	Body struct {
+		OpenIMUserIDs []string `json:"openim_user_ids" minItems:"1" maxItems:"1000" doc:"OpenIM IDs returned by POST /v1/friends/discover-network. This is additive; omitted prior IDs are retained until DELETE /v1/contacts/discovered."`
+	}
+}
+type discoveredContactsOutput struct {
+	Body struct {
+		Contacts []friendProfile `json:"contacts"`
 	}
 }
 type blockItem struct {
@@ -666,7 +677,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.11.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.12.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -734,7 +745,21 @@ func newDocument() (*DocumentModel, error) {
 		},
 	}
 	register[storyDeleteInput, struct{}](api, storyMediaDownload)
-	register[storyViewInput, storyViewOutput](api, operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Upsert the current view and optional reaction for this story/viewer pair. The unique pair prevents duplicate rows, but each call refreshes viewed_at and replaces reaction (an omitted/empty reaction clears it); repeating a request is not idempotent as a state update.", 200, bearer))
+	storyView := operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Upsert the current view and optional reaction for this story/viewer pair. Without Idempotency-Key, legacy behavior refreshes viewed_at and replaces reaction on every call. With a 1–128 visible non-whitespace ASCII Idempotency-Key, a repeated request for the same story and reaction returns the original view snapshot without changing current state; reusing the key with different input returns 409, and replay after story deletion or expiry returns 410. Keys are retained for 30 days. Use a fresh key for each later intentional open. See docs/story-retry-semantics.md.", 200, bearer)
+	storyView.Errors = append(storyView.Errors, http.StatusConflict, http.StatusGone, http.StatusTooManyRequests)
+	if storyView.Responses == nil {
+		storyView.Responses = make(map[string]*huma.Response)
+	}
+	if storyView.Responses["200"] == nil {
+		storyView.Responses["200"] = &huma.Response{}
+	}
+	storyView.Responses["200"].Headers = map[string]*huma.Param{
+		"Idempotency-Replayed": {
+			Description: "Present with value `true` when the response is a replay of an earlier keyed view operation.",
+			Schema:      &huma.Schema{Type: "string"},
+		},
+	}
+	register[storyViewInput, storyViewOutput](api, storyView)
 	register[storyViewsInput, storyViewsOutput](api, operation(http.MethodGet, "/v1/stories/{storyID}/views", "listStoryViews", "Stories", "List views and reactions for the authenticated owner's story.", 200, bearer))
 	register[struct{}, storyWebSocketOutput](api, operation(http.MethodGet, "/v1/stories/ws", "storyWebSocket", "Stories", "Upgrade to the authenticated, default-subscribed story WebSocket (maximum 8 concurrent connections per user). Send JSON {type:sync|get,global_cursor,user_cursors,limit} to replay events; batches contain events, updated cursors, and has_more (default page size 100, maximum 200). Persist a batch before sending {type:ack,global_cursor,user_cursors}; cursors cannot move backwards. Live stories.event messages carry a created or deleted event and global_cursor. Created media_url values are short-lived private S3 URLs; use authenticated GET /v1/stories/{storyID}/media for durable downloads. See docs/story-sync-contract.md for message shapes, cursor recovery, and media behavior.", 101, bearer))
 	documentUpload := operation(http.MethodPost, "/v1/documents", "uploadDocument", "Documents", "Upload a document for a normal OpenIM contentType=105 file message. Optionally send Idempotency-Key and reuse that key with the exact same filename, MIME type, and bytes after an ambiguous response; a replay returns the original document with 200, without reserving quota or creating a second object. Reusing the key for different content returns 409; replay after deletion or expiry returns 410. Keys remain bound to document tombstones. See docs/api/document-upload-idempotency.md for the full recovery contract. The response includes a retention-bound signed sourceUrl and fileElem metadata. Default policy is 100 MiB per file, 20 retained documents, 1 GiB per rolling 24 hours, and seven-day retention.", 201, bearer)
@@ -761,6 +786,13 @@ func newDocument() (*DocumentModel, error) {
 	discover.Errors = []int{http.StatusUnauthorized, http.StatusUnprocessableEntity, http.StatusInternalServerError}
 	register[discoverInput, discoverOutput](api, discover)
 	register[struct{}, friendsOutput](api, operation(http.MethodGet, "/v1/friends", "listFriends", "Friends", "List the authenticated user's OpenIM friends with public platform profile fields. Each result includes both user_id (Platform account UUID) and openim_user_id (OpenIM identity); clients can map between them without assuming the values match. The story viewed-by endpoint is GET /v1/stories/{storyID}/views.", 200, bearer))
+	discoveredContactsDescription := "List the authenticated user's persisted, client-discovered contacts. The set is separate from OpenIM friends and is included in the default story contacts audience."
+	register[struct{}, discoveredContactsOutput](api, operation(http.MethodGet, "/v1/contacts/discovered", "listDiscoveredContacts", "Friends", discoveredContactsDescription, 200, bearer))
+	addDiscovered := operation(http.MethodPost, "/v1/contacts/discovered", "addDiscoveredContacts", "Friends", "Add discovered OpenIM user IDs to the authenticated user's persisted discovered-contact set. This operation is additive and never removes prior contacts; use DELETE to clear the set. IDs should come from POST /v1/friends/discover-network. Returns the updated list.", 200, bearer)
+	addDiscovered.Errors = append(addDiscovered.Errors, http.StatusUnprocessableEntity)
+	register[discoveredContactsInput, discoveredContactsOutput](api, addDiscovered)
+	clearDiscovered := operation(http.MethodDelete, "/v1/contacts/discovered", "clearDiscoveredContacts", "Friends", "Clear the authenticated user's persisted discovered-contact set. OpenIM friends are not changed. This is the only operation that removes discovered contacts.", 204, bearer)
+	register[struct{}, emptyOutput](api, clearDiscovered)
 	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
 	register[struct{}, blocksOutput](api, operation(http.MethodGet, "/v1/blocks", "listBlocks", "Blocks", "List only users blocked by the authenticated user; OpenIM is the source of truth.", 200, bearer))
 	register[blockInput, blockCreatedOutput](api, operation(http.MethodPost, "/v1/blocks", "addBlock", "Blocks", "Block a user by PingID and synchronize the OpenIM blacklist.", 201, bearer))

@@ -25,7 +25,7 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.11.0`. Story uploads accept image/video MIME
+The current contract version is `0.12.0`. Story uploads accept image/video MIME
 types up to 10 MiB and are capped at 10 active stories per user; deleted or
 expired media is removed from S3 with retryable cleanup. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
@@ -138,6 +138,13 @@ platform profile fields. The owner-only viewed-by endpoint for a status is
 `GET /v1/stories/{storyID}/views`; it returns `user_id`, `viewed_at`, and
 `reaction` records.
 
+Clients can persist the OpenIM IDs returned by
+`POST /v1/friends/discover-network` with `POST /v1/contacts/discovered` using
+`{"openim_user_ids":[...]}`. POST is additive. `GET /v1/contacts/discovered`
+lists the saved contacts and `DELETE /v1/contacts/discovered` explicitly clears
+them. New status recipient snapshots include the union of the author's current
+OpenIM friends and saved discovered contacts.
+
 Blocks are OpenIM-backed: `GET /v1/blocks` lists only the caller's blocks,
 `POST /v1/blocks` accepts `{ "ping_id": "000000000159" }`, and
 `DELETE /v1/blocks/{pingID}` removes one. All require a bearer session.
@@ -191,8 +198,9 @@ credentials to Helm values or application environment files.
 
 ## Stories
 
-Stories are owned by Platform/PostgreSQL and are delivered only to users who
-have a one-to-one OpenIM conversation with the author. `POST /v1/stories` is a
+Stories are owned by Platform/PostgreSQL and are delivered to recipients in the
+author's OpenIM friend list plus saved discovered contacts at post time.
+`POST /v1/stories` is a
 multipart upload (`media`, optional `caption`, `visibility=contacts|allow|exclude`,
 optional JSON-array `user_ids`, and optional `expires_in_seconds`); expiry
 defaults to 24 hours and media is limited to 10 MiB. A story deletion or

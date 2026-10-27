@@ -17,8 +17,9 @@ storage:
   documentBucket: pingmessenger-message-documents-production
   # Empty selects AWS S3 rather than a MinIO/custom S3-compatible endpoint.
   endpoint: ""
-  # Used only by legacy profile/avatar responses. Story media always uses a
-  # short-lived presigned URL and the bucket must have public access blocked.
+  # Used for stable profile/avatar URLs. Allow anonymous reads only for the
+  # profiles/ object prefix (or serve that prefix through a public CDN).
+  # Stories and documents remain private and use presigned URLs.
   publicBaseURL: https://assets.example.com
   credentials:
     # EKS IRSA: no AWS keys are mounted. The AWS SDK obtains temporary

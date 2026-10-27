@@ -21,7 +21,10 @@ var ErrTotalLimit = errors.New("maximum retained stories reached")
 var ErrIdempotencyConflict = errors.New("idempotency key was already used for a different story request")
 var ErrIdempotencyGone = errors.New("idempotent story result is no longer available")
 
-const StoryCreateIdempotencyRetention = 30 * 24 * time.Hour
+const (
+	StoryCreateIdempotencyRetention = 30 * 24 * time.Hour
+	StoryViewIdempotencyRetention   = 30 * 24 * time.Hour
+)
 
 type Repository struct{ pool *pgxpool.Pool }
 
@@ -276,6 +279,88 @@ func (r *Repository) View(ctx context.Context, viewerID, storyID, reaction strin
 		return nil, ErrForbidden
 	}
 	return &v, err
+}
+
+// ViewIdempotent records one explicit view and keeps its response snapshot for
+// safe replay after an ambiguous HTTP result. A fresh key denotes a later
+// intentional open; an empty key preserves the legacy unkeyed behavior.
+func (r *Repository) ViewIdempotent(ctx context.Context, viewerID, storyID, reaction, key, requestHash string) (*View, bool, error) {
+	if key == "" {
+		view, err := r.View(ctx, viewerID, storyID, reaction)
+		return view, false, err
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err = tx.Exec(ctx, `DELETE FROM story_view_idempotency WHERE viewer_id=$1 AND idempotency_key=$2 AND retain_until<=now()`, viewerID, key); err != nil {
+		return nil, false, err
+	}
+
+	var viewedAt time.Time
+	err = tx.QueryRow(ctx, `INSERT INTO story_view_idempotency (viewer_id,idempotency_key,story_id,request_hash,viewed_at,reaction,retain_until)
+		SELECT $1,$2,$3,$4,now(),$5,now()+($6 * interval '1 second')
+		WHERE EXISTS (SELECT 1 FROM story_recipients sr JOIN stories s ON s.id=sr.story_id WHERE sr.story_id=$3 AND sr.recipient_id=$1 AND s.deleted_at IS NULL AND s.expires_at>now())
+		ON CONFLICT (viewer_id,idempotency_key) DO NOTHING
+		RETURNING viewed_at`, viewerID, key, storyID, requestHash, reaction, int64(StoryViewIdempotencyRetention.Seconds())).Scan(&viewedAt)
+	if err == nil {
+		var view View
+		err = tx.QueryRow(ctx, `INSERT INTO story_views (story_id,viewer_id,viewed_at,reaction)
+			VALUES ($1,$2,$3,$4)
+			ON CONFLICT (story_id,viewer_id) DO UPDATE SET viewed_at=EXCLUDED.viewed_at,reaction=EXCLUDED.reaction
+			RETURNING viewer_id::text,viewed_at,reaction`, storyID, viewerID, viewedAt, reaction).Scan(&view.UserID, &view.ViewedAt, &view.Reaction)
+		if err != nil {
+			return nil, false, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return nil, false, err
+		}
+		return &view, false, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, err
+	}
+
+	var storedHash, storedStoryID, storedReaction string
+	var storedViewedAt, retainUntil time.Time
+	lookupErr := tx.QueryRow(ctx, `SELECT request_hash,COALESCE(story_id::text,''),viewed_at,reaction,retain_until
+		FROM story_view_idempotency WHERE viewer_id=$1 AND idempotency_key=$2 FOR UPDATE`, viewerID, key).Scan(&storedHash, &storedStoryID, &storedViewedAt, &storedReaction, &retainUntil)
+	if errors.Is(lookupErr, pgx.ErrNoRows) {
+		return nil, false, ErrForbidden
+	}
+	if lookupErr != nil {
+		return nil, false, lookupErr
+	}
+	if !retainUntil.After(time.Now()) {
+		return nil, false, ErrIdempotencyGone
+	}
+	if storedHash != requestHash {
+		return nil, false, ErrIdempotencyConflict
+	}
+	if storedStoryID == "" {
+		return nil, false, ErrIdempotencyGone
+	}
+	var storyExists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM stories WHERE id=$1 AND deleted_at IS NULL AND expires_at>now())`, storedStoryID).Scan(&storyExists); err != nil {
+		return nil, false, err
+	}
+	if !storyExists {
+		return nil, false, ErrIdempotencyGone
+	}
+	var recipient bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM story_recipients WHERE story_id=$1 AND recipient_id=$2)`, storedStoryID, viewerID).Scan(&recipient); err != nil {
+		return nil, false, err
+	}
+	if !recipient {
+		return nil, false, ErrForbidden
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return &View{UserID: viewerID, ViewedAt: storedViewedAt, Reaction: storedReaction}, true, nil
 }
 
 func (r *Repository) MediaForRecipient(ctx context.Context, userID, storyID string) (*Story, error) {
@@ -569,7 +654,16 @@ func (r *Repository) CleanupExpiredIdempotency(ctx context.Context, limit int) (
 	if err != nil {
 		return 0, err
 	}
-	return result.RowsAffected(), nil
+	removed := result.RowsAffected()
+	views, err := r.pool.Exec(ctx, `WITH expired AS (
+		SELECT viewer_id,idempotency_key FROM story_view_idempotency
+		WHERE retain_until<=now() ORDER BY retain_until LIMIT $1
+	) DELETE FROM story_view_idempotency AS ledger
+	USING expired WHERE ledger.viewer_id=expired.viewer_id AND ledger.idempotency_key=expired.idempotency_key`, limit)
+	if err != nil {
+		return removed, err
+	}
+	return removed + views.RowsAffected(), nil
 }
 
 // PendingMediaCleanup returns soft-deleted stories whose object-store delete
