@@ -28,7 +28,7 @@ type passwordLoginRequest struct {
 	Username   string `json:"username" validate:"omitempty,min=3,max=64"`
 	Email      string `json:"email" validate:"omitempty,email,max=254"`
 	PingID     string `json:"ping_id" validate:"omitempty,len=12,numeric"`
-	Password   string `json:"password" validate:"required,min=12,max=256"`
+	Password   string `json:"password" validate:"required,min=6,max=256"`
 	PlatformID string `json:"platform_id" validate:"required,max=64"`
 	DeviceName string `json:"device_name" validate:"omitempty,max=128"`
 	DeviceID   string `json:"device_id" validate:"omitempty,max=128"`

@@ -27,7 +27,7 @@ type errorBody struct {
 
 type signupBody struct {
 	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Optional unique account name."`
-	Password   string `json:"password" minLength:"12" maxLength:"256" doc:"Password used for direct username/password login."`
+	Password   string `json:"password" minLength:"6" maxLength:"256" doc:"Password used for direct username/password login."`
 	Nickname   string `json:"nickname,omitempty" maxLength:"128" doc:"Optional non-unique display name."`
 	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Optional email contact."`
 	Phone      string `json:"phone,omitempty" maxLength:"32" doc:"Optional phone contact."`
@@ -71,7 +71,7 @@ type passwordLoginBody struct {
 	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Use exactly one of username, email, or ping_id."`
 	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Use exactly one of username, email, or ping_id."`
 	PingID     string `json:"ping_id,omitempty" pattern:"^[0-9]{12}$" doc:"Use exactly one of username, email, or ping_id."`
-	Password   string `json:"password" minLength:"12" maxLength:"256"`
+	Password   string `json:"password" minLength:"6" maxLength:"256"`
 	PlatformID string `json:"platform_id" maxLength:"64"`
 	DeviceName string `json:"device_name,omitempty" maxLength:"128"`
 	DeviceID   string `json:"device_id,omitempty" maxLength:"128"`
@@ -124,12 +124,12 @@ type passwordRecoveryStartInput struct{ Body passwordRecoveryStartBody }
 type passwordChallengeBody struct {
 	ChallengeID string `json:"challenge_id" format:"uuid"`
 	Code        string `json:"code" minLength:"6" maxLength:"6" pattern:"^[0-9]{6}$"`
-	NewPassword string `json:"new_password" minLength:"12" maxLength:"256"`
+	NewPassword string `json:"new_password" minLength:"6" maxLength:"256"`
 }
 type passwordChallengeInput struct{ Body passwordChallengeBody }
 type passwordChangeBody struct {
 	CurrentPassword string `json:"current_password" maxLength:"256" doc:"The existing password; mismatch always returns 401, including short legacy passwords."`
-	NewPassword     string `json:"new_password" minLength:"12" maxLength:"256"`
+	NewPassword     string `json:"new_password" minLength:"6" maxLength:"256"`
 }
 type passwordChangeInput struct{ Body passwordChangeBody }
 type passwordChangeVerifyInput struct{ Body passwordChallengeBody }
