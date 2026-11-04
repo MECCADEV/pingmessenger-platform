@@ -55,3 +55,10 @@ func VerifyPassword(password, encoded string) bool {
 	derived := argon2.IDKey([]byte(password), salt, uint32(iterations), uint32(memory), uint8(parallelism), uint32(len(expected)))
 	return subtle.ConstantTimeCompare(derived, expected) == 1
 }
+
+// BurnPasswordVerification performs one Argon2id derivation for an unknown
+// login identifier so the missing-account path does not skip the expensive
+// password work performed for known accounts.
+func BurnPasswordVerification(password string) {
+	argon2.IDKey([]byte(password), []byte("pingmessenger-dummy-salt"), 3, 64*1024, 4, 32)
+}

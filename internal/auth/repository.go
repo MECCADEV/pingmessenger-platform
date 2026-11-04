@@ -32,6 +32,12 @@ type PasswordLogin struct {
 	UserID, PasswordHash string
 }
 
+func (r *UserRepository) PingIDForUser(ctx context.Context, userID string) (string, error) {
+	var pingID string
+	err := r.pool.QueryRow(ctx, `SELECT ping_id FROM users WHERE id=$1 AND deleted_at IS NULL AND status='active'`, userID).Scan(&pingID)
+	return pingID, err
+}
+
 // ErrAccountUnavailable is returned when a session cannot be created because
 // the account was soft-deleted (or is otherwise no longer active).
 var ErrAccountUnavailable = errors.New("account unavailable")
