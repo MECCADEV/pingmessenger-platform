@@ -20,7 +20,9 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		"/v1/auth/signup", "/v1/auth/verify-username", "/v1/auth/login", "/v1/auth/login/start", "/v1/auth/login/verify", "/v1/auth/refresh",
 		"/v1/mfa/challenge", "/v1/mfa/verify", "/v1/security/backup-codes", "/v1/security/backup-codes/regenerate",
 		"/v1/mfa/contacts",
-		"/v1/security/activity", "/v1/security/revoke", "/v1/profile/", "/v1/profile/update", "/v1/profile/image", "/v1/friends", "/v1/friends/discover-network", "/v1/friends/search", "/v1/contacts/discovered", "/v1/blocks", "/v1/blocks/{pingID}", "/v1/account/delete",
+		"/v1/auth/password/recovery/options", "/v1/auth/password/recovery/start", "/v1/auth/password/recovery/verify", "/v1/auth/password/recovery/complete",
+		"/v1/security/activity", "/v1/security/revoke", "/v1/profile/", "/v1/profile/mood", "/v1/profile/update", "/v1/profile/image", "/v1/friends", "/v1/friends/discover-network", "/v1/friends/search", "/v1/contacts/discovered", "/v1/blocks", "/v1/blocks/{pingID}", "/v1/account/delete",
+		"/v1/reports", "/v1/admin/reports", "/v1/admin/reports/{reportID}",
 		"/v1/conversations/{conversationID}/payments", "/v1/conversations/{conversationID}/payments/ws",
 		"/v1/payments/{paymentID}/chain",
 		"/v1/stories", "/v1/stories/{storyID}", "/v1/stories/{storyID}/view", "/v1/stories/{storyID}/views", "/v1/stories/ws",
@@ -30,6 +32,9 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		if doc.Paths[path] == nil {
 			t.Errorf("missing documented path %s", path)
 		}
+	}
+	if doc.Paths["/v1/mfa/contacts/{kind}"] != nil {
+		t.Fatal("immutable MFA contacts must not document change or delete routes")
 	}
 	if doc.Components.SecuritySchemes["bearerAuth"] == nil {
 		t.Fatal("missing bearerAuth scheme")

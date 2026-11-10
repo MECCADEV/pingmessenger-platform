@@ -156,6 +156,31 @@ func TestMessageLifecycleClientUsesForkRoutes(t *testing.T) {
 	}
 }
 
+func TestGetMessageBySeqReturnsAuthoritativeOpenIMMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/msg/pull_msg_by_seq" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"userID":"reporter"`) || !strings.Contains(string(body), `"conversationID":"conv-1","begin":9,"end":9,"num":1`) {
+			t.Fatalf("request=%s", body)
+		}
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{"msgs":{"conv-1":{"Msgs":[{"clientMsgID":"msg-9","sendID":"target","seq":9,"contentType":101,"content":"eyJ0ZXh0IjoiaGkifQ=="}]}}}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := client.GetMessageBySeq(context.Background(), "reporter", "conv-1", 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.ClientMsgID != "msg-9" || message.SendID != "target" || message.Seq != 9 || string(message.Content) != `{"text":"hi"}` {
+		t.Fatalf("message=%+v content=%s", message, message.Content)
+	}
+}
+
 func TestChannelGroupClientUsesStableGroupEndpoints(t *testing.T) {
 	paths := make([]string, 0, 4)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

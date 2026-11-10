@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"github.com/fasthttp/router"
 	"github.com/jackc/pgx/v5"
@@ -14,12 +15,14 @@ import (
 	"pingmessenger/internal/openim"
 	"pingmessenger/internal/storage"
 	"strings"
+	"unicode/utf8"
 )
 
 const profileMultipartMaxBytes int64 = 6 << 20
 
 func (a *API) registerProfileRoutes(r *router.Router) {
 	r.GET("/v1/profile/", a.profile)
+	r.PUT("/v1/profile/mood", a.updateMood)
 	r.PATCH("/v1/profile/username", a.updateUsername)
 	r.POST("/v1/profile/update", a.updateProfile)
 	r.DELETE("/v1/profile/image", a.deleteProfileImage)
@@ -74,7 +77,48 @@ func (a *API) profile(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load profile"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]any{"username": p.Username, "ping_id": p.PingID, "image": p.Image, "nickname": p.Nickname})
+	writeJSON(ctx, http.StatusOK, map[string]any{"username": p.Username, "ping_id": p.PingID, "image": p.Image, "nickname": p.Nickname, "mood": p.Mood, "email": p.Email, "email_verified": p.EmailVerified, "phone": p.Phone, "phone_verified": p.PhoneVerified})
+}
+
+type updateMoodRequest struct {
+	Mood json.RawMessage `json:"mood"`
+}
+
+func parseMood(raw json.RawMessage) (*string, error) {
+	if len(raw) == 0 {
+		return nil, errors.New("mood is required and must be text or null")
+	}
+	if string(raw) == "null" {
+		return nil, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil || utf8.RuneCountInString(value) > 100 {
+		return nil, errors.New("mood must be text up to 100 characters, or null")
+	}
+	return &value, nil
+}
+
+func (a *API) updateMood(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var req updateMoodRequest
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	mood, err := parseMood(req.Mood)
+	if err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := a.users.SetMood(context.Background(), userID, mood); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not update mood"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"mood": mood})
 }
 
 func (a *API) updateUsername(ctx *fasthttp.RequestCtx) {
