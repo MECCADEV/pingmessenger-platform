@@ -23,6 +23,28 @@ type Client interface {
 	SendCustomMessage(context.Context, *SendCustomMessageRequest) (*SendCustomMessageResponse, error)
 	ModifyMessage(context.Context, *ModifyMessageRequest) error
 	RevokeMessage(context.Context, *RevokeMessageRequest) error
+	CreateGroup(context.Context, *CreateGroupRequest) (*GroupInfo, error)
+	DismissGroup(context.Context, string) error
+	GetGroupsInfo(context.Context, []string) ([]*GroupInfo, error)
+	GetGroupMemberRole(context.Context, string, string) (int32, bool, error)
+}
+
+type CreateGroupRequest struct {
+	OwnerUserID      string
+	GroupID          string
+	GroupName        string
+	Introduction     string
+	FaceURL          string
+	NeedVerification int32
+}
+
+type GroupInfo struct {
+	GroupID      string `json:"groupID"`
+	GroupName    string `json:"groupName"`
+	Introduction string `json:"introduction"`
+	FaceURL      string `json:"faceURL"`
+	MemberCount  int    `json:"memberCount"`
+	Status       int32  `json:"status"`
 }
 
 // MessageFetcher is implemented by OpenIM clients that can retrieve one

@@ -27,6 +27,7 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		"/v1/payments/{paymentID}/chain",
 		"/v1/stories", "/v1/stories/{storyID}", "/v1/stories/{storyID}/view", "/v1/stories/{storyID}/views", "/v1/stories/ws",
 		"/v1/documents", "/v1/documents/{documentID}",
+		"/v1/channels", "/v1/channels/search", "/v1/channels/{channelID}", "/v1/channels/{channelID}/pins", "/v1/channels/{channelID}/pins/{messageID}",
 	} {
 		if doc.Paths[path] == nil {
 			t.Errorf("missing documented path %s", path)

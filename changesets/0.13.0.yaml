@@ -4,47 +4,72 @@ version:
   previous: 0.12.0
   next: 0.13.0
   bump: minor
-  compatibility: breaking-password-recovery-contract
+  compatibility: breaking-password-recovery-contract; additive-with-behavioral-hardening
 releaseDate: 2026-11-10
-summary: >-
-  Adds moderation reports, persistent profile mood, and staged password
-  recovery with single-use reset tokens.
+summary: Adds channels backed by OpenIM groups, moderation reports, persistent profile mood, and staged
+  password recovery.
 changes:
-  - id: account-reporting-and-moderation
-    type: endpoint
-    method: POST,GET,PUT
-    path: /v1/reports, /v1/admin/reports
-    description: >-
-      Adds server-validated report submission, OpenIM message snapshots,
-      administrator-only review, retained dispositions, deduplication, and
-      email alerts to verified administrator contacts.
-  - id: persistent-profile-mood
-    type: endpoint
-    method: GET,PUT
-    path: /v1/profile/, /v1/profile/mood
-    description: >-
-      Returns and updates a persistent optional mood; null clears it. The
-      profile also returns email/phone values and their verification flags.
-  - id: staged-password-recovery
-    type: endpoint
-    method: POST
-    path: /v1/auth/password/recovery/options, /v1/auth/password/recovery/start, /v1/auth/password/recovery/verify, /v1/auth/password/recovery/complete
-    description: >-
-      Replaces challenge-and-code completion with masked channel options,
-      selected-channel OTP, single-use reset token, and password completion.
-      Successful recovery revokes all platform sessions and local OpenIM
-      device tokens. Existing clients must migrate to the new request bodies.
-  - id: reports-and-profile-storage
-    type: schema
-    description: >-
-      Migration 0031 adds durable report snapshots and review metadata, an
-      administrator flag, profile mood, and short-lived single-use reset tokens.
+- id: account-reporting-and-moderation
+  type: endpoint
+  method: POST,GET,PUT
+  path: /v1/reports, /v1/admin/reports
+  description: Adds server-validated report submission, OpenIM message snapshots, administrator-only review,
+    retained dispositions, deduplication, and email alerts to verified administrator contacts.
+- id: persistent-profile-mood
+  type: endpoint
+  method: GET,PUT
+  path: /v1/profile/, /v1/profile/mood
+  description: Returns and updates a persistent optional mood; null clears it. The profile also returns
+    email/phone values and their verification flags.
+- id: staged-password-recovery
+  type: endpoint
+  method: POST
+  path: /v1/auth/password/recovery/options, /v1/auth/password/recovery/start, /v1/auth/password/recovery/verify,
+    /v1/auth/password/recovery/complete
+  description: Replaces challenge-and-code completion with masked channel options, selected-channel OTP,
+    single-use reset token, and password completion. Successful recovery revokes all platform sessions
+    and local OpenIM device tokens. Existing clients must migrate to the new request bodies.
+- id: reports-and-profile-storage
+  type: schema
+  description: Migration 0031_reports_and_profile_mood adds durable report snapshots, an administrator
+    flag, profile mood, and short-lived single-use reset tokens.
+- id: channel-directory
+  type: endpoint
+  method: POST,GET
+  path: /v1/channels
+  description: Adds channel creation, public search, and channel detail endpoints. Each channel has a
+    unique OpenIM group ID prefixed ch_; public search includes profile metadata and the live OpenIM member
+    count, while private channels stay out of search and require membership for details.
+- id: channel-pinned-posts
+  type: endpoint
+  method: GET,POST,DELETE
+  path: /v1/channels/{channelID}/pins
+  description: Allows channel owners and admins to pin/unpin OpenIM message IDs and lets channel members
+    list pinned post references.
+- id: channel-mute-guard
+  type: behavior
+  method: POST
+  path: /openim/group/cancel_mute_group
+  description: OpenIM creates ch_ groups muted, prefixes newly generated ordinary group IDs with gp_,
+    and rejects attempts by group owners, group admins, or app admins to unmute ch_ groups. Existing legacy
+    group IDs are unchanged.
+- id: channel-storage
+  type: schema
+  description: Migration 0031 adds channel metadata with a unique one-to-one OpenIM group mapping and
+    stores pinned OpenIM message references.
+- id: channel-openapi
+  type: schema
+  description: Updates the generated OpenAPI contract to 0.13.0 and documents the channel directory and
+    pinning endpoints.
 deployment:
   image: pending production workflow
   workflow: .github/workflows/deploy-production.yml
 verification:
-  - go test -count=1 ./...
-  - go vet ./...
-  - go run ./cmd/openapi -output /tmp/pingmessenger-openapi.json
-  - cmp openapi/openapi.json /tmp/pingmessenger-openapi.json
-  - production workflow rollout and live health/OpenAPI verification
+- go test -count=1 ./...
+- go vet ./...
+- go run ./cmd/openapi -output /tmp/pingmessenger-openapi.json
+- cmp openapi/openapi.json /tmp/pingmessenger-openapi.json
+- production workflow rollout and live health/OpenAPI verification
+- go test -tags=e2e ./tests/e2e
+- make openapi
+- git diff --check

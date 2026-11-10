@@ -289,6 +289,79 @@ func (c *HTTPClient) GetMessageBySeq(ctx context.Context, userID, conversationID
 	return nil, fmt.Errorf("OpenIM message not found")
 }
 
+func (c *HTTPClient) CreateGroup(ctx context.Context, request *CreateGroupRequest) (*GroupInfo, error) {
+	response := new(struct {
+		GroupInfo *GroupInfo `json:"groupInfo"`
+	})
+	payload := struct {
+		OwnerUserID   string   `json:"ownerUserID"`
+		MemberUserIDs []string `json:"memberUserIDs"`
+		AdminUserIDs  []string `json:"adminUserIDs"`
+		GroupInfo     struct {
+			GroupID          string `json:"groupID"`
+			GroupName        string `json:"groupName"`
+			Introduction     string `json:"introduction"`
+			FaceURL          string `json:"faceURL"`
+			GroupType        int32  `json:"groupType"`
+			NeedVerification int32  `json:"needVerification"`
+		} `json:"groupInfo"`
+		SendMessage bool `json:"sendMessage"`
+	}{OwnerUserID: request.OwnerUserID, MemberUserIDs: []string{}, AdminUserIDs: []string{}, SendMessage: false}
+	payload.GroupInfo.GroupID = request.GroupID
+	payload.GroupInfo.GroupName = request.GroupName
+	payload.GroupInfo.Introduction = request.Introduction
+	payload.GroupInfo.FaceURL = request.FaceURL
+	payload.GroupInfo.GroupType = 2
+	payload.GroupInfo.NeedVerification = request.NeedVerification
+	if err := c.call(ctx, "group/create_group", payload, response); err != nil {
+		return nil, err
+	}
+	if response.GroupInfo == nil || response.GroupInfo.GroupID == "" {
+		return nil, fmt.Errorf("OpenIM create group returned no group info")
+	}
+	return response.GroupInfo, nil
+}
+
+func (c *HTTPClient) GetGroupsInfo(ctx context.Context, groupIDs []string) ([]*GroupInfo, error) {
+	response := new(struct {
+		GroupInfos []*GroupInfo `json:"groupInfos"`
+	})
+	if err := c.call(ctx, "group/get_groups_info", struct {
+		GroupIDs []string `json:"groupIDs"`
+	}{GroupIDs: groupIDs}, response); err != nil {
+		return nil, err
+	}
+	return response.GroupInfos, nil
+}
+
+func (c *HTTPClient) DismissGroup(ctx context.Context, groupID string) error {
+	return c.call(ctx, "group/dismiss_group", struct {
+		GroupID string `json:"groupID"`
+	}{GroupID: groupID}, nil)
+}
+
+func (c *HTTPClient) GetGroupMemberRole(ctx context.Context, groupID, userID string) (int32, bool, error) {
+	response := new(struct {
+		Members []struct {
+			UserID    string `json:"userID"`
+			RoleLevel int32  `json:"roleLevel"`
+		} `json:"members"`
+	})
+	if err := c.call(ctx, "group/get_group_members_info", struct {
+		GroupID string   `json:"groupID"`
+		UserIDs []string `json:"userIDs"`
+	}{GroupID: groupID, UserIDs: []string{userID}}, response); err != nil {
+		return 0, false, err
+	}
+	for _, member := range response.Members {
+		if member.UserID == userID {
+			return member.RoleLevel, true, nil
+		}
+	}
+	return 0, false, nil
+
+}
+
 func (c *HTTPClient) call(ctx context.Context, operation string, request, response any) error {
 	// An OpenIM restart or signing-key rotation can invalidate a cached admin
 	// token before its advertised expiry. Retry once with a fresh token. The
