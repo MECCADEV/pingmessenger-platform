@@ -164,9 +164,16 @@ jobs:
         run: |
           set -euo pipefail
           if status=$(aws sesv2 get-account --region "$AWS_REGION" --output json 2>/dev/null); then
-            printf 'ses_production_access_enabled=%s\nses_sending_enabled=%s\n' \
-              "$(jq -r '.ProductionAccessEnabled' <<<"$status")" \
-              "$(jq -r '.SendingEnabled' <<<"$status")"
+            if jq -e '.ProductionAccessEnabled == true' <<<"$status" >/dev/null; then
+              echo 'ses_account_mode=production'
+            else
+              echo 'ses_account_mode=sandbox'
+            fi
+            if jq -e '.SendingEnabled == true' <<<"$status" >/dev/null; then
+              echo 'ses_sending=enabled'
+            else
+              echo 'ses_sending=disabled'
+            fi
           else
             echo 'ses_account_status=unavailable_to_deployment_identity'
           fi
