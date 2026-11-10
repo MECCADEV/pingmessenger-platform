@@ -1,0 +1,51 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.12.0
+  next: 0.13.0
+  bump: minor
+  compatibility: additive-with-behavioral-hardening
+releaseDate: 2026-11-10
+summary: >-
+  Adds searchable public and private channels backed by OpenIM groups, with
+  server-enforced admin-only posting and pinned post references.
+changes:
+  - id: channel-directory
+    type: endpoint
+    method: POST,GET
+    path: /v1/channels
+    description: >-
+      Adds channel creation, public search, and channel detail endpoints. Each
+      channel has a unique OpenIM group ID prefixed ch_; public search includes
+      profile metadata and the live OpenIM member count, while private channels
+      stay out of search and require membership for details.
+  - id: channel-pinned-posts
+    type: endpoint
+    method: GET,POST,DELETE
+    path: /v1/channels/{channelID}/pins
+    description: >-
+      Allows channel owners and admins to pin/unpin OpenIM message IDs and lets
+      channel members list pinned post references.
+  - id: channel-mute-guard
+    type: behavior
+    method: POST
+    path: /openim/group/cancel_mute_group
+    description: >-
+      OpenIM creates ch_ groups muted, prefixes newly generated ordinary group
+      IDs with gp_, and rejects attempts by group owners, group admins, or app
+      admins to unmute ch_ groups. Existing legacy group IDs are unchanged.
+  - id: channel-storage
+    type: schema
+    description: >-
+      Migration 0031 adds channel metadata with a unique one-to-one OpenIM group
+      mapping and stores pinned OpenIM message references.
+  - id: channel-openapi
+    type: schema
+    description: >-
+      Updates the generated OpenAPI contract to 0.13.0 and documents the channel
+      directory and pinning endpoints.
+verification:
+  - go test -count=1 ./...
+  - go test -tags=e2e ./tests/e2e
+  - make openapi
+  - git diff --check

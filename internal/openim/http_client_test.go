@@ -156,6 +156,60 @@ func TestMessageLifecycleClientUsesForkRoutes(t *testing.T) {
 	}
 }
 
+func TestChannelGroupClientUsesStableGroupEndpoints(t *testing.T) {
+	paths := make([]string, 0, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/group/create_group":
+			for _, expected := range []string{`"ownerUserID":"owner-im"`, `"groupID":"ch_abc"`, `"groupType":2`, `"needVerification":2`} {
+				if !strings.Contains(string(body), expected) {
+					t.Fatalf("create channel request missing %s: %s", expected, body)
+				}
+			}
+			_, _ = w.Write([]byte(`{"errCode":0,"data":{"groupInfo":{"groupID":"ch_abc","groupName":"News","faceURL":"https://cdn.example/channel.png","memberCount":1}}}`))
+		case "/group/get_groups_info":
+			if !strings.Contains(string(body), `"groupIDs":["ch_abc"]`) {
+				t.Fatalf("group info request = %s", body)
+			}
+			_, _ = w.Write([]byte(`{"errCode":0,"data":{"groupInfos":[{"groupID":"ch_abc","memberCount":4}]}}`))
+		case "/group/get_group_members_info":
+			_, _ = w.Write([]byte(`{"errCode":0,"data":{"members":[{"userID":"owner-im","roleLevel":100}]}}`))
+		case "/group/dismiss_group":
+			_, _ = w.Write([]byte(`{"errCode":0,"data":{}}`))
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := client.CreateGroup(context.Background(), &CreateGroupRequest{
+		OwnerUserID: "owner-im", GroupID: "ch_abc", GroupName: "News", FaceURL: "https://cdn.example/channel.png", NeedVerification: 2,
+	})
+	if err != nil || created.GroupID != "ch_abc" {
+		t.Fatalf("CreateGroup() = %#v, %v", created, err)
+	}
+	groups, err := client.GetGroupsInfo(context.Background(), []string{"ch_abc"})
+	if err != nil || len(groups) != 1 || groups[0].MemberCount != 4 {
+		t.Fatalf("GetGroupsInfo() = %#v, %v", groups, err)
+	}
+	role, member, err := client.GetGroupMemberRole(context.Background(), "ch_abc", "owner-im")
+	if err != nil || !member || role != 100 {
+		t.Fatalf("GetGroupMemberRole() = %d, %v, %v", role, member, err)
+	}
+	if err = client.DismissGroup(context.Background(), "ch_abc"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths, ",") != "/group/create_group,/group/get_groups_info,/group/get_group_members_info,/group/dismiss_group" {
+		t.Fatalf("group API paths = %v", paths)
+	}
+}
+
 func TestListConversationUserIDsFiltersGroupConversations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/conversation/get_all_conversations" {

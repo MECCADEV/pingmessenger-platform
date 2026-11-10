@@ -95,8 +95,12 @@ func (r *UserRepository) RecordPasswordLoginFailure(ctx context.Context, account
 		if err != nil {
 			return 0, err
 		}
-		if count >= passwordLoginFailureLimit && lockedUntil != nil && now.Before(*lockedUntil) {
-			if seconds := retrySeconds(lockedUntil.Sub(now)); seconds > lockedFor {
+		// Recompute from the current clock after acquiring the row. A
+		// concurrent caller may have waited on the row lock since this
+		// transaction began, so the earlier transaction timestamp can
+		// overstate the remaining lock.
+		if count >= passwordLoginFailureLimit && lockedUntil != nil {
+			if seconds := retrySeconds(lockedUntil.Sub(time.Now())); seconds > lockedFor {
 				lockedFor = seconds
 			}
 		}

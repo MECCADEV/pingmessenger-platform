@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "plan": "channels-openim",
+  "plan_doc": "00-plan.md",
+  "source_task": "Implement PingMessenger channels backed by OpenIM groups with ID prefixes, public/private directory APIs, admin-only posting guard, pinned posts, e2e coverage, and post-deploy verification.",
+  "status": "in_progress",
+  "updated": "2026-11-10 — implementation and local verification complete; deployment E2E pending",
+  "ordering_rationale": "OpenIM must enforce the channel mute invariant at the authoritative group RPC layer before platform APIs can safely expose channel creation and management. Persistence/client contracts precede handlers. Review and static verification precede the remote deployment gate.",
+  "completed": [],
+  "pending": [
+    {
+      "phase": "openim_guardrails",
+      "order": 1,
+      "tier": 1,
+      "status": "complete",
+      "description": "Prefix generated ordinary group IDs, reserve ch_ IDs for trusted creation, create channel groups muted, and make channel unmute impossible.",
+      "verification": "Focused OpenIM tests prove ch_ starts muted; owner, group admin, and app admin cannot unmute; ordinary groups retain mute/unmute behavior."
+    },
+    {
+      "phase": "channel_persistence_and_client",
+      "order": 2,
+      "tier": 2,
+      "status": "complete",
+      "description": "Add channel/pin tables and repositories; add OpenIM group create/info/member lookup client calls.",
+      "verification": "Database-backed tests prove one-to-one group mapping, unique IDs/pins, visibility filters, pagination, and live count/profile decoding."
+    },
+    {
+      "phase": "channel_http_api",
+      "order": 3,
+      "tier": 2,
+      "status": "complete",
+      "description": "Expose channel create/search/detail and pin/unpin/list APIs with auth, privacy, and role checks.",
+      "verification": "Handler tests cover auth/validation, public/private disclosure, owner/admin permission checks, OpenIM failures, and OpenAPI registration."
+    },
+    {
+      "phase": "e2e_suite",
+      "order": 4,
+      "tier": 3,
+      "status": "implemented_local_verified_remote_pending",
+      "description": "Add deployment-facing end-to-end coverage for channels and guardrails.",
+      "verification": "go test -tags=e2e ./tests/e2e compiles; with E2E_BASE_URL, channel matrix executes against platform plus matching OpenIM."
+    },
+    {
+      "phase": "review",
+      "order": 5,
+      "tier": "review_gate",
+      "status": "complete",
+      "description": "Audit platform and OpenIM changes for policy and security gaps.",
+      "max_iterations": 2,
+      "verification": "No unresolved authorization, ID-prefix, privacy, or rollout findings."
+    },
+    {
+      "phase": "implementation_verification",
+      "order": 6,
+      "tier": "verification_gate",
+      "status": "complete",
+      "description": "Compare implementation, tests, API docs, and both repository patches to 00-plan.md.",
+      "misalignments": [],
+      "verification": "Every plan requirement has implementation and test evidence; misalignments array is empty."
+    },
+    {
+      "phase": "verification_loop",
+      "order": 7,
+      "tier": "loop_gate",
+      "status": "complete",
+      "description": "Resolve verification-gate findings and rerun verification.",
+      "completion_rule": "Closes only when implementation_verification.misalignments is empty."
+    },
+    {
+      "phase": "remote_deployment_e2e",
+      "order": 8,
+      "tier": "runtime_gate",
+      "status": "waiting_for_compatible_deployment",
+      "description": "Wait for compatible platform and OpenIM deployment, then execute the deployed channel matrix.",
+      "matrix_ref": "e2e-matrix.md",
+      "harness": "tests/e2e/channels_test.go",
+      "matrix_rows": [
+        {"scenario": "channel creation and ch_ mapping", "flag": "E2E_BASE_URL", "matrix_status": "pending"},
+        {"scenario": "public/private search and access", "flag": "E2E_BASE_URL", "matrix_status": "pending"},
+        {"scenario": "admin-only posting and immutable mute", "flag": "E2E_BASE_URL", "matrix_status": "pending"},
+        {"scenario": "pinned posts", "flag": "E2E_BASE_URL", "matrix_status": "pending"}
+      ],
+      "verification": "All required matrix scenarios pass against the deployed platform and OpenIM versions."
+    }
+  ],
+  "open_risks_ref": "00-plan.md#known-risks--deployment-constraints",
+  "design_decisions": [
+    {"id": "channel_registry", "decision": "PostgreSQL channel row is the authority for public/private metadata; OpenIM group membership/messages remain the transport layer.", "why": "OpenIM groups do not supply a public searchable catalog with channel visibility semantics."},
+    {"id": "prefix_guard", "decision": "Use ch_ and gp_ prefixes, preserve legacy IDs, and enforce channel mute rules in OpenIM group RPC.", "why": "The OpenIM service is the authoritative layer for both REST and SDK group mute updates."},
+    {"id": "private_search", "decision": "Public search returns only public channels; private metadata requires membership.", "why": "Avoid leaking private channel existence/details through directory queries."}
+  ]
+}

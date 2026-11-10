@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
+	"pingmessenger/internal/channels"
 )
 
 // DocumentModel is Huma's OpenAPI model. Huma owns all schema generation;
@@ -678,7 +679,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.12.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.13.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -729,6 +730,24 @@ func newDocument() (*DocumentModel, error) {
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
+	createChannel := operation(http.MethodPost, "/v1/channels", "createChannel", "Channels", "Create a channel backed by one OpenIM group. Public channels are searchable and directly joinable; private channels are unlisted and require owner/admin approval to join. All channel groups remain muted so only the owner and admins can post.", 201, bearer)
+	createChannel.Errors = append(createChannel.Errors, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelCreateInput, channelCreateOutput](api, createChannel)
+	searchChannels := operation(http.MethodGet, "/v1/channels/search", "searchChannels", "Channels", "Search the authenticated user's public channel directory. Results include the channel profile and current OpenIM member count; private channels are never returned.", 200, bearer)
+	searchChannels.Errors = append(searchChannels.Errors, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelSearchInput, channelSearchOutput](api, searchChannels)
+	channelDetail := operation(http.MethodGet, "/v1/channels/{channelID}", "getChannel", "Channels", "Get a public channel profile or a private channel profile when the caller is a member.", 200, bearer)
+	channelDetail.Errors = append(channelDetail.Errors, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelPathInput, channelDetailOutput](api, channelDetail)
+	pinChannel := operation(http.MethodPost, "/v1/channels/{channelID}/pins", "pinChannelPost", "Channels", "Pin an OpenIM message in a channel. The channel owner or an OpenIM group admin may pin posts.", 201, bearer)
+	pinChannel.Errors = append(pinChannel.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelPinInput, channelPinOutput](api, pinChannel)
+	unpinChannel := operation(http.MethodDelete, "/v1/channels/{channelID}/pins/{messageID}", "unpinChannelPost", "Channels", "Unpin an OpenIM message from a channel. The channel owner or an OpenIM group admin may unpin posts.", 204, bearer)
+	unpinChannel.Errors = append(unpinChannel.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelPinPathInput, emptyOutput](api, unpinChannel)
+	listChannelPins := operation(http.MethodGet, "/v1/channels/{channelID}/pins", "listChannelPins", "Channels", "List pinned message IDs for a channel member.", 200, bearer)
+	listChannelPins.Errors = append(listChannelPins.Errors, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelPathInput, channelPinsOutput](api, listChannelPins)
 	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Create an image, video, or text status. Text statuses carry up to 700 characters and a required #RRGGBB background color; media responses use short-lived private S3 URLs. Idempotency-Key is optional and owner-scoped: the same key and semantic payload returns the original story for 30 days; a different payload returns 409, and a deleted or expired result returns 410. Requests without a key retain legacy behavior and may create duplicates when retried after an unknown outcome.", 201, bearer)
 	storyCreate.MaxBodyBytes = 10 << 20
 	storyCreate.Errors = append(storyCreate.Errors, http.StatusConflict, http.StatusGone, http.StatusTooManyRequests)
@@ -923,6 +942,75 @@ type notificationResolveInput struct{ Body notificationResolveBody }
 type notificationResolveOutput struct {
 	Body struct {
 		Preferences map[string]notificationPreferencesResult `json:"preferences"`
+	}
+}
+
+type channelBody struct {
+	Name        string `json:"name" minLength:"1" maxLength:"120"`
+	Description string `json:"description,omitempty" maxLength:"2000"`
+	PhotoURL    string `json:"photo_url,omitempty" format:"uri" maxLength:"2048"`
+	Visibility  string `json:"visibility" enum:"public,private"`
+}
+type channelCreateInput struct{ Body channelBody }
+type channelDocument struct {
+	ID            string `json:"id" format:"uuid"`
+	OpenIMGroupID string `json:"openim_group_id" pattern:"^ch_"`
+	CreatedBy     string `json:"created_by" format:"uuid"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	PhotoURL      string `json:"photo_url" format:"uri"`
+	Visibility    string `json:"visibility" enum:"public,private"`
+	MemberCount   int    `json:"member_count"`
+	CreatedAt     string `json:"created_at" format:"date-time"`
+	UpdatedAt     string `json:"updated_at" format:"date-time"`
+}
+type channelCreateOutput struct {
+	Body struct {
+		Channel channelDocument `json:"channel"`
+	}
+}
+type channelSearchInput struct {
+	Q      string `query:"q" maxLength:"120"`
+	Limit  int    `query:"limit" minimum:"1" maximum:"50"`
+	Offset int    `query:"offset" minimum:"0" maximum:"10000"`
+}
+type channelSearchOutput struct {
+	Body struct {
+		Channels []*channelDocument `json:"channels"`
+		Total    int                 `json:"total"`
+		Limit    int                 `json:"limit"`
+		Offset   int                 `json:"offset"`
+	}
+}
+type channelPathInput struct {
+	ChannelID string `path:"channelID" format:"uuid"`
+}
+type channelDetailOutput struct {
+	Body struct {
+		Channel  channelDocument  `json:"channel"`
+		IsMember bool             `json:"is_member"`
+		IsAdmin  bool             `json:"is_admin"`
+	}
+}
+type channelPinBody struct {
+	MessageID string `json:"message_id" minLength:"1" maxLength:"128"`
+}
+type channelPinInput struct {
+	ChannelID string `path:"channelID" format:"uuid"`
+	Body      channelPinBody
+}
+type channelPinPathInput struct {
+	ChannelID string `path:"channelID" format:"uuid"`
+	MessageID string `path:"messageID" minLength:"1" maxLength:"128"`
+}
+type channelPinOutput struct {
+	Body struct {
+		Pin channels.Pin `json:"pin"`
+	}
+}
+type channelPinsOutput struct {
+	Body struct {
+		Pins []*channels.Pin `json:"pins"`
 	}
 }
 
