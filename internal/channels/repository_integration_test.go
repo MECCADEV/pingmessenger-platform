@@ -27,21 +27,25 @@ func TestChannelSearchVisibilityAndPinnedPostsPostgres(t *testing.T) {
 	defer pool.Close()
 
 	ownerID := uuid.NewString()
+	searchTerm := "channel-" + strings.ReplaceAll(ownerID, "-", "")
 	username := "channel-test-" + strings.ReplaceAll(ownerID, "-", "")
 	if _, err = pool.Exec(ctx, `INSERT INTO users(id,username,password_hash,status) VALUES($1,$2,'test','active')`, ownerID, username); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, ownerID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM channels WHERE created_by=$1`, ownerID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM users WHERE id=$1`, ownerID)
+	})
 	repo := NewRepository(pool)
-	public, err := repo.Create(ctx, CreateParams{OpenIMGroupID: "ch_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CreatedBy: ownerID, Name: "Channel Public Alpha", Description: "discoverable term", PhotoURL: "https://cdn.example/channel.png", Visibility: VisibilityPublic})
+	public, err := repo.Create(ctx, CreateParams{OpenIMGroupID: "ch_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CreatedBy: ownerID, Name: "Channel Public " + searchTerm, Description: "discoverable " + searchTerm, PhotoURL: "https://cdn.example/channel.png", Visibility: VisibilityPublic})
 	if err != nil {
 		t.Fatal(err)
 	}
-	private, err := repo.Create(ctx, CreateParams{OpenIMGroupID: "ch_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CreatedBy: ownerID, Name: "Channel Private Alpha", Visibility: VisibilityPrivate})
+	private, err := repo.Create(ctx, CreateParams{OpenIMGroupID: "ch_" + strings.ReplaceAll(uuid.NewString(), "-", ""), CreatedBy: ownerID, Name: "Channel Private " + searchTerm, Visibility: VisibilityPrivate})
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, total, err := repo.SearchPublic(ctx, "Alpha", 20, 0)
+	results, total, err := repo.SearchPublic(ctx, searchTerm, 20, 0)
 	if err != nil || total != 1 || len(results) != 1 || results[0].ID != public.ID {
 		t.Fatalf("public search results=%+v total=%d err=%v", results, total, err)
 	}

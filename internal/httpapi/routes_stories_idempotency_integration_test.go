@@ -16,9 +16,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valyala/fasthttp"
 	"pingmessenger/internal/auth"
+	"pingmessenger/internal/openim"
 	"pingmessenger/internal/ratelimit"
 	"pingmessenger/internal/stories"
 )
+
+// storyIdempotencyOpenIM is enough for these HTTP tests: they exercise story
+// persistence and idempotency, while the OpenIM relationship graph is empty.
+type storyIdempotencyOpenIM struct{ openim.Client }
+
+func (storyIdempotencyOpenIM) ListFriendIDs(context.Context, *openim.ListFriendIDsRequest) ([]string, error) {
+	return nil, nil
+}
 
 type idempotencyTestObjectStore struct {
 	mu       sync.Mutex
@@ -101,6 +110,7 @@ func TestCreateStoryHTTPIdempotencyConcurrentReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := &API{
+		openIM:  storyIdempotencyOpenIM{},
 		users:   auth.NewUserRepository(pool),
 		tokens:  tokens,
 		stories: stories.NewRepository(pool),
@@ -209,6 +219,7 @@ func TestCreateMediaStoryHTTPIdempotencyConcurrentReplayCleansLosingUploads(t *t
 	}
 	objects := &idempotencyTestObjectStore{objects: make(map[string][]byte)}
 	api := &API{
+		openIM:  storyIdempotencyOpenIM{},
 		users:   auth.NewUserRepository(pool),
 		tokens:  tokens,
 		stories: stories.NewRepository(pool),
@@ -344,6 +355,7 @@ func TestViewStoryHTTPIdempotencyReplayConflictAndGone(t *testing.T) {
 		t.Fatalf("create target story=%v created=%v err=%v", story, created, err)
 	}
 	api := &API{
+		openIM:  storyIdempotencyOpenIM{},
 		users:   auth.NewUserRepository(pool),
 		tokens:  tokens,
 		stories: stories.NewRepository(pool),
