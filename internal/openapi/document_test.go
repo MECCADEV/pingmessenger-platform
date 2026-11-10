@@ -13,7 +13,7 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if doc.OpenAPI != "3.1.0" {
 		t.Fatalf("OpenAPI version = %q", doc.OpenAPI)
 	}
-	if doc.Info.Version != "0.12.0" {
+	if doc.Info.Version != "0.13.0" {
 		t.Fatalf("API version = %q", doc.Info.Version)
 	}
 	for _, path := range []string{
@@ -25,6 +25,7 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 		"/v1/payments/{paymentID}/chain",
 		"/v1/stories", "/v1/stories/{storyID}", "/v1/stories/{storyID}/view", "/v1/stories/{storyID}/views", "/v1/stories/ws",
 		"/v1/documents", "/v1/documents/{documentID}",
+		"/v1/channels", "/v1/channels/search", "/v1/channels/{channelID}", "/v1/channels/{channelID}/pins", "/v1/channels/{channelID}/pins/{messageID}",
 	} {
 		if doc.Paths[path] == nil {
 			t.Errorf("missing documented path %s", path)
