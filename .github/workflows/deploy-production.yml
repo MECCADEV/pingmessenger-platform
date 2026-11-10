@@ -157,6 +157,20 @@ jobs:
           aws-secret-access-key: ${{ steps.vault.outputs.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ steps.vault.outputs.AWS_REGION }}
 
+      - name: Check SES sending account status
+        env:
+          AWS_REGION: ${{ steps.vault.outputs.AWS_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if status=$(aws sesv2 get-account --region "$AWS_REGION" --output json 2>/dev/null); then
+            printf 'ses_production_access_enabled=%s\nses_sending_enabled=%s\n' \
+              "$(jq -r '.ProductionAccessEnabled' <<<"$status")" \
+              "$(jq -r '.SendingEnabled' <<<"$status")"
+          else
+            echo 'ses_account_status=unavailable_to_deployment_identity'
+          fi
+
       - name: Write isolated kubeconfig
         env:
           AWS_REGION: ${{ steps.vault.outputs.AWS_REGION }}
