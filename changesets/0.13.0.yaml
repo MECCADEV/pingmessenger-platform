@@ -62,8 +62,9 @@ changes:
   description: Updates the generated OpenAPI contract to 0.13.0 and documents the channel directory and
     pinning endpoints.
 deployment:
-  image: pending production workflow
+  image: registry.meainternal.com/pingmessenger/platform:sha-4eee7bf682f3
   workflow: .github/workflows/deploy-production.yml
+  workflow_run: https://github.com/MECCADEV/pingmessenger-platform/actions/runs/42794283557
 verification:
 - go test -count=1 ./...
 - go vet ./...
