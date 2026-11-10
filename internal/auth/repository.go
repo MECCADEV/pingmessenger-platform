@@ -687,7 +687,7 @@ func (r *UserRepository) AddDiscoveredContacts(ctx context.Context, userID strin
 		return nil
 	}
 	_, err := r.pool.Exec(ctx, `INSERT INTO discovered_contacts(user_id,contact_user_id)
-		SELECT $1,$2::uuid FROM unnest($3::uuid[]) AS candidate(id)
+		SELECT $1::uuid,candidate.id FROM unnest($2::uuid[]) AS candidate(id)
 		JOIN users u ON u.id=candidate.id AND u.deleted_at IS NULL AND u.status='active'
 		WHERE candidate.id<>$1::uuid ON CONFLICT(user_id,contact_user_id) DO NOTHING`, userID, contactUserIDs)
 	return err
