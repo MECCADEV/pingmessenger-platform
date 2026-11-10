@@ -25,6 +25,13 @@ type Client interface {
 	RevokeMessage(context.Context, *RevokeMessageRequest) error
 }
 
+// MessageFetcher is implemented by OpenIM clients that can retrieve one
+// authoritative message using a conversation sequence. It is kept separate
+// from Client so non-message test doubles and deployments remain compatible.
+type MessageFetcher interface {
+	GetMessageBySeq(context.Context, string, string, int64) (*MessageSnapshot, error)
+}
+
 type ProvisionUserRequest struct {
 	UserID   string `json:"userID"`
 	Nickname string `json:"nickname"`
@@ -112,4 +119,17 @@ type RevokeMessageRequest struct {
 	ConversationID string `json:"conversationID"`
 	Seq            int64  `json:"seq"`
 	UserID         string `json:"userID"`
+}
+
+type MessageSnapshot struct {
+	ClientMsgID string `json:"clientMsgID"`
+	SendID      string `json:"sendID"`
+	RecvID      string `json:"recvID,omitempty"`
+	GroupID     string `json:"groupID,omitempty"`
+	Seq         int64  `json:"seq"`
+	ContentType int32  `json:"contentType"`
+	Content     []byte `json:"content"`
+	CreateTime  int64  `json:"createTime"`
+	SendTime    int64  `json:"sendTime"`
+	Ex          string `json:"ex,omitempty"`
 }

@@ -115,13 +115,51 @@ type refreshBody struct {
 type refreshInput struct{ Body refreshBody }
 type refreshOutput struct{ Body tokenResponse }
 
-type passwordRecoveryStartBody struct {
-	Username string `json:"username,omitempty"`
-	PingID   string `json:"ping_id,omitempty" pattern:"^[0-9]{12}$"`
-	Email    string `json:"email,omitempty" format:"email"`
-	Phone    string `json:"phone,omitempty"`
+type passwordRecoveryOptionsInput struct {
+	Body struct {
+		PingID string `json:"ping_id" pattern:"^[0-9]{12}$"`
+	}
 }
-type passwordRecoveryStartInput struct{ Body passwordRecoveryStartBody }
+type passwordRecoveryOptionsOutput struct {
+	Body struct {
+		Email *string `json:"email" format:"email"`
+		Phone *string `json:"phone"`
+	}
+}
+type passwordRecoveryStartInput struct {
+	Body struct {
+		PingID  string `json:"ping_id" pattern:"^[0-9]{12}$"`
+		Channel string `json:"channel" enum:"email,phone"`
+	}
+}
+type passwordRecoveryStartOutput struct {
+	Body struct {
+		ChallengeID string `json:"challenge_id" format:"uuid"`
+	}
+}
+type passwordRecoveryVerifyInput struct {
+	Body struct {
+		ChallengeID string `json:"challenge_id" format:"uuid"`
+		Code        string `json:"code" minLength:"6" maxLength:"6" pattern:"^[0-9]{6}$"`
+	}
+}
+type passwordRecoveryVerifyOutput struct {
+	Body struct {
+		ResetToken string `json:"reset_token" minLength:"32" maxLength:"128"`
+	}
+}
+type passwordRecoveryCompleteInput struct {
+	Body struct {
+		ResetToken  string `json:"reset_token" minLength:"32" maxLength:"128"`
+		NewPassword string `json:"new_password" minLength:"6" maxLength:"256"`
+	}
+}
+type passwordRecoveryCompleteOutput struct {
+	Body struct {
+		Status                string `json:"status"`
+		OpenIMSessionsRevoked bool   `json:"openim_sessions_revoked"`
+	}
+}
 type passwordChallengeBody struct {
 	ChallengeID string `json:"challenge_id" format:"uuid"`
 	Code        string `json:"code" minLength:"6" maxLength:"6" pattern:"^[0-9]{6}$"`
@@ -290,10 +328,83 @@ type issueOpenIMTokenOutput struct {
 
 type profileOutput struct {
 	Body struct {
-		Username string  `json:"username,omitempty"`
-		PingID   string  `json:"ping_id"`
-		Image    *string `json:"image" format:"uri"`
-		Nickname string  `json:"nickname"`
+		Username      string  `json:"username,omitempty"`
+		PingID        string  `json:"ping_id"`
+		Image         *string `json:"image" format:"uri"`
+		Nickname      string  `json:"nickname"`
+		Mood          *string `json:"mood" maxLength:"100"`
+		Email         *string `json:"email" format:"email"`
+		EmailVerified bool    `json:"email_verified"`
+		Phone         *string `json:"phone"`
+		PhoneVerified bool    `json:"phone_verified"`
+	}
+}
+type profileMoodInput struct {
+	Body struct {
+		Mood *string `json:"mood" maxLength:"100"`
+	}
+}
+type profileMoodOutput struct {
+	Body struct {
+		Mood *string `json:"mood" maxLength:"100"`
+	}
+}
+type reportInput struct {
+	Body struct {
+		TargetPingID   string `json:"target_ping_id" pattern:"^[0-9]{12}$"`
+		ConversationID string `json:"conversation_id,omitempty" maxLength:"256"`
+		MessageID      string `json:"message_id,omitempty" maxLength:"128"`
+		MessageSeq     int64  `json:"message_seq,omitempty" minimum:"1"`
+		Reason         string `json:"reason" enum:"spam,abuse,harassment,inappropriate,other"`
+		Details        string `json:"details,omitempty" maxLength:"2000"`
+	}
+}
+type reportOutput struct {
+	Body struct {
+		ReportID string `json:"report_id" format:"uuid"`
+	}
+}
+type adminReportItem struct {
+	ReportID           string         `json:"report_id" format:"uuid"`
+	ReporterUserID     string         `json:"reporter_user_id" format:"uuid"`
+	TargetUserID       string         `json:"target_user_id" format:"uuid"`
+	ConversationID     *string        `json:"conversation_id"`
+	MessageID          *string        `json:"message_id"`
+	MessageSeq         *int64         `json:"message_seq"`
+	Reason             string         `json:"reason"`
+	Details            string         `json:"details"`
+	MessageSnapshot    map[string]any `json:"message_snapshot"`
+	Status             string         `json:"status" enum:"open,actioned,dismissed"`
+	ResolutionNotes    string         `json:"resolution_notes"`
+	NotificationStatus string         `json:"notification_status" enum:"pending,sent,failed"`
+	CreatedAt          string         `json:"created_at" format:"date-time"`
+	ReviewedAt         *string        `json:"reviewed_at,omitempty" format:"date-time"`
+	ReviewedBy         *string        `json:"reviewed_by,omitempty" format:"uuid"`
+}
+type adminReportListInput struct {
+	Status string `query:"status" enum:"open,actioned,dismissed"`
+	Limit  int    `query:"limit" minimum:"1" maximum:"100"`
+	Offset int    `query:"offset" minimum:"0"`
+}
+type adminReportListOutput struct {
+	Body struct {
+		Reports []adminReportItem `json:"reports"`
+		Limit   int               `json:"limit"`
+		Offset  int               `json:"offset"`
+	}
+}
+type adminReportUpdateInput struct {
+	ReportID string `path:"reportID" format:"uuid"`
+	Body     struct {
+		Status string `json:"status" enum:"actioned,dismissed"`
+		Notes  string `json:"notes,omitempty" maxLength:"2000"`
+	}
+}
+type adminReportUpdateOutput struct {
+	Body struct {
+		ReportID   string `json:"report_id" format:"uuid"`
+		Status     string `json:"status" enum:"actioned,dismissed"`
+		ReviewedAt string `json:"reviewed_at" format:"date-time"`
 	}
 }
 type profileUpdateInput struct {
@@ -678,7 +789,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.12.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.13.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -700,8 +811,10 @@ func newDocument() (*DocumentModel, error) {
 	register[loginStartInput, loginStartOutput](api, operation(http.MethodPost, "/v1/auth/login/start", "startLogin", "Auth", "Start passwordless email login.", 202, public))
 	register[loginVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/verify", "verifyLogin", "Auth", "Verify a passwordless login code and create a session.", 200, public))
 	register[refreshInput, refreshOutput](api, operation(http.MethodPost, "/v1/auth/refresh", "refreshSession", "Auth", "Rotate a refresh token. A successful rotation atomically replaces and invalidates the presented refresh token. This operation has no idempotency key, replay grace, or concurrent-refresh guarantee. Clients must serialize refresh attempts and durably persist the returned replacement credentials before treating rotation as committed; replaying the old token after a lost response is not guaranteed to recover the replacement credentials.", 200, public))
-	register[passwordRecoveryStartInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/start", "startPasswordRecovery", "Auth", "Start privacy-preserving password recovery by username, ping ID, email, or phone.", 202, public))
-	register[passwordChallengeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/complete", "completePasswordRecovery", "Auth", "Complete password recovery with a one-time code.", 200, public))
+	register[passwordRecoveryOptionsInput, passwordRecoveryOptionsOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/options", "getPasswordRecoveryOptions", "Auth", "Return verified recovery email and phone options for a PingID, masked for display; absent contacts are null.", 200, public))
+	register[passwordRecoveryStartInput, passwordRecoveryStartOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/start", "startPasswordRecovery", "Auth", "Send a one-time code to the selected verified email or phone for the supplied PingID.", 202, public))
+	register[passwordRecoveryVerifyInput, passwordRecoveryVerifyOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/verify", "verifyPasswordRecovery", "Auth", "Verify a one-time recovery code and issue a short-lived single-use reset token.", 200, public))
+	register[passwordRecoveryCompleteInput, passwordRecoveryCompleteOutput](api, operation(http.MethodPost, "/v1/auth/password/recovery/complete", "completePasswordRecovery", "Auth", "Complete password recovery with the reset token and revoke every Platform session and issued OpenIM device token.", 200, public))
 	register[passwordChangeInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change", "changePassword", "Auth", "Change a password in one step. The current session remains signed in and all other sessions are revoked; verified contacts do not add an OTP step.", 200, bearer))
 	register[passwordChangeVerifyInput, passwordStatusOutput](api, operation(http.MethodPost, "/v1/auth/password/change/verify", "verifyPasswordChange", "Auth", "Complete contact step-up for a password change.", 200, bearer))
 	challengeOperation := operation(http.MethodPost, "/v1/mfa/challenge", "issueMFAChallenge", "MFA", "Issue an email or phone verification challenge. Requests are limited to one per minute and five per hour per contact and requester IP; throttled requests return 429 with Retry-After.", 202, public)
@@ -723,12 +836,22 @@ func newDocument() (*DocumentModel, error) {
 	register[registerDeviceKeyInput, registerDeviceKeyOutput](api, operation(http.MethodPost, "/v1/openim/device-key", "registerOpenIMDeviceKey", "OpenIM", "Register or rotate this device's P-256 public key. Private keys remain on the device.", 200, bearer))
 	register[struct{}, openIMChallengeOutput](api, operation(http.MethodPost, "/v1/openim/token/challenge", "createOpenIMTokenChallenge", "OpenIM", "Create a session-bound device-proof challenge.", 201, bearer))
 	register[issueOpenIMTokenInput, issueOpenIMTokenOutput](api, operation(http.MethodPost, "/v1/openim/token/issue", "issueOpenIMToken", "OpenIM", "Verify the signed device proof and issue an OpenIM token for this device.", 200, bearer))
-	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile asset URL.", 200, bearer))
+	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile, optional persistent mood, and email/phone contact verification state.", 200, bearer))
+	register[profileMoodInput, profileMoodOutput](api, operation(http.MethodPut, "/v1/profile/mood", "updateProfileMood", "Profile", "Set a persistent profile mood of up to 100 characters, or pass null to clear it.", 200, bearer))
 	register[struct{}, profileImageDeleteOutput](api, operation(http.MethodDelete, "/v1/profile/image", "deleteProfileImage", "Profile", "Remove the authenticated user's profile image and clear its OpenIM faceURL.", 200, bearer))
 	register[usernameInput, usernameUpdateOutput](api, operation(http.MethodPatch, "/v1/profile/username", "updateUsername", "Profile", "Set or change the optional unique username.", 200, bearer))
 	profileUpdate := operation(http.MethodPost, "/v1/profile/update", "updateProfile", "Profile", "Update a non-unique nickname and/or upload an image as multipart/form-data (JPEG, PNG, or WebP; max 5 MiB).", 200, bearer)
 	profileUpdate.MaxBodyBytes = 5 << 20
 	register[profileUpdateInput, profileUpdateOutput](api, profileUpdate)
+	reportOperation := operation(http.MethodPost, "/v1/reports", "createReport", "Reports", "Report an active account. The server verifies the target and, for a message report, fetches the message by conversation sequence, confirms its message ID and sender, and stores an immutable moderation snapshot. Provide conversation_id, message_id, and message_seq together.", 201, bearer)
+	reportOperation.Errors = append(reportOperation.Errors, http.StatusConflict, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[reportInput, reportOutput](api, reportOperation)
+	adminReports := operation(http.MethodGet, "/v1/admin/reports", "listModerationReports", "Moderation", "List retained reports for an active administrator. Admin access is controlled by users.is_admin.", 200, bearer)
+	adminReports.Errors = append(adminReports.Errors, http.StatusForbidden)
+	register[adminReportListInput, adminReportListOutput](api, adminReports)
+	updateAdminReport := operation(http.MethodPut, "/v1/admin/reports/{reportID}", "updateModerationReport", "Moderation", "Mark a report actioned or dismissed and retain reviewer and resolution notes. Requires users.is_admin.", 200, bearer)
+	updateAdminReport.Errors = append(updateAdminReport.Errors, http.StatusForbidden, http.StatusNotFound)
+	register[adminReportUpdateInput, adminReportUpdateOutput](api, updateAdminReport)
 	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Create an image, video, or text status. Text statuses carry up to 700 characters and a required #RRGGBB background color; media responses use short-lived private S3 URLs. Idempotency-Key is optional and owner-scoped: the same key and semantic payload returns the original story for 30 days; a different payload returns 409, and a deleted or expired result returns 410. Requests without a key retain legacy behavior and may create duplicates when retried after an unknown outcome.", 201, bearer)
 	storyCreate.MaxBodyBytes = 10 << 20
 	storyCreate.Errors = append(storyCreate.Errors, http.StatusConflict, http.StatusGone, http.StatusTooManyRequests)

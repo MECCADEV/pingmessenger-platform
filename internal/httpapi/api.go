@@ -27,6 +27,7 @@ import (
 	"pingmessenger/internal/openim"
 	"pingmessenger/internal/payments"
 	"pingmessenger/internal/ratelimit"
+	"pingmessenger/internal/reports"
 	"pingmessenger/internal/storage"
 	"pingmessenger/internal/stories"
 	"pingmessenger/internal/timers"
@@ -53,6 +54,7 @@ type API struct {
 	notificationPreferences *notifications.Repository
 	openIMServiceToken      string
 	documents               *documents.Repository
+	reports                 *reports.Repository
 	documentPolicy          documents.Policy
 	storySubsMu             sync.RWMutex
 	storySubs               map[string]map[*storySubscription]struct{}
@@ -85,7 +87,7 @@ func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms
 }
 
 func NewWithDocuments(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects, documentObjects storage.ObjectStore, assetBase, paymentEventSecret string, documentPolicy documents.Policy) *API {
-	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, documentObjects: documentObjects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), notificationPreferences: notifications.NewRepository(pool), documents: documents.NewRepository(pool), documentPolicy: documentPolicy, storySubs: make(map[string]map[*storySubscription]struct{}), storyURLs: make(map[string]storyURLCacheEntry), validate: validator.New(), limiter: ratelimit.NewLocal()}
+	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, documentObjects: documentObjects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), notificationPreferences: notifications.NewRepository(pool), documents: documents.NewRepository(pool), reports: reports.NewRepository(pool), documentPolicy: documentPolicy, storySubs: make(map[string]map[*storySubscription]struct{}), storyURLs: make(map[string]storyURLCacheEntry), validate: validator.New(), limiter: ratelimit.NewLocal()}
 }
 
 // ConfigureRateLimiter replaces the development-local limiter with the shared
@@ -115,6 +117,7 @@ func (a *API) Router() fasthttp.RequestHandler {
 	a.registerStoryRoutes(r)
 	a.registerDocumentRoutes(r)
 	a.registerNotificationRoutes(r)
+	a.registerReportRoutes(r)
 	return r.Handler
 }
 

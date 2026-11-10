@@ -1,0 +1,50 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.12.0
+  next: 0.13.0
+  bump: minor
+  compatibility: breaking-password-recovery-contract
+releaseDate: 2026-11-10
+summary: >-
+  Adds moderation reports, persistent profile mood, and staged password
+  recovery with single-use reset tokens.
+changes:
+  - id: account-reporting-and-moderation
+    type: endpoint
+    method: POST,GET,PUT
+    path: /v1/reports, /v1/admin/reports
+    description: >-
+      Adds server-validated report submission, OpenIM message snapshots,
+      administrator-only review, retained dispositions, deduplication, and
+      email alerts to verified administrator contacts.
+  - id: persistent-profile-mood
+    type: endpoint
+    method: GET,PUT
+    path: /v1/profile/, /v1/profile/mood
+    description: >-
+      Returns and updates a persistent optional mood; null clears it. The
+      profile also returns email/phone values and their verification flags.
+  - id: staged-password-recovery
+    type: endpoint
+    method: POST
+    path: /v1/auth/password/recovery/options, /v1/auth/password/recovery/start, /v1/auth/password/recovery/verify, /v1/auth/password/recovery/complete
+    description: >-
+      Replaces challenge-and-code completion with masked channel options,
+      selected-channel OTP, single-use reset token, and password completion.
+      Successful recovery revokes all platform sessions and local OpenIM
+      device tokens. Existing clients must migrate to the new request bodies.
+  - id: reports-and-profile-storage
+    type: schema
+    description: >-
+      Migration 0031 adds durable report snapshots and review metadata, an
+      administrator flag, profile mood, and short-lived single-use reset tokens.
+deployment:
+  image: pending production workflow
+  workflow: .github/workflows/deploy-production.yml
+verification:
+  - go test -count=1 ./...
+  - go vet ./...
+  - go run ./cmd/openapi -output /tmp/pingmessenger-openapi.json
+  - cmp openapi/openapi.json /tmp/pingmessenger-openapi.json
+  - production workflow rollout and live health/OpenAPI verification

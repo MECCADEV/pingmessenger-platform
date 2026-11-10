@@ -57,19 +57,52 @@ Supply exactly one of `username`, `ping_id`, or an attached `email`; it returns
 the normal access token, refresh token, and device session. The
 legacy `/v1/auth/login/start` and `/v1/auth/login/verify` routes remain for
 optional email-OTP login. A signup may include `nickname`; it is a non-unique
-display name stored in PostgreSQL. Read it (along with `username` and `ping_id`)
-with `GET /v1/profile/`. Change the optional username with authenticated
+display name stored in PostgreSQL. `GET /v1/profile/` returns profile details,
+contact values and verification flags, and the persistent optional `mood`.
+Set mood with `PUT /v1/profile/mood` and `{ "mood": "Available" }`; pass
+`null` to clear it. Mood text is limited to 100 characters and does not expire.
+Change the optional username with authenticated
 `PATCH /v1/profile/username`; change the nickname (with or without an image)
 through multipart `POST /v1/profile/update` using the `nickname` form field.
 
-Password recovery starts at `POST /v1/auth/password/recovery/start` with exactly
-one `username`, `ping_id`, `email`, or `phone`. A valid account receives the same
-one-time code at every verified email/phone contact; complete it with
-`POST /v1/auth/password/recovery/complete`. Responses deliberately do not reveal
-whether an identifier exists. Authenticated users use
+Password recovery is a four-step flow: `POST /v1/auth/password/recovery/options`
+with `{ "ping_id": "..." }` returns verified email/phone choices masked for
+display; `/start` takes `{ "ping_id": "...", "channel": "email" }` and sends
+one code only to that verified contact; `/verify` takes `{ "challenge_id": "...",
+"code": "123456" }` and returns a 15-minute, single-use `reset_token`; and
+`/complete` takes `{ "reset_token": "...", "new_password": "..." }`. A
+successful reset revokes platform sessions and stored OpenIM device tokens,
+then requests OpenIM force-logout for each affected platform. The completion
+response reports whether every OpenIM logout succeeded.
+Production email delivery uses AWS SES (`EMAIL_PROVIDER=ses`,
+`AWS_SES_FROM_EMAIL`); SNS is not the inbox delivery path. Authenticated users use
 `POST /v1/auth/password/change`; accounts with verified contacts complete the
 returned step-up challenge at `/v1/auth/password/change/verify`, while accounts
 without a verified contact can change the password with the current password.
+
+MFA contacts are immutable once added: verified contacts cannot be changed and
+the API has no contact-delete route. A different value cannot replace a pending
+contact.
+
+## User reports and moderation
+
+`POST /v1/reports` accepts `target_ping_id`, `reason` (`spam`, `abuse`,
+`harassment`, `inappropriate`, or `other`), optional `details`, and optional
+`conversation_id`, `message_id`, and `message_seq`. For a message report, all
+three message fields are required together. The server fetches the message from
+OpenIM by conversation sequence, checks its message ID and that the selected
+target sent it, and stores an immutable message snapshot in `moderation_reports`.
+The client cannot supply the evidence snapshot. Duplicate reports by the same
+reporter for the same target/message/reason return `409`.
+
+`GET /v1/admin/reports` lists retained reports, and
+`PUT /v1/admin/reports/{reportID}` marks a report `actioned` or `dismissed` with
+optional notes. Both routes require an active account whose `users.is_admin` is
+true. To grant moderation access, an operator must promote the approved account
+in the database. New reports are emailed to active administrators with verified
+email addresses; report records remain available in the admin queue if email
+delivery fails. Promote at least one moderator before launch so reports trigger
+email alerts.
 
 MFA and recovery email use AWS SES directly in production (`EMAIL_PROVIDER=ses`,
 sender `AWS_SES_FROM_EMAIL`) and SMTP/Mailpit locally. SNS is not the recipient

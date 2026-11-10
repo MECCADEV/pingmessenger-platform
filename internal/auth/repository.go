@@ -38,6 +38,32 @@ func (r *UserRepository) PingIDForUser(ctx context.Context, userID string) (stri
 	return pingID, err
 }
 
+func (r *UserRepository) FindActiveUserByPingID(ctx context.Context, pingID string) (string, error) {
+	var userID string
+	err := r.pool.QueryRow(ctx, `SELECT id::text FROM users WHERE ping_id=$1 AND status='active' AND deleted_at IS NULL`, pingID).Scan(&userID)
+	return userID, err
+}
+
+func (r *UserRepository) AdminEmails(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, `SELECT DISTINCT c.value_normalized FROM users u
+		JOIN user_contacts c ON c.user_id=u.id
+		WHERE u.is_admin AND u.status='active' AND u.deleted_at IS NULL AND c.kind='email' AND c.verified_at IS NOT NULL
+		ORDER BY c.value_normalized`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	emails := make([]string, 0)
+	for rows.Next() {
+		var email string
+		if err = rows.Scan(&email); err != nil {
+			return nil, err
+		}
+		emails = append(emails, email)
+	}
+	return emails, rows.Err()
+}
+
 // ErrAccountUnavailable is returned when a session cannot be created because
 // the account was soft-deleted (or is otherwise no longer active).
 var ErrAccountUnavailable = errors.New("account unavailable")
@@ -291,6 +317,32 @@ func (r *UserRepository) VerifiedContacts(ctx context.Context, userID string) ([
 	return contacts, rows.Err()
 }
 
+type RecoveryOptions struct {
+	Email *string
+	Phone *string
+}
+
+func (r *UserRepository) RecoveryOptionsForPingID(ctx context.Context, pingID string) (*RecoveryOptions, error) {
+	options := new(RecoveryOptions)
+	err := r.pool.QueryRow(ctx, `SELECT email.value_normalized,phone.value_normalized
+		FROM users u
+		LEFT JOIN LATERAL (SELECT value_normalized FROM user_contacts WHERE user_id=u.id AND kind='email' AND verified_at IS NOT NULL ORDER BY is_primary DESC,created_at LIMIT 1) email ON true
+		LEFT JOIN LATERAL (SELECT value_normalized FROM user_contacts WHERE user_id=u.id AND kind='phone' AND verified_at IS NOT NULL ORDER BY is_primary DESC,created_at LIMIT 1) phone ON true
+		WHERE u.ping_id=$1 AND u.status='active' AND u.deleted_at IS NULL`, pingID).Scan(&options.Email, &options.Phone)
+	return options, err
+}
+
+func (r *UserRepository) VerifiedRecoveryContactByPingID(ctx context.Context, pingID, kind string) (string, *Contact, error) {
+	var userID string
+	c := new(Contact)
+	err := r.pool.QueryRow(ctx, `SELECT u.id::text,c.id::text,c.user_id::text,c.kind::text,c.value_normalized
+		FROM users u JOIN user_contacts c ON c.user_id=u.id
+		WHERE u.ping_id=$1 AND u.status='active' AND u.deleted_at IS NULL AND c.kind=$2::contact_kind AND c.verified_at IS NOT NULL
+		ORDER BY c.is_primary DESC,c.created_at ASC LIMIT 1`, pingID, kind).Scan(&userID, &c.ID, &c.UserID, &c.Kind, &c.Value)
+	c.Verified = err == nil
+	return userID, c, err
+}
+
 func (r *UserRepository) CreatePasswordChallenge(ctx context.Context, userID, purpose, codeHash string, expiresAt time.Time) (string, error) {
 	var id string
 	err := r.pool.QueryRow(ctx, `WITH old AS (UPDATE password_challenges SET consumed_at=now() WHERE user_id=$1 AND purpose=$2::password_challenge_purpose AND consumed_at IS NULL) INSERT INTO password_challenges(user_id,purpose,code_hash,expires_at) VALUES($1,$2::password_challenge_purpose,$3,$4) RETURNING id::text`, userID, purpose, codeHash, expiresAt).Scan(&id)
@@ -316,8 +368,84 @@ func (r *UserRepository) ConsumePasswordChallenge(ctx context.Context, id string
 	return nil
 }
 
+func (r *UserRepository) ConsumeRecoveryChallengeAndCreateResetToken(ctx context.Context, challengeID, tokenHash string, expiresAt time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var userID string
+	result, err := tx.Exec(ctx, `UPDATE password_challenges SET consumed_at=now()
+		WHERE id=$1 AND purpose='recovery' AND consumed_at IS NULL AND expires_at>now() AND attempts<5`, challengeID)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("password recovery challenge unavailable")
+	}
+	if err = tx.QueryRow(ctx, `SELECT user_id::text FROM password_challenges WHERE id=$1`, challengeID).Scan(&userID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO password_reset_tokens(user_id,token_hash,expires_at) VALUES($1,$2,$3)`, userID, tokenHash, expiresAt); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *UserRepository) CompletePasswordReset(ctx context.Context, tokenHash, passwordHash string) (string, []string, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	defer tx.Rollback(ctx)
+	var userID string
+	if err = tx.QueryRow(ctx, `SELECT user_id::text FROM password_reset_tokens
+		WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>now() FOR UPDATE`, tokenHash).Scan(&userID); err != nil {
+		return "", nil, err
+	}
+	var openIMUserID string
+	var platforms []string
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(u.openim_user_id,''),COALESCE(array_agg(DISTINCT s.platform_id) FILTER (WHERE s.revoked_at IS NULL),ARRAY[]::text[])
+		FROM users u LEFT JOIN device_sessions s ON s.user_id=u.id WHERE u.id=$1 GROUP BY u.id`, userID).Scan(&openIMUserID, &platforms); err != nil {
+		return "", nil, err
+	}
+	result, err := tx.Exec(ctx, `UPDATE password_reset_tokens SET consumed_at=now() WHERE token_hash=$1 AND consumed_at IS NULL AND expires_at>now()`, tokenHash)
+	if err != nil || result.RowsAffected() != 1 {
+		if err != nil {
+			return "", nil, err
+		}
+		return "", nil, fmt.Errorf("password reset token unavailable")
+	}
+	result, err = tx.Exec(ctx, `UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1 AND status='active' AND deleted_at IS NULL`, userID, passwordHash)
+	if err != nil || result.RowsAffected() != 1 {
+		if err != nil {
+			return "", nil, err
+		}
+		return "", nil, fmt.Errorf("account unavailable")
+	}
+	for _, statement := range []string{
+		`UPDATE device_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1`,
+		`UPDATE openim_device_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE session_id IN (SELECT id FROM device_sessions WHERE user_id=$1)`,
+		`UPDATE device_keys SET revoked_at=COALESCE(revoked_at,now()) WHERE session_id IN (SELECT id FROM device_sessions WHERE user_id=$1)`,
+		`UPDATE device_proof_challenges SET consumed_at=COALESCE(consumed_at,now()) WHERE session_id IN (SELECT id FROM device_sessions WHERE user_id=$1)`,
+	} {
+		if _, err = tx.Exec(ctx, statement, userID); err != nil {
+			return "", nil, err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", nil, err
+	}
+	return openIMUserID, platforms, nil
+}
+
 func (r *UserRepository) RecordPasswordChallengeFailure(ctx context.Context, id string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE password_challenges SET attempts=attempts+1 WHERE id=$1 AND consumed_at IS NULL`, id)
+	return err
+}
+
+func (r *UserRepository) InvalidatePasswordChallenge(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `UPDATE password_challenges SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, id)
 	return err
 }
 
@@ -766,20 +894,44 @@ func (r *UserRepository) DeleteProfileAsset(ctx context.Context, userID, storage
 }
 
 type Profile struct {
-	Username, PingID, Nickname string
-	Image                      *string
+	Username, PingID, Nickname   string
+	Mood                         *string
+	Image                        *string
+	Email, Phone                 *string
+	EmailVerified, PhoneVerified bool
 }
 
 func (r *UserRepository) Profile(ctx context.Context, userID string) (*Profile, error) {
 	p := new(Profile)
-	err := r.pool.QueryRow(ctx, `SELECT COALESCE(u.username,''),u.ping_id,u.nickname, (
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(u.username,''),u.ping_id,u.nickname,u.mood,
+		email.value_normalized,email.verified_at IS NOT NULL,phone.value_normalized,phone.verified_at IS NOT NULL, (
 		SELECT public_path FROM profile_assets
 		WHERE user_id=u.id AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1
-	) FROM users u WHERE u.id=$1 AND u.deleted_at IS NULL`, userID).Scan(&p.Username, &p.PingID, &p.Nickname, &p.Image)
+	) FROM users u
+	LEFT JOIN LATERAL (SELECT value_normalized,verified_at FROM user_contacts WHERE user_id=u.id AND kind='email' ORDER BY is_primary DESC,created_at LIMIT 1) email ON true
+	LEFT JOIN LATERAL (SELECT value_normalized,verified_at FROM user_contacts WHERE user_id=u.id AND kind='phone' ORDER BY is_primary DESC,created_at LIMIT 1) phone ON true
+	WHERE u.id=$1 AND u.deleted_at IS NULL`, userID).Scan(&p.Username, &p.PingID, &p.Nickname, &p.Mood, &p.Email, &p.EmailVerified, &p.Phone, &p.PhoneVerified, &p.Image)
 	if err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+func (r *UserRepository) SetMood(ctx context.Context, userID string, mood *string) error {
+	result, err := r.pool.Exec(ctx, `UPDATE users SET mood=$2,updated_at=now() WHERE id=$1 AND deleted_at IS NULL`, userID, mood)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func (r *UserRepository) IsAdmin(ctx context.Context, userID string) (bool, error) {
+	var isAdmin bool
+	err := r.pool.QueryRow(ctx, `SELECT is_admin FROM users WHERE id=$1 AND status='active' AND deleted_at IS NULL`, userID).Scan(&isAdmin)
+	return isAdmin, err
 }
 
 func (r *UserRepository) UpdateNickname(ctx context.Context, userID, nickname string) error {

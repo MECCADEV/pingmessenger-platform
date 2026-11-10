@@ -252,6 +252,43 @@ func (c *HTTPClient) RevokeMessage(ctx context.Context, request *RevokeMessageRe
 	return c.call(ctx, "msg/revoke_msg", request, nil)
 }
 
+func (c *HTTPClient) GetMessageBySeq(ctx context.Context, userID, conversationID string, seq int64) (*MessageSnapshot, error) {
+	request := struct {
+		UserID    string `json:"userID"`
+		SeqRanges []struct {
+			ConversationID string `json:"conversationID"`
+			Begin          int64  `json:"begin"`
+			End            int64  `json:"end"`
+			Num            int64  `json:"num"`
+		} `json:"seqRanges"`
+		Order int `json:"order"`
+	}{UserID: userID, Order: 0}
+	request.SeqRanges = append(request.SeqRanges, struct {
+		ConversationID string `json:"conversationID"`
+		Begin          int64  `json:"begin"`
+		End            int64  `json:"end"`
+		Num            int64  `json:"num"`
+	}{ConversationID: conversationID, Begin: seq, End: seq, Num: 1})
+	response := struct {
+		Msgs map[string]struct {
+			Messages []*MessageSnapshot `json:"Msgs"`
+		} `json:"msgs"`
+	}{}
+	if err := c.call(ctx, "msg/pull_msg_by_seq", &request, &response); err != nil {
+		return nil, err
+	}
+	conversation, ok := response.Msgs[conversationID]
+	if !ok || len(conversation.Messages) == 0 {
+		return nil, fmt.Errorf("OpenIM message not found")
+	}
+	for _, message := range conversation.Messages {
+		if message != nil && message.Seq == seq {
+			return message, nil
+		}
+	}
+	return nil, fmt.Errorf("OpenIM message not found")
+}
+
 func (c *HTTPClient) call(ctx context.Context, operation string, request, response any) error {
 	// An OpenIM restart or signing-key rotation can invalidate a cached admin
 	// token before its advertised expiry. Retry once with a fresh token. The

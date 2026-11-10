@@ -20,6 +20,15 @@ func TestNormalizePasswordLoginIdentifiers(t *testing.T) {
 	}
 }
 
+func TestRecoveryContactMasking(t *testing.T) {
+	if got := maskRecoveryEmail("person@example.test"); got != "p***@example.test" {
+		t.Fatalf("masked email=%q", got)
+	}
+	if got := maskRecoveryPhone("+14155552671"); got != "**********71" {
+		t.Fatalf("masked phone=%q", got)
+	}
+}
+
 func TestPasswordRoutesAcceptSixAndRejectFiveCharacters(t *testing.T) {
 	validate := validator.New()
 	testCases := []struct {
@@ -32,7 +41,7 @@ func TestPasswordRoutesAcceptSixAndRejectFiveCharacters(t *testing.T) {
 		}},
 		{"change", func(password string) any { return passwordChangeRequest{CurrentPassword: "old", NewPassword: password} }},
 		{"recovery-complete", func(password string) any {
-			return passwordRecoveryCompleteRequest{ChallengeID: "00000000-0000-4000-8000-000000000001", Code: "123456", NewPassword: password}
+			return passwordRecoveryCompleteRequest{ResetToken: strings.Repeat("t", 43), NewPassword: password}
 		}},
 		{"change-verify", func(password string) any {
 			return passwordChangeVerifyRequest{ChallengeID: "00000000-0000-4000-8000-000000000001", Code: "123456", NewPassword: password}
