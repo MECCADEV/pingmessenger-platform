@@ -26,3 +26,7 @@ verification:
 - generated OpenAPI comparison
 - moderator Basic Auth and dashboard browser E2E
 - production deployment, live moderator queue, static console, and non-blocking terms smoke checks
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:sha-80cf684b1aa1
+  workflow: .github/workflows/deploy-production.yml
+  workflow_run: https://github.com/MECCADEV/pingmessenger-platform/actions/runs/43016073237
