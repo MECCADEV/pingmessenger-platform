@@ -41,10 +41,9 @@ acceptance of the current version with `POST /v1/account/terms` and
 returned as null. `TERMS_REQUIRED_VERSION` controls the current version and is
 set to `2026-11-10` in production.
 
-Until the account accepts the current version, chat token issuance, story APIs,
-and friend/contact-discovery APIs return HTTP 403 with
-`{"error":"terms_not_accepted"}`. Profile, terms acceptance, logout, password
-change, and account deletion remain available.
+Terms acceptance is tracked for app clients to decide when to show updated
+terms. It does not block chat tokens, stories, friend actions, or contact
+discovery, so older app versions continue to work during rollout.
 
 ## Account authentication
 
@@ -112,12 +111,19 @@ reporter for the same target/message/reason return `409`.
 
 `GET /v1/admin/reports` lists retained reports, and
 `PUT /v1/admin/reports/{reportID}` marks a report `actioned` or `dismissed` with
-optional notes. Both routes require an active account whose `users.is_admin` is
-true. To grant moderation access, an operator must promote the approved account
-in the database. New reports are emailed to active administrators with verified
-email addresses; report records remain available in the admin queue if email
-delivery fails. Promote at least one moderator before launch so reports trigger
-email alerts.
+optional notes. `GET /v1/admin/reports/summary` returns exact status counts.
+The React moderator console is served at `/admin`. Report
+review accepts either an active account with `users.is_admin=true` or the
+separately configured pre-created moderator account using HTTP Basic Auth.
+Configure `MODERATOR_USERNAME` and a 16-72 byte `MODERATOR_PASSWORD` through
+the production secret store; the application hashes the password with bcrypt
+at startup and deliberately provides no password
+reset or account-creation endpoint. The dashboard keeps credentials in memory
+for the open page, shows the latest 100 reports and status counts, displays
+server-preserved message evidence, and records the reviewing moderator and
+resolution notes. New reports are emailed to active administrators with
+verified email addresses; report records remain available in the queue if email
+delivery fails.
 
 MFA and recovery email use AWS SES directly in production (`EMAIL_PROVIDER=ses`,
 sender `AWS_SES_FROM_EMAIL`) and SMTP/Mailpit locally. SNS is not the recipient

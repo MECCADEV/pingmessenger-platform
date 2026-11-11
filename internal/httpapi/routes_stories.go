@@ -46,9 +46,6 @@ func (a *API) downloadStoryMedia(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	if !a.requireCurrentTerms(ctx, userID) {
-		return
-	}
 	if !a.enforceRate(ctx, "story-download", userID, downloadUserLimit, downloadIPLimit) {
 		return
 	}
@@ -79,9 +76,6 @@ func (a *API) createStory(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-	if !a.requireCurrentTerms(ctx, userID) {
 		return
 	}
 	idempotencyKey, err := parseStoryIdempotencyKey(string(ctx.Request.Header.Peek("Idempotency-Key")))
@@ -451,9 +445,6 @@ func (a *API) deleteStory(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	if !a.requireCurrentTerms(ctx, userID) {
-		return
-	}
 	if !a.enforceRate(ctx, "story-delete", userID, storyDeleteUserLimit, storyDeleteIPLimit) {
 		return
 	}
@@ -474,9 +465,6 @@ func (a *API) viewStory(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-	if !a.requireCurrentTerms(ctx, userID) {
 		return
 	}
 	if !a.enforceRate(ctx, "story-view", userID, storyViewUserLimit, storyViewIPLimit) {
@@ -537,9 +525,6 @@ func (a *API) listStoryViews(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
-	if !a.requireCurrentTerms(ctx, userID) {
-		return
-	}
 	if !a.enforceRate(ctx, "story-views-list", userID, storyViewsUserLimit, storyViewsIPLimit) {
 		return
 	}
@@ -562,9 +547,6 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-		return
-	}
-	if !a.requireCurrentTerms(ctx, userID) {
 		return
 	}
 	origin := strings.TrimSpace(string(ctx.Request.Header.Peek("Origin")))

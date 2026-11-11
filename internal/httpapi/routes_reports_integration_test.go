@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -180,5 +181,40 @@ func TestReportHTTPValidatesSnapshotAndAdminReview(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("updated report missing from actioned queue: %+v", items)
+	}
+
+	if err := api.ConfigureModeratorCredentials("moderator-e2e", "moderator-e2e-password-2026"); err != nil {
+		t.Fatal(err)
+	}
+	moderatorAuthorization := "Basic " + base64.StdEncoding.EncodeToString([]byte("moderator-e2e:moderator-e2e-password-2026"))
+	moderatorList := &fasthttp.RequestCtx{}
+	moderatorList.Request.Header.SetMethod("GET")
+	moderatorList.Request.SetRequestURI("/v1/admin/reports?status=actioned")
+	moderatorList.Request.Header.Set("Authorization", moderatorAuthorization)
+	api.listReports(moderatorList)
+	if moderatorList.Response.StatusCode() != fasthttp.StatusOK || !strings.Contains(string(moderatorList.Response.Body()), createdBody.ReportID) {
+		t.Fatalf("moderator report list status=%d body=%s", moderatorList.Response.StatusCode(), moderatorList.Response.Body())
+	}
+	moderatorUpdate := &fasthttp.RequestCtx{}
+	moderatorUpdate.Request.Header.SetMethod("PUT")
+	moderatorUpdate.Request.SetRequestURI("/v1/admin/reports/" + createdBody.ReportID)
+	moderatorUpdate.Request.Header.Set("Authorization", moderatorAuthorization)
+	moderatorUpdate.Request.SetBodyString(`{"status":"dismissed","notes":"Reviewed in moderator console"}`)
+	moderatorUpdate.SetUserValue("reportID", createdBody.ReportID)
+	api.updateReport(moderatorUpdate)
+	if moderatorUpdate.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("moderator update status=%d body=%s", moderatorUpdate.Response.StatusCode(), moderatorUpdate.Response.Body())
+	}
+	var reviewer string
+	if err = pool.QueryRow(ctx, `SELECT reviewed_by_moderator FROM moderation_reports WHERE id=$1`, createdBody.ReportID).Scan(&reviewer); err != nil || reviewer != "moderator-e2e" {
+		t.Fatalf("moderator reviewer identity=%q err=%v", reviewer, err)
+	}
+	moderatorSummary := &fasthttp.RequestCtx{}
+	moderatorSummary.Request.Header.SetMethod("GET")
+	moderatorSummary.Request.SetRequestURI("/v1/admin/reports/summary")
+	moderatorSummary.Request.Header.Set("Authorization", moderatorAuthorization)
+	api.reportSummary(moderatorSummary)
+	if moderatorSummary.Response.StatusCode() != fasthttp.StatusOK || !strings.Contains(string(moderatorSummary.Response.Body()), `"dismissed":1`) {
+		t.Fatalf("moderator summary status=%d body=%s", moderatorSummary.Response.StatusCode(), moderatorSummary.Response.Body())
 	}
 }

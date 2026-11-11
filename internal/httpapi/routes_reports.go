@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/crypto/bcrypt"
 	"pingmessenger/internal/notify"
 	"pingmessenger/internal/openim"
 	"pingmessenger/internal/reports"
@@ -63,7 +65,9 @@ func (a *API) registerReportRoutes(r interface {
 	PUT(string, fasthttp.RequestHandler)
 }) {
 	r.POST("/v1/reports", a.createReport)
+	r.POST("/v1/admin/session", a.moderatorSession)
 	r.GET("/v1/admin/reports", a.listReports)
+	r.GET("/v1/admin/reports/summary", a.reportSummary)
 	r.PUT("/v1/admin/reports/{reportID}", a.updateReport)
 }
 
@@ -152,17 +156,68 @@ func (a *API) createReport(ctx *fasthttp.RequestCtx) {
 
 func (a *API) authorizedReportAdmin(ctx *fasthttp.RequestCtx) bool {
 	userID, _, ok := a.authenticated(ctx)
-	if !ok {
-		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+	if ok {
+		isAdmin, err := a.users.IsAdmin(context.Background(), userID)
+		if err != nil || !isAdmin {
+			writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "admin access required"})
+			return false
+		}
+		ctx.SetUserValue("reportAdminID", userID)
+		ctx.SetUserValue("reportModeratorUsername", "")
+		return true
+	}
+	username, authenticated := a.authenticateModerator(ctx)
+	if !authenticated {
+		if ctx.Response.StatusCode() == http.StatusTooManyRequests {
+			return false
+		}
+		ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="PingMessenger moderators", charset="UTF-8"`)
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "moderator authentication required"})
 		return false
 	}
-	isAdmin, err := a.users.IsAdmin(context.Background(), userID)
-	if err != nil || !isAdmin {
-		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "admin access required"})
-		return false
-	}
-	ctx.SetUserValue("reportAdminID", userID)
+	ctx.SetUserValue("reportAdminID", nil)
+	ctx.SetUserValue("reportModeratorUsername", username)
 	return true
+}
+
+func (a *API) authenticateModerator(ctx *fasthttp.RequestCtx) (string, bool) {
+	if a.moderatorUsername == "" || a.moderatorPasswordHash == "" {
+		return "", false
+	}
+	value := string(ctx.Request.Header.Peek("Authorization"))
+	if !strings.HasPrefix(value, "Basic ") {
+		a.enforceRate(ctx, "moderator-auth", "moderator", 5, 20)
+		return "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(strings.TrimPrefix(value, "Basic ")))
+	if err != nil {
+		a.enforceRate(ctx, "moderator-auth", "moderator", 5, 20)
+		return "", false
+	}
+	username, password, ok := strings.Cut(string(decoded), ":")
+	if !ok {
+		a.enforceRate(ctx, "moderator-auth", "moderator", 5, 20)
+		return "", false
+	}
+	userMatches := subtle.ConstantTimeCompare([]byte(username), []byte(a.moderatorUsername)) == 1
+	if bcrypt.CompareHashAndPassword([]byte(a.moderatorPasswordHash), []byte(password)) != nil || !userMatches {
+		a.enforceRate(ctx, "moderator-auth", "moderator", 5, 20)
+		return "", false
+	}
+	return username, true
+}
+
+func (a *API) moderatorSession(ctx *fasthttp.RequestCtx) {
+	username, ok := a.authenticateModerator(ctx)
+	if !ok {
+		if ctx.Response.StatusCode() == http.StatusTooManyRequests {
+			return
+		}
+		ctx.Response.Header.Set("WWW-Authenticate", `Basic realm="PingMessenger moderators", charset="UTF-8"`)
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "invalid moderator credentials"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"username": username, "role": "moderator"})
 }
 
 func (a *API) listReports(ctx *fasthttp.RequestCtx) {
@@ -198,6 +253,18 @@ func (a *API) listReports(ctx *fasthttp.RequestCtx) {
 	writeJSON(ctx, http.StatusOK, map[string]any{"reports": items, "limit": limit, "offset": offset})
 }
 
+func (a *API) reportSummary(ctx *fasthttp.RequestCtx) {
+	if !a.authorizedReportAdmin(ctx) {
+		return
+	}
+	summary, err := a.reports.Summary(context.Background())
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load report summary"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, summary)
+}
+
 func (a *API) updateReport(ctx *fasthttp.RequestCtx) {
 	if !a.authorizedReportAdmin(ctx) {
 		return
@@ -208,7 +275,9 @@ func (a *API) updateReport(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	reportID := strings.TrimSpace(ctx.UserValue("reportID").(string))
-	if err := a.reports.UpdateStatus(context.Background(), reportID, ctx.UserValue("reportAdminID").(string), req.Status, strings.TrimSpace(req.Notes)); err != nil {
+	adminID, _ := ctx.UserValue("reportAdminID").(string)
+	moderatorUsername, _ := ctx.UserValue("reportModeratorUsername").(string)
+	if err := a.reports.UpdateStatus(context.Background(), reportID, adminID, moderatorUsername, req.Status, strings.TrimSpace(req.Notes)); err != nil {
 		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "report not found"})
 		return
 	}

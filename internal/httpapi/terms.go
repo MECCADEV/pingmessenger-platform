@@ -53,16 +53,3 @@ func (a *API) acceptTerms(ctx *fasthttp.RequestCtx) {
 	}
 	writeJSON(ctx, http.StatusOK, map[string]any{"terms_accepted_version": req.TermsVersion, "terms_required_version": a.termsRequiredVersion})
 }
-
-func (a *API) requireCurrentTerms(ctx *fasthttp.RequestCtx, userID string) bool {
-	accepted, err := a.users.TermsAcceptance(context.Background(), userID)
-	if err != nil {
-		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not check terms acceptance"})
-		return false
-	}
-	if accepted == nil || *accepted != a.termsRequiredVersion {
-		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "terms_not_accepted"})
-		return false
-	}
-	return true
-}

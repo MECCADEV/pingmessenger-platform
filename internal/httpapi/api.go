@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/crypto/bcrypt"
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/chainindex"
 	channelstore "pingmessenger/internal/channels"
@@ -51,6 +52,8 @@ type API struct {
 	assetBase               string
 	paymentEventSecret      string
 	termsRequiredVersion    string
+	moderatorUsername       string
+	moderatorPasswordHash   string
 	chainIndexer            *chainindex.IndexerService
 	stories                 *stories.Repository
 	notificationPreferences *notifications.Repository
@@ -101,10 +104,32 @@ func (a *API) ConfigureRateLimiter(limiter ratelimit.Limiter) {
 	}
 }
 
+// ConfigureModeratorCredentials enables the separately managed, pre-created
+// moderator account. An empty username or hash leaves Basic Auth disabled.
+func (a *API) ConfigureModeratorCredentials(username, password string) error {
+	if username == "" && password == "" {
+		a.moderatorUsername = ""
+		a.moderatorPasswordHash = ""
+		return nil
+	}
+	if username == "" || len(username) > 64 || strings.ContainsAny(username, ":\r\n") || len(password) < 16 || len(password) > 72 {
+		return fmt.Errorf("moderator username and a 16-72 byte password must be configured together")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("could not hash moderator password: %w", err)
+	}
+	a.moderatorUsername = username
+	a.moderatorPasswordHash = string(hash)
+	return nil
+}
+
 func (a *API) Router() fasthttp.RequestHandler {
 	r := router.New()
 	r.GET("/healthz", a.health)
 	r.GET("/openapi.json", a.openAPIDocument)
+	r.GET("/admin", a.serveModeratorUI)
+	r.GET("/admin/{filepath:*}", a.serveModeratorUI)
 	a.registerAuthRoutes(r)
 	a.registerAccountRoutes(r)
 	a.registerUsernameAvailabilityWS(r)

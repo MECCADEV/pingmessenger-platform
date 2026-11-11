@@ -15,7 +15,7 @@ import (
 	"pingmessenger/internal/documents"
 )
 
-func TestTermsAcceptanceGatesChatStoriesAndFriends(t *testing.T) {
+func TestTermsAcceptanceTrackingDoesNotGateChatStoriesAndFriends(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("TEST_DATABASE_URL is not configured")
@@ -82,8 +82,8 @@ func TestTermsAcceptanceGatesChatStoriesAndFriends(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := request(tc.handler, tc.method, tc.path, tc.body)
-			if got.Response.StatusCode() != fasthttp.StatusForbidden || string(got.Response.Body()) != "{\"error\":\"terms_not_accepted\"}\n" {
-				t.Fatalf("status=%d body=%s", got.Response.StatusCode(), got.Response.Body())
+			if got.Response.StatusCode() == fasthttp.StatusForbidden && strings.Contains(string(got.Response.Body()), "terms_not_accepted") {
+				t.Fatalf("legacy request was blocked by terms gate: status=%d body=%s", got.Response.StatusCode(), got.Response.Body())
 			}
 		})
 	}

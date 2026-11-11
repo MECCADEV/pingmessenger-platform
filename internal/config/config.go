@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -11,6 +12,8 @@ import (
 type Config struct {
 	AppEnv                       string
 	TermsRequiredVersion         string
+	ModeratorUsername            string
+	ModeratorPassword            string
 	HTTPAddr                     string
 	DatabaseURL                  string
 	JWTSigningSecret             string
@@ -81,7 +84,8 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		AppEnv: value("APP_ENV", "development"), TermsRequiredVersion: value("TERMS_REQUIRED_VERSION", "2026-11-10"), HTTPAddr: value("HTTP_ADDR", ":8080"),
+		AppEnv: value("APP_ENV", "development"), TermsRequiredVersion: value("TERMS_REQUIRED_VERSION", "2026-11-10"),
+		ModeratorUsername: os.Getenv("MODERATOR_USERNAME"), ModeratorPassword: os.Getenv("MODERATOR_PASSWORD"), HTTPAddr: value("HTTP_ADDR", ":8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"), JWTSigningSecret: os.Getenv("JWT_SIGNING_SECRET"),
 		JWTIssuer: value("JWT_ISSUER", "pingmessenger"), AccessTokenTTL: accessTTL, RefreshTokenTTL: refreshTTL,
 		S3PublicBaseURL: os.Getenv("S3_PUBLIC_BASE_URL"), OpenIMAPIBaseURL: os.Getenv("OPENIM_API_BASE_URL"), OpenIMConversationGRPCTarget: os.Getenv("OPENIM_CONVERSATION_GRPC_TARGET"),
@@ -106,6 +110,17 @@ func Load() (Config, error) {
 	}
 	if c.DeviceTokenEncryptionKey == "" {
 		return Config{}, fmt.Errorf("DEVICE_TOKEN_ENCRYPTION_KEY is required")
+	}
+	if (c.ModeratorUsername == "") != (c.ModeratorPassword == "") {
+		return Config{}, fmt.Errorf("MODERATOR_USERNAME and MODERATOR_PASSWORD must be configured together")
+	}
+	if c.ModeratorUsername != "" {
+		if len(c.ModeratorUsername) > 64 || strings.ContainsAny(c.ModeratorUsername, ":\r\n") {
+			return Config{}, fmt.Errorf("MODERATOR_USERNAME must be at most 64 bytes and cannot contain colon or line breaks")
+		}
+		if len(c.ModeratorPassword) < 16 || len(c.ModeratorPassword) > 72 {
+			return Config{}, fmt.Errorf("MODERATOR_PASSWORD must contain between 16 and 72 bytes")
+		}
 	}
 	return c, nil
 }

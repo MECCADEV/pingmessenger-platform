@@ -37,6 +37,19 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: admin-ui/package-lock.json
+
+      - name: Build moderator console
+        run: |
+          cd admin-ui
+          npm ci --no-audit --no-fund
+          npm run build
+          npm run test:e2e
+
       - name: Test and vet
         run: |
           go test ./...
@@ -108,6 +121,17 @@ jobs:
             secret/data/pingmessenger/platform/deploy CONTAINER_NAME       | CONTAINER_NAME ;
             secret/data/pingmessenger/platform/deploy MIGRATION_CONTAINER   | MIGRATION_CONTAINER ;
             secret/data/pingmessenger/platform/deploy ROLLBACK_ON_FAILURE   | ROLLBACK_ON_FAILURE
+
+      - name: Validate pre-created moderator account
+        env:
+          MODERATOR_USERNAME: ${{ secrets.MODERATOR_USERNAME }}
+          MODERATOR_PASSWORD: ${{ secrets.MODERATOR_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$MODERATOR_USERNAME"
+          test "${#MODERATOR_PASSWORD}" -ge 16
+          test "${#MODERATOR_PASSWORD}" -le 72
 
       - name: Resolve image tag
         id: image
@@ -239,10 +263,18 @@ jobs:
           CONTAINER_NAME: ${{ steps.vault.outputs.CONTAINER_NAME }}
           MIGRATION_CONTAINER: ${{ steps.vault.outputs.MIGRATION_CONTAINER }}
           IMAGE: ${{ steps.image.outputs.image }}
+          MODERATOR_USERNAME: ${{ secrets.MODERATOR_USERNAME }}
+          MODERATOR_PASSWORD: ${{ secrets.MODERATOR_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
           kubectl -n "$KUBE_NAMESPACE" get deployment "$DEPLOYMENT_NAME" >/dev/null
+          kubectl -n "$KUBE_NAMESPACE" create secret generic pingmessenger-moderator \
+            --from-literal=MODERATOR_USERNAME="$MODERATOR_USERNAME" \
+            --from-literal=MODERATOR_PASSWORD="$MODERATOR_PASSWORD" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$KUBE_NAMESPACE" set env --from=secret/pingmessenger-moderator \
+            "deployment/$DEPLOYMENT_NAME" --containers="$CONTAINER_NAME"
           old_image=$(kubectl -n "$KUBE_NAMESPACE" get deployment "$DEPLOYMENT_NAME" \
             -o jsonpath="{.spec.template.spec.containers[?(@.name=='${CONTAINER_NAME}')].image}")
           old_migration_image=$(kubectl -n "$KUBE_NAMESPACE" get deployment "$DEPLOYMENT_NAME" \
@@ -285,6 +317,8 @@ jobs:
           KUBECONFIG: ${{ runner.temp }}/kubeconfig
           KUBE_NAMESPACE: ${{ steps.vault.outputs.KUBE_NAMESPACE }}
           SERVICE_NAME: ${{ steps.vault.outputs.SERVICE_NAME }}
+          MODERATOR_USERNAME: ${{ secrets.MODERATOR_USERNAME }}
+          MODERATOR_PASSWORD: ${{ secrets.MODERATOR_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
@@ -301,7 +335,31 @@ jobs:
           done
           curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:18080/openapi.json >"$RUNNER_TEMP/openapi.json"
-          jq -e '.openapi and .info.version and .paths["/v1/mfa/contacts"] and .paths["/v1/account/terms"].post and .paths["/v1/openim/token/issue"].post.responses["403"]' "$RUNNER_TEMP/openapi.json" >/dev/null
+          jq -e '.openapi and .info.version and .paths["/v1/mfa/contacts"] and .paths["/v1/account/terms"].post and .paths["/v1/openim/token/issue"].post' "$RUNNER_TEMP/openapi.json" >/dev/null
+
+          curl --fail --silent --show-error http://127.0.0.1:18080/admin >"$RUNNER_TEMP/moderator-console.html"
+          grep -q 'Moderator Console' "$RUNNER_TEMP/moderator-console.html"
+          console_script=$(grep -Eo '/admin/assets/[^" ]+\.js' "$RUNNER_TEMP/moderator-console.html" | head -n 1)
+          test -n "$console_script"
+          curl --fail --silent --show-error "http://127.0.0.1:18080$console_script" >"$RUNNER_TEMP/moderator-console.js"
+          test -s "$RUNNER_TEMP/moderator-console.js"
+          admin_status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/v1/admin/reports)
+          test "$admin_status" = 401
+          session_status=$(curl --silent --show-error --output "$RUNNER_TEMP/moderator-session.json" \
+            --write-out '%{http_code}' --user "$MODERATOR_USERNAME:$MODERATOR_PASSWORD" \
+            --request POST http://127.0.0.1:18080/v1/admin/session)
+          test "$session_status" = 200
+          jq -e --arg username "$MODERATOR_USERNAME" '.username == $username and .role == "moderator"' "$RUNNER_TEMP/moderator-session.json" >/dev/null
+          reports_status=$(curl --silent --show-error --output "$RUNNER_TEMP/moderator-reports.json" \
+            --write-out '%{http_code}' --user "$MODERATOR_USERNAME:$MODERATOR_PASSWORD" \
+            'http://127.0.0.1:18080/v1/admin/reports?limit=1')
+          test "$reports_status" = 200
+          jq -e '(.reports | type) == "array" and .limit == 1' "$RUNNER_TEMP/moderator-reports.json" >/dev/null
+          summary_status=$(curl --silent --show-error --output "$RUNNER_TEMP/moderator-summary.json" \
+            --write-out '%{http_code}' --user "$MODERATOR_USERNAME:$MODERATOR_PASSWORD" \
+            http://127.0.0.1:18080/v1/admin/reports/summary)
+          test "$summary_status" = 200
+          jq -e 'has("open") and has("actioned") and has("dismissed")' "$RUNNER_TEMP/moderator-summary.json" >/dev/null
 
           # A missing object alias is surfaced by the SDK as its generic 10005
           # error. This endpoint must reach OpenIM and return its normal
@@ -339,8 +397,8 @@ jobs:
             echo
             echo "| Field | Value |"
             echo "|---|---|"
-            echo "| Image | `$IMAGE` |"
-            echo "| Namespace | `$KUBE_NAMESPACE` |"
-            echo "| Deployment | `$DEPLOYMENT_NAME` |"
-            echo "| Commit | `$SOURCE_SHA` |"
+            echo "| Image | \`$IMAGE\` |"
+            echo "| Namespace | \`$KUBE_NAMESPACE\` |"
+            echo "| Deployment | \`$DEPLOYMENT_NAME\` |"
+            echo "| Commit | \`$SOURCE_SHA\` |"
           } >> "$GITHUB_STEP_SUMMARY"
