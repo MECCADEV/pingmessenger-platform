@@ -11,4 +11,4 @@ Ship a React moderator console served by the platform API, protected by a pre-cr
 5. Publish reviewable source changes, deploy through production workflow, and verify live UI/API behavior.
 
 ## Runtime gate
-Production moderator credentials must be provisioned in Vault and confirmed available to the deploy workflow before rollout. Do not enable the panel without a configured username and bcrypt password hash.
+Production moderator credentials must be provisioned in the protected GitHub `production` environment and confirmed available to the deploy workflow before rollout. The workflow creates a Kubernetes Secret and the API hashes the password with bcrypt at startup; do not enable the panel without both values.

@@ -12,7 +12,7 @@ changes:
   type: endpoint
   method: GET,POST,PUT
   path: /admin, /v1/admin/session, /v1/admin/reports, /v1/admin/reports/summary
-  description: Serves the embedded React moderator dashboard; a pre-created username/password configured through the production secret store can list reports, read exact status counts, and mark reports actioned or dismissed. Report review records the moderator username. Existing users.is_admin bearer access remains supported.
+  description: Serves the embedded React moderator dashboard; a pre-created username/password configured in the protected GitHub production environment can list reports, read exact status counts, and mark reports actioned or dismissed. Report review records the moderator username. Existing users.is_admin bearer access remains supported.
 - id: moderator-review-identity
   type: schema
   description: Migration 0033 adds the Basic Auth moderator reviewer identity to retained report records.
