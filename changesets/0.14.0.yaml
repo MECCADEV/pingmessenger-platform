@@ -30,3 +30,13 @@ verification:
 - go test -tags=e2e ./tests/e2e
 - generated OpenAPI comparison
 - production rollout and live terms enforcement checks
+deployment:
+  image: registry.meainternal.com/pingmessenger/platform:sha-fa9871607d9e
+  workflow: .github/workflows/deploy-production.yml
+  workflow_run: https://github.com/MECCADEV/pingmessenger-platform/actions/runs/43010164653
+verification:
+- go test -race -count=1 ./... (database-backed local PostgreSQL 17)
+- go vet ./...
+- generated OpenAPI comparison
+- Helm lint/render with TERMS_REQUIRED_VERSION=2026-11-10
+- production workflow rollout, health/OpenAPI smoke, migration 0032, and deployed env check
