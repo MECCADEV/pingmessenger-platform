@@ -1,8 +1,16 @@
+FROM node:22-alpine AS admin-build
+WORKDIR /src/admin-ui
+COPY admin-ui/package.json admin-ui/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+COPY admin-ui/ ./
+RUN npm run build
+
 FROM golang:1.24-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=admin-build /src/internal/httpapi/adminui/dist ./internal/httpapi/adminui/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/api ./cmd/api && \
     CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/db ./cmd/db
 

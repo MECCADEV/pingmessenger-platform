@@ -1,0 +1,28 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.14.0
+  next: 0.15.0
+  bump: minor
+  compatibility: additive-moderator-console; terms-acceptance-non-enforcing
+releaseDate: 2026-11-11
+summary: Adds a Basic Auth React moderator console for reports and keeps Terms of Use acceptance tracking without blocking older app actions.
+changes:
+- id: moderator-console
+  type: endpoint
+  method: GET,POST,PUT
+  path: /admin, /v1/admin/session, /v1/admin/reports, /v1/admin/reports/summary
+  description: Serves the embedded React moderator dashboard; a pre-created username/password configured through the production secret store can list reports, read exact status counts, and mark reports actioned or dismissed. Report review records the moderator username. Existing users.is_admin bearer access remains supported.
+- id: moderator-review-identity
+  type: schema
+  description: Migration 0033 adds the Basic Auth moderator reviewer identity to retained report records.
+- id: terms-acceptance-non-enforcing
+  type: behavior
+  path: /v1/openim/token/issue, /v1/stories, /v1/friends, /v1/contacts/discovered
+  description: Continues to return and record accepted/current terms versions but does not block chat, story, friend, or contact-discovery actions pending acceptance, preserving older app compatibility.
+verification:
+- go test -race -count=1 ./...
+- go vet ./...
+- generated OpenAPI comparison
+- moderator Basic Auth and dashboard browser E2E
+- production deployment, live moderator queue, static console, and non-blocking terms smoke checks

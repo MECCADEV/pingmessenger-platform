@@ -79,7 +79,7 @@ func TestCreateListAndResolveReport(t *testing.T) {
 	if found.MessageSeq == nil || *found.MessageSeq != seq || actualSnapshot["clientMsgID"] != expectedSnapshot["clientMsgID"] || actualSnapshot["sendID"] != expectedSnapshot["sendID"] {
 		t.Fatalf("listed report=%+v", found)
 	}
-	if err := repo.UpdateStatus(ctx, reportID, reporterID, "actioned", "reviewed"); err != nil {
+	if err := repo.UpdateStatus(ctx, reportID, reporterID, "", "actioned", "reviewed"); err != nil {
 		t.Fatal(err)
 	}
 	items, err = repo.List(ctx, "actioned", 100, 0)

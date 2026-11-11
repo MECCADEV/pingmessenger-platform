@@ -3,7 +3,6 @@ package openapi
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"pingmessenger/internal/channels"
@@ -374,21 +373,28 @@ type reportOutput struct {
 	}
 }
 type adminReportItem struct {
-	ReportID           string         `json:"report_id" format:"uuid"`
-	ReporterUserID     string         `json:"reporter_user_id" format:"uuid"`
-	TargetUserID       string         `json:"target_user_id" format:"uuid"`
-	ConversationID     *string        `json:"conversation_id"`
-	MessageID          *string        `json:"message_id"`
-	MessageSeq         *int64         `json:"message_seq"`
-	Reason             string         `json:"reason"`
-	Details            string         `json:"details"`
-	MessageSnapshot    map[string]any `json:"message_snapshot"`
-	Status             string         `json:"status" enum:"open,actioned,dismissed"`
-	ResolutionNotes    string         `json:"resolution_notes"`
-	NotificationStatus string         `json:"notification_status" enum:"pending,sent,failed"`
-	CreatedAt          string         `json:"created_at" format:"date-time"`
-	ReviewedAt         *string        `json:"reviewed_at,omitempty" format:"date-time"`
-	ReviewedBy         *string        `json:"reviewed_by,omitempty" format:"uuid"`
+	ReportID            string         `json:"report_id" format:"uuid"`
+	ReporterUserID      string         `json:"reporter_user_id" format:"uuid"`
+	TargetUserID        string         `json:"target_user_id" format:"uuid"`
+	ConversationID      *string        `json:"conversation_id"`
+	MessageID           *string        `json:"message_id"`
+	MessageSeq          *int64         `json:"message_seq"`
+	Reason              string         `json:"reason"`
+	Details             string         `json:"details"`
+	MessageSnapshot     map[string]any `json:"message_snapshot"`
+	Status              string         `json:"status" enum:"open,actioned,dismissed"`
+	ResolutionNotes     string         `json:"resolution_notes"`
+	NotificationStatus  string         `json:"notification_status" enum:"pending,sent,failed"`
+	CreatedAt           string         `json:"created_at" format:"date-time"`
+	ReviewedAt          *string        `json:"reviewed_at,omitempty" format:"date-time"`
+	ReviewedBy          *string        `json:"reviewed_by,omitempty" format:"uuid"`
+	ReviewedByModerator *string        `json:"reviewed_by_moderator,omitempty"`
+}
+type moderatorSessionOutput struct {
+	Body struct {
+		Username string `json:"username"`
+		Role     string `json:"role" enum:"moderator"`
+	}
 }
 type adminReportListInput struct {
 	Status string `query:"status" enum:"open,actioned,dismissed"`
@@ -400,6 +406,13 @@ type adminReportListOutput struct {
 		Reports []adminReportItem `json:"reports"`
 		Limit   int               `json:"limit"`
 		Offset  int               `json:"offset"`
+	}
+}
+type reportSummaryOutput struct {
+	Body struct {
+		Open      int64 `json:"open"`
+		Actioned  int64 `json:"actioned"`
+		Dismissed int64 `json:"dismissed"`
 	}
 }
 type adminReportUpdateInput struct {
@@ -809,7 +822,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.14.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.15.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -818,11 +831,14 @@ func newDocument() (*DocumentModel, error) {
 	api.OpenAPI().Info.Description = "Schema-only API contract. Runtime routes are implemented by FastHTTP."
 	api.OpenAPI().Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearerAuth":        {Type: "http", Scheme: "bearer", BearerFormat: "JWT"},
+		"basicAuth":         {Type: "http", Scheme: "basic"},
 		"openIMServiceAuth": {Type: "apiKey", In: "header", Name: "X-OpenIM-Service-Token"},
 	}
 
 	public := []map[string][]string{{}}
 	bearer := []map[string][]string{{"bearerAuth": {}}}
+	moderatorAuth := []map[string][]string{{"basicAuth": {}}}
+	adminAuth := []map[string][]string{{"bearerAuth": {}}, {"basicAuth": {}}}
 	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username is optional and unique when supplied; terms_version is optional during rollout and signup returns current/accepted terms versions.", 201, public))
 	register[usernameInput, usernameOutput](api, operation(http.MethodPost, "/v1/auth/verify-username", "verifyUsername", "Auth", "Check whether a username is available.", 200, public))
 	register[struct{}, usernameAvailabilityWSOutput](api, operation(http.MethodGet, "/v1/auth/username/availability", "usernameAvailabilityWebSocket", "Auth", "Upgrade to a WebSocket and send check_username JSON frames for availability results.", 101, public))
@@ -866,11 +882,15 @@ func newDocument() (*DocumentModel, error) {
 	reportOperation := operation(http.MethodPost, "/v1/reports", "createReport", "Reports", "Report an active account. The server verifies the target and, for a message report, fetches the message by conversation sequence, confirms its message ID and sender, and stores an immutable moderation snapshot. Provide conversation_id, message_id, and message_seq together.", 201, bearer)
 	reportOperation.Errors = append(reportOperation.Errors, http.StatusConflict, http.StatusBadGateway, http.StatusServiceUnavailable)
 	register[reportInput, reportOutput](api, reportOperation)
-	adminReports := operation(http.MethodGet, "/v1/admin/reports", "listModerationReports", "Moderation", "List retained reports for an active administrator. Admin access is controlled by users.is_admin.", 200, bearer)
-	adminReports.Errors = append(adminReports.Errors, http.StatusForbidden)
+	register[struct{}, moderatorSessionOutput](api, operation(http.MethodPost, "/v1/admin/session", "moderatorSession", "Moderation", "Validate the pre-created moderator account using HTTP Basic Authentication. The dashboard sends credentials in the Authorization header for each protected request; no password reset flow is provided.", 200, moderatorAuth))
+	adminReports := operation(http.MethodGet, "/v1/admin/reports", "listModerationReports", "Moderation", "List retained reports for an active account administrator or the configured pre-created moderator Basic Auth account.", 200, adminAuth)
+	adminReports.Errors = append(adminReports.Errors, http.StatusForbidden, http.StatusUnauthorized)
 	register[adminReportListInput, adminReportListOutput](api, adminReports)
-	updateAdminReport := operation(http.MethodPut, "/v1/admin/reports/{reportID}", "updateModerationReport", "Moderation", "Mark a report actioned or dismissed and retain reviewer and resolution notes. Requires users.is_admin.", 200, bearer)
-	updateAdminReport.Errors = append(updateAdminReport.Errors, http.StatusForbidden, http.StatusNotFound)
+	reportSummary := operation(http.MethodGet, "/v1/admin/reports/summary", "getModerationReportSummary", "Moderation", "Return exact counts of open, actioned, and dismissed reports for the moderator dashboard.", 200, adminAuth)
+	reportSummary.Errors = append(reportSummary.Errors, http.StatusForbidden, http.StatusUnauthorized)
+	register[struct{}, reportSummaryOutput](api, reportSummary)
+	updateAdminReport := operation(http.MethodPut, "/v1/admin/reports/{reportID}", "updateModerationReport", "Moderation", "Mark a report actioned or dismissed and retain reviewer identity and resolution notes. Requires an active account administrator or the configured pre-created moderator Basic Auth account.", 200, adminAuth)
+	updateAdminReport.Errors = append(updateAdminReport.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusUnauthorized)
 	register[adminReportUpdateInput, adminReportUpdateOutput](api, updateAdminReport)
 	createChannel := operation(http.MethodPost, "/v1/channels", "createChannel", "Channels", "Create a channel backed by one OpenIM group. Public channels are searchable and directly joinable; private channels are unlisted and require owner/admin approval to join. All channel groups remain muted so only the owner and admins can post.", 201, bearer)
 	createChannel.Errors = append(createChannel.Errors, http.StatusBadGateway, http.StatusServiceUnavailable)
@@ -1054,20 +1074,6 @@ func newDocument() (*DocumentModel, error) {
 			ids.Nullable = false
 			maxLength := 128
 			ids.Items.MaxLength = &maxLength
-		}
-	}
-	for path, item := range document.Paths {
-		if !(strings.HasPrefix(path, "/v1/stories") || strings.HasPrefix(path, "/v1/friends") || path == "/v1/contacts/discovered" || path == "/v1/openim/token/issue") {
-			continue
-		}
-		for _, op := range []*huma.Operation{item.Get, item.Put, item.Post, item.Delete, item.Patch, item.Options, item.Head, item.Trace} {
-			if op == nil {
-				continue
-			}
-			op.Responses["403"] = &huma.Response{
-				Description: "Forbidden; the current Terms of Use version has not been accepted.",
-				Content:     map[string]*huma.MediaType{"application/json": {Schema: &huma.Schema{Type: "object", Required: []string{"error"}, Properties: map[string]*huma.Schema{"error": {Type: "string", Enum: []any{"terms_not_accepted"}}}}}},
-			}
 		}
 	}
 	return document, nil

@@ -65,6 +65,9 @@ func main() {
 	api := httpapi.NewWithDocuments(pool, openIM, email, sms, cfg.JWTSigningSecret, tokens, deviceTokenCipher, objects, documentObjects, cfg.S3PublicBaseURL, cfg.PingPayEventSecret, documentPolicy)
 	api.ConfigureOpenIMServiceToken(cfg.OpenIMServiceToken)
 	api.ConfigureTermsRequiredVersion(cfg.TermsRequiredVersion)
+	if err := api.ConfigureModeratorCredentials(cfg.ModeratorUsername, cfg.ModeratorPassword); err != nil {
+		log.Fatal(err)
+	}
 	if cfg.RedisURL != "" {
 		limiter, limiterErr := ratelimit.NewRedis(cfg.RedisURL)
 		if limiterErr != nil {
