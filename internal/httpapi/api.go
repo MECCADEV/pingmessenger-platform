@@ -50,6 +50,7 @@ type API struct {
 	documentObjects         storage.ObjectStore
 	assetBase               string
 	paymentEventSecret      string
+	termsRequiredVersion    string
 	chainIndexer            *chainindex.IndexerService
 	stories                 *stories.Repository
 	notificationPreferences *notifications.Repository
@@ -89,7 +90,7 @@ func New(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms
 }
 
 func NewWithDocuments(pool *pgxpool.Pool, openIM openim.Client, email notify.EmailSender, sms notify.SMSSender, otpSecret string, tokens *auth.TokenManager, deviceTokenCipher *auth.DeviceTokenCipher, objects, documentObjects storage.ObjectStore, assetBase, paymentEventSecret string, documentPolicy documents.Policy) *API {
-	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, documentObjects: documentObjects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, stories: stories.NewRepository(pool), notificationPreferences: notifications.NewRepository(pool), documents: documents.NewRepository(pool), reports: reports.NewRepository(pool), channels: channelstore.NewRepository(pool), documentPolicy: documentPolicy, storySubs: make(map[string]map[*storySubscription]struct{}), storyURLs: make(map[string]storyURLCacheEntry), validate: validator.New(), limiter: ratelimit.NewLocal()}
+	return &API{db: pool, openIM: openIM, payments: payments.NewService(payments.NewRepository(pool)), disappearing: disappearing.NewService(disappearing.NewRepository(pool)), timers: timers.NewRepository(pool), users: auth.NewUserRepository(pool), email: email, sms: sms, otpSecret: otpSecret, tokens: tokens, deviceTokenCipher: deviceTokenCipher, objects: objects, documentObjects: documentObjects, assetBase: assetBase, paymentEventSecret: paymentEventSecret, termsRequiredVersion: defaultTermsRequiredVersion, stories: stories.NewRepository(pool), notificationPreferences: notifications.NewRepository(pool), documents: documents.NewRepository(pool), reports: reports.NewRepository(pool), channels: channelstore.NewRepository(pool), documentPolicy: documentPolicy, storySubs: make(map[string]map[*storySubscription]struct{}), storyURLs: make(map[string]storyURLCacheEntry), validate: validator.New(), limiter: ratelimit.NewLocal()}
 }
 
 // ConfigureRateLimiter replaces the development-local limiter with the shared
@@ -143,14 +144,15 @@ func (a *API) openAPIDocument(ctx *fasthttp.RequestCtx) {
 }
 
 type signupRequest struct {
-	Username   string `json:"username" validate:"omitempty,min=3,max=64"`
-	Password   string `json:"password" validate:"required,min=6,max=256"`
-	Nickname   string `json:"nickname" validate:"omitempty,max=128"`
-	Email      string `json:"email" validate:"omitempty,email,max=254"`
-	Phone      string `json:"phone" validate:"omitempty,max=32"`
-	PlatformID string `json:"platform_id" validate:"omitempty,max=64"`
-	DeviceName string `json:"device_name" validate:"omitempty,max=128"`
-	DeviceID   string `json:"device_id" validate:"omitempty,max=128"`
+	Username     string `json:"username" validate:"omitempty,min=3,max=64"`
+	Password     string `json:"password" validate:"required,min=6,max=256"`
+	Nickname     string `json:"nickname" validate:"omitempty,max=128"`
+	Email        string `json:"email" validate:"omitempty,email,max=254"`
+	Phone        string `json:"phone" validate:"omitempty,max=32"`
+	PlatformID   string `json:"platform_id" validate:"omitempty,max=64"`
+	DeviceName   string `json:"device_name" validate:"omitempty,max=128"`
+	DeviceID     string `json:"device_id" validate:"omitempty,max=128"`
+	TermsVersion string `json:"terms_version" validate:"omitempty,max=64"`
 }
 type usernameRequest struct {
 	Username string `json:"username" validate:"required,min=3,max=64"`
@@ -196,7 +198,7 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 		kind, value = &k, &v
 	}
 	nickname := strings.TrimSpace(request.Nickname)
-	created, err := a.users.Create(context.Background(), &auth.CreateUserParams{Username: username, PasswordHash: passwordHash, Nickname: nickname, ContactKind: kind, ContactValue: value})
+	created, err := a.users.Create(context.Background(), &auth.CreateUserParams{Username: username, PasswordHash: passwordHash, Nickname: nickname, ContactKind: kind, ContactValue: value, TermsAcceptedVersion: optionalTermsVersion(request.TermsVersion)})
 	if err != nil {
 		var pgError *pgconn.PgError
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "identity already reserved") || (errors.As(err, &pgError) && pgError.Code == "23505") {
@@ -234,11 +236,17 @@ func (a *API) signup(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "account created but could not issue session"})
 		return
 	}
-	tokens["user_id"] = created.ID
-	tokens["ping_id"] = created.PingID
-	tokens["status"] = "active"
-	tokens["openim_sync"] = sync
-	writeJSON(ctx, http.StatusCreated, tokens)
+	response := make(map[string]any, len(tokens)+5)
+	for key, value := range tokens {
+		response[key] = value
+	}
+	response["user_id"] = created.ID
+	response["ping_id"] = created.PingID
+	response["status"] = "active"
+	response["openim_sync"] = sync
+	response["terms_accepted_version"] = optionalTermsVersion(request.TermsVersion)
+	response["terms_required_version"] = a.termsRequiredVersion
+	writeJSON(ctx, http.StatusCreated, response)
 }
 
 func (a *API) verifyUsername(ctx *fasthttp.RequestCtx) {

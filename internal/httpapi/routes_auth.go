@@ -304,8 +304,19 @@ func (a *API) issueLoginSession(ctx *fasthttp.RequestCtx, userID, platform, devi
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
 		return
 	}
-	tokens["ping_id"] = pingID
-	writeJSON(ctx, http.StatusOK, tokens)
+	accepted, err := a.users.TermsAcceptance(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load terms acceptance"})
+		return
+	}
+	response := make(map[string]any, len(tokens)+3)
+	for key, value := range tokens {
+		response[key] = value
+	}
+	response["ping_id"] = pingID
+	response["terms_accepted_version"] = accepted
+	response["terms_required_version"] = a.termsRequiredVersion
+	writeJSON(ctx, http.StatusOK, response)
 }
 
 func writePasswordLoginThrottle(ctx *fasthttp.RequestCtx, retryAfter int) {

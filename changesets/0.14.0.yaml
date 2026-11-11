@@ -1,0 +1,32 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.13.0
+  next: 0.14.0
+  bump: minor
+  compatibility: additive-with-terms-enforcement
+releaseDate: 2026-11-11
+summary: Adds account-level Terms of Use acceptance tracking and gates chat, stories, and friend actions on the current terms version.
+changes:
+- id: account-terms-acceptance
+  type: endpoint
+  method: POST,GET
+  path: /v1/auth/signup, /v1/account/terms, /v1/profile/
+  description: Signup optionally records terms_version; signed-in users can accept the currently required version. Login, signup, and profile responses expose terms_accepted_version and terms_required_version.
+- id: terms-acceptance-storage
+  type: schema
+  description: Migration 0032 stores each account's accepted terms version and server acceptance timestamp.
+- id: terms-action-enforcement
+  type: behavior
+  method: POST,GET,PUT,DELETE
+  path: /v1/openim/token/issue, /v1/stories, /v1/friends, /v1/contacts/discovered
+  description: Returns 403 {"error":"terms_not_accepted"} until the account accepts the configured current version. Profile, terms acceptance, logout, password change, and account deletion remain available.
+- id: terms-version-configuration
+  type: behavior
+  description: TERMS_REQUIRED_VERSION configures the active version and is set to 2026-11-10 in production deployment.
+verification:
+- go test -count=1 ./...
+- go vet ./...
+- go test -tags=e2e ./tests/e2e
+- generated OpenAPI comparison
+- production rollout and live terms enforcement checks

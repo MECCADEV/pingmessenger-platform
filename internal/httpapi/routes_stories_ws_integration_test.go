@@ -36,6 +36,9 @@ func TestStoryWebSocketReconnectReplayAndCursorRegression(t *testing.T) {
 	if _, err = pool.Exec(ctx, `INSERT INTO users(id,username,password_hash,status) VALUES ($1,$2,'test','active')`, ownerID, username); err != nil {
 		t.Fatalf("insert test user: %v", err)
 	}
+	if _, err = pool.Exec(ctx, `UPDATE users SET terms_accepted_version='2026-11-10',terms_accepted_at=now() WHERE id=$1`, ownerID); err != nil {
+		t.Fatalf("accept terms for story test user: %v", err)
+	}
 	if _, err = pool.Exec(ctx, `INSERT INTO device_sessions(id,user_id,refresh_token_hash,platform_id,expires_at) VALUES ($1,$2,$3,'test',now()+interval '1 hour')`, sessionID, ownerID, uuid.NewString()); err != nil {
 		t.Fatalf("insert test session: %v", err)
 	}
@@ -47,10 +50,11 @@ func TestStoryWebSocketReconnectReplayAndCursorRegression(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := &API{
-		users:   auth.NewUserRepository(pool),
-		tokens:  tokens,
-		stories: stories.NewRepository(pool),
-		limiter: ratelimit.NewLocal(),
+		termsRequiredVersion: defaultTermsRequiredVersion,
+		users:                auth.NewUserRepository(pool),
+		tokens:               tokens,
+		stories:              stories.NewRepository(pool),
+		limiter:              ratelimit.NewLocal(),
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

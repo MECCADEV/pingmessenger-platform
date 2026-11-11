@@ -77,7 +77,7 @@ func (a *API) profile(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load profile"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]any{"username": p.Username, "ping_id": p.PingID, "image": p.Image, "nickname": p.Nickname, "mood": p.Mood, "email": p.Email, "email_verified": p.EmailVerified, "phone": p.Phone, "phone_verified": p.PhoneVerified})
+	writeJSON(ctx, http.StatusOK, map[string]any{"username": p.Username, "ping_id": p.PingID, "image": p.Image, "nickname": p.Nickname, "mood": p.Mood, "email": p.Email, "email_verified": p.EmailVerified, "phone": p.Phone, "phone_verified": p.PhoneVerified, "terms_accepted_version": p.TermsAcceptedVersion, "terms_required_version": a.termsRequiredVersion})
 }
 
 type updateMoodRequest struct {

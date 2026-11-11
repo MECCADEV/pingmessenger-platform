@@ -1,0 +1,99 @@
+{
+  "plan": "terms-acceptance-2026-11-11",
+  "status": "in_progress",
+  "updated": "2026-11-11 \u2014 implementation and local verification complete; awaiting merge/deploy",
+  "plan_doc": "00-plan.md",
+  "source_task": "Add optional signup acceptance, authenticated acceptance endpoint, version fields, terms enforcement, and deploy for Apple Guideline 1.2.",
+  "ordering_rationale": "Reconcile against current main, implement schema and endpoint contracts, add centralized enforcement, then verify before merging and deploying.",
+  "completed": [
+    {
+      "phase": "sync_main",
+      "order": 1,
+      "tier": 1,
+      "status": "completed",
+      "description": "Fetch current main and create an isolated implementation worktree.",
+      "implementation_evidence": "Fetched origin/main at a6bab24 and created /tmp/pingmessenger-platform-terms from that commit; existing checkout changes remain untouched."
+    },
+    {
+      "phase": "acceptance_storage_and_api",
+      "order": 2,
+      "tier": 2,
+      "status": "completed",
+      "description": "Added account terms version/time persistence, optional signup acceptance, signed-in acceptance, and profile/login fields.",
+      "implementation_evidence": "Migration 0032 and DB-backed route tests verify persisted version/timestamp and null/current login/profile outputs."
+    },
+    {
+      "phase": "terms_enforcement",
+      "order": 3,
+      "tier": 3,
+      "status": "completed",
+      "description": "Gated OpenIM token issuance and all authenticated story/friend routes while leaving account/profile/auth exceptions open.",
+      "implementation_evidence": "DB-backed HTTP tests prove 403 before acceptance, stale-version conflict, and access proceeds after current-version acceptance; inspected exempt route handlers."
+    },
+    {
+      "phase": "contract_and_release",
+      "order": 4,
+      "tier": 2,
+      "status": "completed",
+      "description": "Updated OpenAPI 0.14.0, Helm/env configuration, deployment smoke check, docs, and release changeset.",
+      "implementation_evidence": "Generated OpenAPI comparison and Helm render/lint pass; changeset 0.14.0 describes migration, routes, and deployment configuration."
+    },
+    {
+      "phase": "review_gate",
+      "order": 5,
+      "tier": "review_gate",
+      "status": "completed",
+      "description": "Self-reviewed touched paths, API exceptions, schema changes, and deployment wiring; no subagent used under session delegation constraints.",
+      "max_iterations": 2,
+      "implementation_evidence": "Review found and fixed story fixture acceptance and confirmed gated route list/exempt routes."
+    },
+    {
+      "phase": "verification_gate",
+      "order": 6,
+      "tier": "verification_gate",
+      "status": "completed",
+      "description": "Compared implementation with plan and API behavior matrix.",
+      "verification": "No unaddressed implementation misalignments.",
+      "misalignments": [],
+      "verified": [
+        {
+          "description": "Database-backed full race suite passes; go vet, OpenAPI comparison, e2e compile, Helm lint/render, and diff checks pass.",
+          "verdict": "PASS"
+        }
+      ]
+    },
+    {
+      "phase": "misalignment_loop",
+      "order": 7,
+      "tier": "loop_gate",
+      "status": "completed",
+      "description": "No verification misalignments remain.",
+      "completion_rule": "Closes only when verification_gate misalignments is empty.",
+      "implementation_evidence": "verification_gate misalignments is empty."
+    }
+  ],
+  "pending": [
+    {
+      "phase": "production_rollout",
+      "order": 8,
+      "tier": "runtime_gate",
+      "status": "not_started",
+      "description": "Merge release, deploy with required version 2026-11-10, and verify live behavior.",
+      "matrix_ref": "00-plan.md#verification",
+      "matrix_rows": [
+        {
+          "scenario": "health and OpenAPI",
+          "matrix_status": "not_started"
+        },
+        {
+          "scenario": "migration 0032 applied",
+          "matrix_status": "not_started"
+        },
+        {
+          "scenario": "terms enforcement endpoint contract",
+          "matrix_status": "not_started"
+        }
+      ]
+    }
+  ]
+}

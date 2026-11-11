@@ -19,6 +19,7 @@ type accountDeleteRequest struct {
 
 func (a *API) registerAccountRoutes(r *router.Router) {
 	r.POST("/v1/account/delete", a.deleteAccount)
+	r.POST("/v1/account/terms", a.acceptTerms)
 }
 
 func (a *API) deleteAccount(ctx *fasthttp.RequestCtx) {
