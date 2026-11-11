@@ -3,6 +3,7 @@ package openapi
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"pingmessenger/internal/channels"
@@ -27,24 +28,27 @@ type errorBody struct {
 }
 
 type signupBody struct {
-	Username   string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Optional unique account name."`
-	Password   string `json:"password" minLength:"6" maxLength:"256" doc:"Password used for direct username/password login."`
-	Nickname   string `json:"nickname,omitempty" maxLength:"128" doc:"Optional non-unique display name."`
-	Email      string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Optional email contact."`
-	Phone      string `json:"phone,omitempty" maxLength:"32" doc:"Optional phone contact."`
-	PlatformID string `json:"platform_id,omitempty" maxLength:"64" doc:"Device platform; defaults to web."`
-	DeviceName string `json:"device_name,omitempty" maxLength:"128"`
-	DeviceID   string `json:"device_id,omitempty" maxLength:"128"`
+	TermsVersion string `json:"terms_version,omitempty" maxLength:"64" doc:"Optional version of the Terms of Use accepted at signup."`
+	Username     string `json:"username,omitempty" minLength:"3" maxLength:"64" doc:"Optional unique account name."`
+	Password     string `json:"password" minLength:"6" maxLength:"256" doc:"Password used for direct username/password login."`
+	Nickname     string `json:"nickname,omitempty" maxLength:"128" doc:"Optional non-unique display name."`
+	Email        string `json:"email,omitempty" format:"email" maxLength:"254" doc:"Optional email contact."`
+	Phone        string `json:"phone,omitempty" maxLength:"32" doc:"Optional phone contact."`
+	PlatformID   string `json:"platform_id,omitempty" maxLength:"64" doc:"Device platform; defaults to web."`
+	DeviceName   string `json:"device_name,omitempty" maxLength:"128"`
+	DeviceID     string `json:"device_id,omitempty" maxLength:"128"`
 }
 type signupInput struct{ Body signupBody }
 type signupResponse struct {
-	UserID       string `json:"user_id" format:"uuid"`
-	PingID       string `json:"ping_id" pattern:"^[0-9]{12}$"`
-	Status       string `json:"status"`
-	OpenIMSync   string `json:"openim_sync" enum:"complete,pending"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	SessionID    string `json:"session_id" format:"uuid"`
+	TermsAcceptedVersion *string `json:"terms_accepted_version" maxLength:"64"`
+	TermsRequiredVersion string  `json:"terms_required_version" maxLength:"64"`
+	UserID               string  `json:"user_id" format:"uuid"`
+	PingID               string  `json:"ping_id" pattern:"^[0-9]{12}$"`
+	Status               string  `json:"status"`
+	OpenIMSync           string  `json:"openim_sync" enum:"complete,pending"`
+	AccessToken          string  `json:"access_token"`
+	RefreshToken         string  `json:"refresh_token"`
+	SessionID            string  `json:"session_id" format:"uuid"`
 }
 type signupOutput struct{ Body signupResponse }
 
@@ -103,10 +107,12 @@ type loginVerifyBody struct {
 }
 type loginVerifyInput struct{ Body loginVerifyBody }
 type tokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	SessionID    string `json:"session_id" format:"uuid"`
-	PingID       string `json:"ping_id" pattern:"^[0-9]{12}$"`
+	TermsAcceptedVersion *string `json:"terms_accepted_version" maxLength:"64"`
+	TermsRequiredVersion string  `json:"terms_required_version" maxLength:"64"`
+	AccessToken          string  `json:"access_token"`
+	RefreshToken         string  `json:"refresh_token"`
+	SessionID            string  `json:"session_id" format:"uuid"`
+	PingID               string  `json:"ping_id" pattern:"^[0-9]{12}$"`
 }
 type loginVerifyOutput struct{ Body tokenResponse }
 
@@ -329,15 +335,17 @@ type issueOpenIMTokenOutput struct {
 
 type profileOutput struct {
 	Body struct {
-		Username      string  `json:"username,omitempty"`
-		PingID        string  `json:"ping_id"`
-		Image         *string `json:"image" format:"uri"`
-		Nickname      string  `json:"nickname"`
-		Mood          *string `json:"mood" maxLength:"100"`
-		Email         *string `json:"email" format:"email"`
-		EmailVerified bool    `json:"email_verified"`
-		Phone         *string `json:"phone"`
-		PhoneVerified bool    `json:"phone_verified"`
+		Username             string  `json:"username,omitempty"`
+		PingID               string  `json:"ping_id"`
+		Image                *string `json:"image" format:"uri"`
+		Nickname             string  `json:"nickname"`
+		Mood                 *string `json:"mood" maxLength:"100"`
+		Email                *string `json:"email" format:"email"`
+		EmailVerified        bool    `json:"email_verified"`
+		Phone                *string `json:"phone"`
+		PhoneVerified        bool    `json:"phone_verified"`
+		TermsAcceptedVersion *string `json:"terms_accepted_version" maxLength:"64"`
+		TermsRequiredVersion string  `json:"terms_required_version" maxLength:"64"`
 	}
 }
 type profileMoodInput struct {
@@ -425,6 +433,17 @@ type profileImageDeleteOutput struct {
 	Body struct {
 		Image *string `json:"image" format:"uri"`
 		Sync  string  `json:"sync" enum:"complete,pending"`
+	}
+}
+type termsAcceptanceInput struct {
+	Body struct {
+		TermsVersion string `json:"terms_version" minLength:"1" maxLength:"64"`
+	}
+}
+type termsAcceptanceOutput struct {
+	Body struct {
+		TermsAcceptedVersion string `json:"terms_accepted_version" maxLength:"64"`
+		TermsRequiredVersion string `json:"terms_required_version" maxLength:"64"`
 	}
 }
 type accountDeleteInput struct {
@@ -790,7 +809,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.13.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.14.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -804,10 +823,10 @@ func newDocument() (*DocumentModel, error) {
 
 	public := []map[string][]string{{}}
 	bearer := []map[string][]string{{"bearerAuth": {}}}
-	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username is optional and unique when supplied; signup returns device-bound tokens.", 201, public))
+	register[signupInput, signupOutput](api, operation(http.MethodPost, "/v1/auth/signup", "signUp", "Auth", "Create an account. Username is optional and unique when supplied; terms_version is optional during rollout and signup returns current/accepted terms versions.", 201, public))
 	register[usernameInput, usernameOutput](api, operation(http.MethodPost, "/v1/auth/verify-username", "verifyUsername", "Auth", "Check whether a username is available.", 200, public))
 	register[struct{}, usernameAvailabilityWSOutput](api, operation(http.MethodGet, "/v1/auth/username/availability", "usernameAvailabilityWebSocket", "Auth", "Upgrade to a WebSocket and send check_username JSON frames for availability results.", 101, public))
-	loginOperation := operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username, email, or ping_id plus a password of 6 to 256 characters. Email login is allowed only after the email contact is OTP-verified; email is optional at signup. Five incorrect passwords for an account or peer IP trigger a 15-minute lockout; 429 responses include retry_after_seconds.", 200, public)
+	loginOperation := operation(http.MethodPost, "/v1/auth/login", "passwordLogin", "Auth", "Create a device session using exactly one of username, email, or ping_id plus a password of 6 to 256 characters. The response includes terms_accepted_version and terms_required_version. Email login is allowed only after the email contact is OTP-verified; email is optional at signup. Five incorrect passwords for an account or peer IP trigger a 15-minute lockout; 429 responses include retry_after_seconds.", 200, public)
 	register[passwordLoginInput, passwordLoginOutput](api, loginOperation)
 	register[loginStartInput, loginStartOutput](api, operation(http.MethodPost, "/v1/auth/login/start", "startLogin", "Auth", "Start passwordless email login.", 202, public))
 	register[loginVerifyInput, loginVerifyOutput](api, operation(http.MethodPost, "/v1/auth/login/verify", "verifyLogin", "Auth", "Verify a passwordless login code and create a session.", 200, public))
@@ -837,7 +856,7 @@ func newDocument() (*DocumentModel, error) {
 	register[registerDeviceKeyInput, registerDeviceKeyOutput](api, operation(http.MethodPost, "/v1/openim/device-key", "registerOpenIMDeviceKey", "OpenIM", "Register or rotate this device's P-256 public key. Private keys remain on the device.", 200, bearer))
 	register[struct{}, openIMChallengeOutput](api, operation(http.MethodPost, "/v1/openim/token/challenge", "createOpenIMTokenChallenge", "OpenIM", "Create a session-bound device-proof challenge.", 201, bearer))
 	register[issueOpenIMTokenInput, issueOpenIMTokenOutput](api, operation(http.MethodPost, "/v1/openim/token/issue", "issueOpenIMToken", "OpenIM", "Verify the signed device proof and issue an OpenIM token for this device.", 200, bearer))
-	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile, optional persistent mood, and email/phone contact verification state.", 200, bearer))
+	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile, optional persistent mood, email/phone contact verification state, and accepted/current terms versions.", 200, bearer))
 	register[profileMoodInput, profileMoodOutput](api, operation(http.MethodPut, "/v1/profile/mood", "updateProfileMood", "Profile", "Set a persistent profile mood of up to 100 characters, or pass null to clear it.", 200, bearer))
 	register[struct{}, profileImageDeleteOutput](api, operation(http.MethodDelete, "/v1/profile/image", "deleteProfileImage", "Profile", "Remove the authenticated user's profile image and clear its OpenIM faceURL.", 200, bearer))
 	register[usernameInput, usernameUpdateOutput](api, operation(http.MethodPatch, "/v1/profile/username", "updateUsername", "Profile", "Set or change the optional unique username.", 200, bearer))
@@ -942,6 +961,9 @@ func newDocument() (*DocumentModel, error) {
 	register[struct{}, blocksOutput](api, operation(http.MethodGet, "/v1/blocks", "listBlocks", "Blocks", "List only users blocked by the authenticated user; OpenIM is the source of truth.", 200, bearer))
 	register[blockInput, blockCreatedOutput](api, operation(http.MethodPost, "/v1/blocks", "addBlock", "Blocks", "Block a user by PingID and synchronize the OpenIM blacklist.", 201, bearer))
 	register[blockPathInput, emptyOutput](api, operation(http.MethodDelete, "/v1/blocks/{pingID}", "removeBlock", "Blocks", "Unblock a user by PingID and synchronize the OpenIM blacklist.", 204, bearer))
+	acceptTerms := operation(http.MethodPost, "/v1/account/terms", "acceptTerms", "Account", "Record acceptance of the currently required Terms of Use version for the authenticated account. This remains available when other actions are gated.", 200, bearer)
+	acceptTerms.Errors = append(acceptTerms.Errors, http.StatusConflict)
+	register[termsAcceptanceInput, termsAcceptanceOutput](api, acceptTerms)
 	register[accountDeleteInput, accountDeleteOutput](api, operation(http.MethodPost, "/v1/account/delete", "deleteAccount", "Account", "Soft-delete the account after password confirmation and accept_terms=true. Sessions are revoked and the account cannot log in again; application, OpenIM, media, and payment data are retained for audit/retention. PingID, username, and linked contact identifiers remain reserved and cannot be reused.", 200, bearer))
 	register[paymentCreateInput, paymentCreateOutput](api, operation(http.MethodPost, "/v1/conversations/{conversationID}/payments", "createPayment", "Payments", "Create an idempotent payment ledger record for a conversation.", 201, bearer))
 	register[paymentListInput, paymentListOutput](api, operation(http.MethodGet, "/v1/conversations/{conversationID}/payments", "listPayments", "Payments", "List visible payments newest-first. Use to=latest or a payment ID as the inclusive anchor, then last_known_payment_id and/or last_block_id as exclusive cursors; next_to and next_block_id continue the page.", 200, bearer))
@@ -1032,6 +1054,20 @@ func newDocument() (*DocumentModel, error) {
 			ids.Nullable = false
 			maxLength := 128
 			ids.Items.MaxLength = &maxLength
+		}
+	}
+	for path, item := range document.Paths {
+		if !(strings.HasPrefix(path, "/v1/stories") || strings.HasPrefix(path, "/v1/friends") || path == "/v1/contacts/discovered" || path == "/v1/openim/token/issue") {
+			continue
+		}
+		for _, op := range []*huma.Operation{item.Get, item.Put, item.Post, item.Delete, item.Patch, item.Options, item.Head, item.Trace} {
+			if op == nil {
+				continue
+			}
+			op.Responses["403"] = &huma.Response{
+				Description: "Forbidden; the current Terms of Use version has not been accepted.",
+				Content:     map[string]*huma.MediaType{"application/json": {Schema: &huma.Schema{Type: "object", Required: []string{"error"}, Properties: map[string]*huma.Schema{"error": {Type: "string", Enum: []any{"terms_not_accepted"}}}}}},
+			}
 		}
 	}
 	return document, nil

@@ -264,6 +264,7 @@ jobs:
           # the service account's IRSA role.
           kubectl -n "$KUBE_NAMESPACE" set env "deployment/$DEPLOYMENT_NAME" \
             DOCUMENT_S3_BUCKET=pingmessenger-message-documents-production \
+            TERMS_REQUIRED_VERSION=2026-11-10 \
             DOCUMENT_MAX_BYTES=104857600 \
             DOCUMENT_MAX_COUNT=20 \
             DOCUMENT_MAX_BYTES_24H=1073741824 \
@@ -300,7 +301,7 @@ jobs:
           done
           curl --fail --silent --show-error http://127.0.0.1:18080/healthz >/dev/null
           curl --fail --silent --show-error http://127.0.0.1:18080/openapi.json >"$RUNNER_TEMP/openapi.json"
-          jq -e '.openapi and .info.version and .paths["/v1/mfa/contacts"]' "$RUNNER_TEMP/openapi.json" >/dev/null
+          jq -e '.openapi and .info.version and .paths["/v1/mfa/contacts"] and .paths["/v1/account/terms"].post and .paths["/v1/openim/token/issue"].post.responses["403"]' "$RUNNER_TEMP/openapi.json" >/dev/null
 
           # A missing object alias is surfaced by the SDK as its generic 10005
           # error. This endpoint must reach OpenIM and return its normal

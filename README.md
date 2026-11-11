@@ -25,11 +25,26 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.13.0`. Story uploads accept image/video MIME
+The current contract version is `0.14.0`. Story uploads accept image/video MIME
 types up to 10 MiB and are capped at 10 active stories per user; deleted or
 expired media is removed from S3 with retryable cleanup. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
 SES delivery with a test mirror, password recovery, and OpenIM interoperability.
+
+## Terms of Use acceptance
+
+`POST /v1/auth/signup` accepts an optional `terms_version` and stores the
+account-level acceptance version and server timestamp. Signed-in clients record
+acceptance of the current version with `POST /v1/account/terms` and
+`{"terms_version":"2026-11-10"}`. Login and `GET /v1/profile/` expose
+`terms_accepted_version` and `terms_required_version`; an unaccepted version is
+returned as null. `TERMS_REQUIRED_VERSION` controls the current version and is
+set to `2026-11-10` in production.
+
+Until the account accepts the current version, chat token issuance, story APIs,
+and friend/contact-discovery APIs return HTTP 403 with
+`{"error":"terms_not_accepted"}`. Profile, terms acceptance, logout, password
+change, and account deletion remain available.
 
 ## Account authentication
 

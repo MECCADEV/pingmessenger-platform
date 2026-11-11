@@ -138,6 +138,9 @@ func (a *API) issueOpenIMToken(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !a.requireCurrentTerms(ctx, userID) {
+		return
+	}
 	var req deviceProofRequest
 	if err := a.DecodeAndValidate(ctx, &req); err != nil {
 		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})

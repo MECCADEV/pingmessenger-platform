@@ -99,6 +99,9 @@ func TestCreateStoryHTTPIdempotencyConcurrentReplay(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO users(id,username,password_hash,openim_user_id,status) VALUES ($1,$2,'test',$3,'active')`, ownerID, username, "openim-"+ownerID); err != nil {
 		t.Fatalf("insert test user: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE users SET terms_accepted_version='2026-11-10',terms_accepted_at=now() WHERE id=$1`, ownerID); err != nil {
+		t.Fatalf("accept terms for story test user: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO device_sessions(id,user_id,refresh_token_hash,platform_id,expires_at) VALUES ($1,$2,$3,'test',now()+interval '1 hour')`, sessionID, ownerID, uuid.NewString()); err != nil {
 		t.Fatalf("insert test session: %v", err)
 	}
@@ -110,11 +113,12 @@ func TestCreateStoryHTTPIdempotencyConcurrentReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := &API{
-		openIM:  storyIdempotencyOpenIM{},
-		users:   auth.NewUserRepository(pool),
-		tokens:  tokens,
-		stories: stories.NewRepository(pool),
-		limiter: ratelimit.NewLocal(),
+		termsRequiredVersion: defaultTermsRequiredVersion,
+		openIM:               storyIdempotencyOpenIM{},
+		users:                auth.NewUserRepository(pool),
+		tokens:               tokens,
+		stories:              stories.NewRepository(pool),
+		limiter:              ratelimit.NewLocal(),
 	}
 
 	const requests = 6
@@ -207,6 +211,9 @@ func TestCreateMediaStoryHTTPIdempotencyConcurrentReplayCleansLosingUploads(t *t
 	if _, err := pool.Exec(ctx, `INSERT INTO users(id,username,password_hash,openim_user_id,status) VALUES ($1,$2,'test',$3,'active')`, ownerID, username, "openim-"+ownerID); err != nil {
 		t.Fatalf("insert test user: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `UPDATE users SET terms_accepted_version='2026-11-10',terms_accepted_at=now() WHERE id=$1`, ownerID); err != nil {
+		t.Fatalf("accept terms for story test user: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO device_sessions(id,user_id,refresh_token_hash,platform_id,expires_at) VALUES ($1,$2,$3,'test',now()+interval '1 hour')`, sessionID, ownerID, uuid.NewString()); err != nil {
 		t.Fatalf("insert test session: %v", err)
 	}
@@ -219,12 +226,13 @@ func TestCreateMediaStoryHTTPIdempotencyConcurrentReplayCleansLosingUploads(t *t
 	}
 	objects := &idempotencyTestObjectStore{objects: make(map[string][]byte)}
 	api := &API{
-		openIM:  storyIdempotencyOpenIM{},
-		users:   auth.NewUserRepository(pool),
-		tokens:  tokens,
-		stories: stories.NewRepository(pool),
-		objects: objects,
-		limiter: ratelimit.NewLocal(),
+		termsRequiredVersion: defaultTermsRequiredVersion,
+		openIM:               storyIdempotencyOpenIM{},
+		users:                auth.NewUserRepository(pool),
+		tokens:               tokens,
+		stories:              stories.NewRepository(pool),
+		objects:              objects,
+		limiter:              ratelimit.NewLocal(),
 	}
 
 	const requests = 6
@@ -336,6 +344,9 @@ func TestViewStoryHTTPIdempotencyReplayConflictAndGone(t *testing.T) {
 	if _, err = pool.Exec(ctx, `INSERT INTO users(id,username,password_hash,openim_user_id,status) VALUES ($1,$2,'test',$3,'active')`, ownerID, username, "openim-"+ownerID); err != nil {
 		t.Fatalf("insert test user: %v", err)
 	}
+	if _, err = pool.Exec(ctx, `UPDATE users SET terms_accepted_version='2026-11-10',terms_accepted_at=now() WHERE id=$1`, ownerID); err != nil {
+		t.Fatalf("accept terms for story test user: %v", err)
+	}
 	if _, err = pool.Exec(ctx, `INSERT INTO device_sessions(id,user_id,refresh_token_hash,platform_id,expires_at) VALUES ($1,$2,$3,'test',now()+interval '1 hour')`, sessionID, ownerID, uuid.NewString()); err != nil {
 		t.Fatalf("insert test session: %v", err)
 	}
@@ -355,11 +366,12 @@ func TestViewStoryHTTPIdempotencyReplayConflictAndGone(t *testing.T) {
 		t.Fatalf("create target story=%v created=%v err=%v", story, created, err)
 	}
 	api := &API{
-		openIM:  storyIdempotencyOpenIM{},
-		users:   auth.NewUserRepository(pool),
-		tokens:  tokens,
-		stories: stories.NewRepository(pool),
-		limiter: ratelimit.NewLocal(),
+		termsRequiredVersion: defaultTermsRequiredVersion,
+		openIM:               storyIdempotencyOpenIM{},
+		users:                auth.NewUserRepository(pool),
+		tokens:               tokens,
+		stories:              stories.NewRepository(pool),
+		limiter:              ratelimit.NewLocal(),
 	}
 	request := func(key, reaction string) *fasthttp.RequestCtx {
 		var requestCtx fasthttp.RequestCtx

@@ -13,13 +13,13 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if doc.OpenAPI != "3.1.0" {
 		t.Fatalf("OpenAPI version = %q", doc.OpenAPI)
 	}
-	if doc.Info.Version != "0.13.0" {
+	if doc.Info.Version != "0.14.0" {
 		t.Fatalf("API version = %q", doc.Info.Version)
 	}
 	for _, path := range []string{
 		"/v1/auth/signup", "/v1/auth/verify-username", "/v1/auth/login", "/v1/auth/login/start", "/v1/auth/login/verify", "/v1/auth/refresh",
 		"/v1/mfa/challenge", "/v1/mfa/verify", "/v1/security/backup-codes", "/v1/security/backup-codes/regenerate",
-		"/v1/mfa/contacts",
+		"/v1/mfa/contacts", "/v1/account/terms",
 		"/v1/auth/password/recovery/options", "/v1/auth/password/recovery/start", "/v1/auth/password/recovery/verify", "/v1/auth/password/recovery/complete",
 		"/v1/security/activity", "/v1/security/revoke", "/v1/profile/", "/v1/profile/mood", "/v1/profile/update", "/v1/profile/image", "/v1/friends", "/v1/friends/discover-network", "/v1/friends/search", "/v1/contacts/discovered", "/v1/blocks", "/v1/blocks/{pingID}", "/v1/account/delete",
 		"/v1/reports", "/v1/admin/reports", "/v1/admin/reports/{reportID}",
@@ -277,6 +277,12 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	}
 	if !keyHeader {
 		t.Fatal("document upload must expose Idempotency-Key as a request header")
+	}
+	if doc.Paths["/v1/account/terms"].Post == nil {
+		t.Fatal("terms acceptance endpoint is missing")
+	}
+	if doc.Paths["/v1/openim/token/issue"].Post.Responses["403"] == nil || doc.Paths["/v1/stories"].Post.Responses["403"] == nil || doc.Paths["/v1/friends/search"].Post.Responses["403"] == nil {
+		t.Fatal("terms enforcement responses are missing from OpenAPI")
 	}
 	if doc.Paths["/openapi.json"] != nil || doc.Paths["/docs"] != nil {
 		t.Fatal("schema-only generation must not add Huma HTTP routes")

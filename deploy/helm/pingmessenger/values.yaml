@@ -67,3 +67,6 @@ chain:
   # asynchronous chain observation while payment intents remain available.
   solanaRPCURL: ""
   solanaRPCTimeout: 10s
+
+terms:
+  requiredVersion: "2026-11-10"

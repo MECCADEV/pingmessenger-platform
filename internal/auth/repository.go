@@ -20,6 +20,7 @@ type CreateUserParams struct {
 	Username, PasswordHash, OpenIMUserID string
 	Nickname                             string
 	ContactKind, ContactValue            *string
+	TermsAcceptedVersion                 *string
 }
 
 type CreatedUser struct {
@@ -899,22 +900,40 @@ type Profile struct {
 	Image                        *string
 	Email, Phone                 *string
 	EmailVerified, PhoneVerified bool
+	TermsAcceptedVersion         *string
 }
 
 func (r *UserRepository) Profile(ctx context.Context, userID string) (*Profile, error) {
 	p := new(Profile)
-	err := r.pool.QueryRow(ctx, `SELECT COALESCE(u.username,''),u.ping_id,u.nickname,u.mood,
+	err := r.pool.QueryRow(ctx, `SELECT COALESCE(u.username,''),u.ping_id,u.nickname,u.mood,u.terms_accepted_version,
 		email.value_normalized,email.verified_at IS NOT NULL,phone.value_normalized,phone.verified_at IS NOT NULL, (
 		SELECT public_path FROM profile_assets
 		WHERE user_id=u.id AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1
 	) FROM users u
 	LEFT JOIN LATERAL (SELECT value_normalized,verified_at FROM user_contacts WHERE user_id=u.id AND kind='email' ORDER BY is_primary DESC,created_at LIMIT 1) email ON true
 	LEFT JOIN LATERAL (SELECT value_normalized,verified_at FROM user_contacts WHERE user_id=u.id AND kind='phone' ORDER BY is_primary DESC,created_at LIMIT 1) phone ON true
-	WHERE u.id=$1 AND u.deleted_at IS NULL`, userID).Scan(&p.Username, &p.PingID, &p.Nickname, &p.Mood, &p.Email, &p.EmailVerified, &p.Phone, &p.PhoneVerified, &p.Image)
+	WHERE u.id=$1 AND u.deleted_at IS NULL`, userID).Scan(&p.Username, &p.PingID, &p.Nickname, &p.Mood, &p.TermsAcceptedVersion, &p.Email, &p.EmailVerified, &p.Phone, &p.PhoneVerified, &p.Image)
 	if err != nil {
 		return nil, err
 	}
 	return p, nil
+}
+
+func (r *UserRepository) TermsAcceptance(ctx context.Context, userID string) (*string, error) {
+	var version *string
+	err := r.pool.QueryRow(ctx, `SELECT terms_accepted_version FROM users WHERE id=$1 AND status='active' AND deleted_at IS NULL`, userID).Scan(&version)
+	return version, err
+}
+
+func (r *UserRepository) AcceptTerms(ctx context.Context, userID, version string) error {
+	result, err := r.pool.Exec(ctx, `UPDATE users SET terms_accepted_version=$2,terms_accepted_at=now(),updated_at=now() WHERE id=$1 AND status='active' AND deleted_at IS NULL`, userID, version)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("active user not found")
+	}
+	return nil
 }
 
 func (r *UserRepository) SetMood(ctx context.Context, userID string, mood *string) error {
@@ -1151,7 +1170,7 @@ func (r *UserRepository) Create(ctx context.Context, p *CreateUserParams) (*Crea
 			return nil, errors.New("identity already reserved")
 		}
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO users (username, password_hash, nickname, openim_user_id, status) VALUES (NULLIF($1,''), $2, $3, NULLIF($4, ''), 'active') RETURNING id::text,ping_id`, p.Username, p.PasswordHash, p.Nickname, p.OpenIMUserID).Scan(&created.ID, &created.PingID)
+	err = tx.QueryRow(ctx, `INSERT INTO users (username, password_hash, nickname, openim_user_id, status, terms_accepted_version, terms_accepted_at) VALUES (NULLIF($1,''), $2, $3, NULLIF($4, ''), 'active', $5, CASE WHEN $5::text IS NULL THEN NULL ELSE now() END) RETURNING id::text,ping_id`, p.Username, p.PasswordHash, p.Nickname, p.OpenIMUserID, p.TermsAcceptedVersion).Scan(&created.ID, &created.PingID)
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)
 	}

@@ -35,6 +35,9 @@ func (a *API) listFriends(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !a.requireCurrentTerms(ctx, userID) {
+		return
+	}
 	if !a.enforceRate(ctx, "friends-list", userID, friendsListUserLimit, friendsListIPLimit) {
 		return
 	}
@@ -95,6 +98,9 @@ func (a *API) listDiscoveredContacts(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !a.requireCurrentTerms(ctx, userID) {
+		return
+	}
 	ids, err := a.users.DiscoveredOpenIMIDs(context.Background(), userID)
 	if err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered contacts"})
@@ -112,6 +118,9 @@ func (a *API) addDiscoveredContacts(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.requireCurrentTerms(ctx, userID) {
 		return
 	}
 	var req discoveredContactsRequest
@@ -166,6 +175,9 @@ func (a *API) clearDiscoveredContacts(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return
 	}
+	if !a.requireCurrentTerms(ctx, userID) {
+		return
+	}
 	if err := a.users.ClearDiscoveredContacts(context.Background(), userID); err != nil {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not clear discovered contacts"})
 		return
@@ -189,6 +201,9 @@ func (a *API) discoverNetwork(ctx *fasthttp.RequestCtx) {
 	userID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.requireCurrentTerms(ctx, userID) {
 		return
 	}
 	var req discoverRequest
@@ -220,6 +235,9 @@ func (a *API) searchFriends(ctx *fasthttp.RequestCtx) {
 	requesterID, _, ok := a.authenticated(ctx)
 	if !ok {
 		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.requireCurrentTerms(ctx, requesterID) {
 		return
 	}
 	var req friendSearchRequest

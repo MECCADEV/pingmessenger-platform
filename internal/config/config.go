@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	AppEnv                       string
+	TermsRequiredVersion         string
 	HTTPAddr                     string
 	DatabaseURL                  string
 	JWTSigningSecret             string
@@ -80,7 +81,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	c := Config{
-		AppEnv: value("APP_ENV", "development"), HTTPAddr: value("HTTP_ADDR", ":8080"),
+		AppEnv: value("APP_ENV", "development"), TermsRequiredVersion: value("TERMS_REQUIRED_VERSION", "2026-11-10"), HTTPAddr: value("HTTP_ADDR", ":8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"), JWTSigningSecret: os.Getenv("JWT_SIGNING_SECRET"),
 		JWTIssuer: value("JWT_ISSUER", "pingmessenger"), AccessTokenTTL: accessTTL, RefreshTokenTTL: refreshTTL,
 		S3PublicBaseURL: os.Getenv("S3_PUBLIC_BASE_URL"), OpenIMAPIBaseURL: os.Getenv("OPENIM_API_BASE_URL"), OpenIMConversationGRPCTarget: os.Getenv("OPENIM_CONVERSATION_GRPC_TARGET"),
