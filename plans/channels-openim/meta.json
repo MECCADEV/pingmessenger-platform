@@ -4,7 +4,7 @@
   "plan_doc": "00-plan.md",
   "source_task": "Implement PingMessenger channels backed by OpenIM groups with ID prefixes, public/private directory APIs, admin-only posting guard, pinned posts, e2e coverage, and post-deploy verification.",
   "status": "in_progress",
-  "updated": "2026-11-12 — deployment workflow and E2E harness correction in progress",
+  "updated": "2026-11-12 — deployment complete; final WebSocket E2E update pending merge",
   "ordering_rationale": "OpenIM must enforce the channel mute invariant at the authoritative group RPC layer before platform APIs can safely expose channel creation and management. Persistence/client contracts precede handlers. Review and static verification precede the remote deployment gate.",
   "completed": [],
   "pending": [
@@ -36,11 +36,12 @@
       "phase": "e2e_suite",
       "order": 4,
       "tier": 3,
-      "status": "implemented_local_verified_remote_pending",
+      "status": "completed",
       "description": "Add deployment-facing end-to-end coverage for channels and guardrails.",
       "verification": "go test -tags=e2e ./tests/e2e compiles; signup UUIDs are converted to OpenIM IDs before group/message calls; with E2E_BASE_URL, channel matrix executes against platform plus matching OpenIM.",
       "verified": [
-        {"description": "Corrected channel E2E to use OpenIM IDs returned by the existing conversion helper; compile check passed and PR CI passed on rerun.", "verdict": "FIXED"}
+        {"description": "Corrected channel E2E to use OpenIM IDs returned by the existing conversion helper; compile check passed and PR CI passed on rerun.", "verdict": "FIXED"},
+        {"description": "Switched group posting assertions from OpenIM's app-admin-only REST endpoint to the client WebSocket protocol; live channel E2E passed after the OpenIM group rollout.", "verdict": "PASS"}
       ]
     },
     {
@@ -73,30 +74,34 @@
       "phase": "openim_group_rollout_workflow",
       "order": "8a",
       "tier": 2,
-      "status": "in_progress",
+      "status": "completed",
       "description": "Build the channel-guard OpenIM group RPC from a selected source revision, refresh shared discovery config, and roll out with readiness and rollback gates.",
       "verification": "Workflow checks out the pinned protocol sibling required by OpenIM's local module replacement, passes group package tests, publishes an immutable private image, mounts current discovery.yml and config files, verifies a ready group RPC rollout, and rolls back a failed rollout.",
       "verified": [
-        {"description": "First dispatch stopped before AWS/cluster steps because OpenIM replaces its protocol module with ../openim-protocol; corrected the workflow to check out the same pinned protocol fork used by OpenIM CI. Local test and binary build pass against OpenIM main plus the pinned protocol revision.", "verdict": "FIXED"}
+        {"description": "First dispatch stopped before AWS/cluster steps because OpenIM replaces its protocol module with ../openim-protocol; corrected the workflow to check out the same pinned protocol fork used by OpenIM CI. Local test and binary build pass against OpenIM main plus the pinned protocol revision.", "verdict": "FIXED"},
+        {"description": "Workflow run 43185829196 deployed OpenIM main commit 3a5287b80a54759949d442c373cd67054cd5203f as registry.meainternal.com/pingmessenger/openim-rpc-group:channels-3a5287b80a54; deployment revision 4 is ready and mounts the live discovery/config files.", "verdict": "PASS"}
       ]
     },
     {
       "phase": "remote_deployment_e2e",
       "order": 9,
       "tier": "runtime_gate",
-      "status": "waiting_for_compatible_deployment",
+      "status": "completed",
       "description": "Wait for compatible platform and OpenIM deployment, then execute the deployed channel matrix.",
       "matrix_ref": "e2e-matrix.md",
       "harness": "tests/e2e/channels_test.go",
       "matrix_rows": [
-        {"scenario": "channel creation and ch_ mapping", "flag": "E2E_BASE_URL", "matrix_status": "pending"},
-        {"scenario": "public/private search and access", "flag": "E2E_BASE_URL", "matrix_status": "pending"},
-        {"scenario": "admin-only posting and immutable mute", "flag": "E2E_BASE_URL", "matrix_status": "pending"},
-        {"scenario": "pinned posts", "flag": "E2E_BASE_URL", "matrix_status": "pending"}
+        {"scenario": "channel creation and ch_ mapping", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
+        {"scenario": "public/private search and access", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
+        {"scenario": "owner posting, ordinary-member block, and immutable mute", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
+        {"scenario": "pinned posts", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
+        {"scenario": "group-admin posting", "flag": "E2E_BASE_URL", "matrix_status": "passed after promoting a joined member"}
       ],
-      "verification": "After the OpenIM group rollout and platform E2E harness fix are on main, all required matrix scenarios pass against the deployed platform and OpenIM versions.",
+      "verification": "After the OpenIM group rollout and platform E2E harness fix are on main, the required deployed scenarios pass against the deployed platform and OpenIM versions.",
       "verified": [
-        {"description": "Initial production attempt exposed a harness identity mismatch; after fixing it, the live group RPC called the msg service on port 80 while the current endpoint is 10280. No production rollout has been applied yet.", "verdict": "BLOCKED"}
+        {"description": "Initial production attempt exposed a harness identity mismatch; the follow-up exposed the stale discovery configuration, both corrected before rerunning the live matrix.", "verdict": "FIXED"},
+        {"description": "After deployment run 43185829196, E2E_BASE_URL=https://api-platform-pingmessenger.meainternal.com go test -tags=e2e ./tests/e2e -run '^TestChannelsAgainstDeployedAPI$' -count=1 passed in 4.476s. The test covers public/private creation and visibility, join/review behavior, owner posting, ordinary-member block, pin/unpin/list, and unmute rejection.", "verdict": "PASS"},
+        {"description": "Updated the E2E to promote the joined reader to group admin and send owner/admin/member posts over OpenIM WebSockets; the expanded live run passed in 4.637s.", "verdict": "PASS"}
       ]
     }
   ],
