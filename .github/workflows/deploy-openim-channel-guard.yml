@@ -1,0 +1,187 @@
+name: Deploy OpenIM channel guard
+
+on:
+  workflow_dispatch:
+    inputs:
+      openim_ref:
+        description: OpenIM commit, branch, or tag to build (the resolved commit is recorded)
+        required: true
+        default: main
+        type: string
+      image_tag:
+        description: Optional private registry image tag
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openim-channel-guard-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and roll out OpenIM group RPC
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 35
+    steps:
+      - name: Check out OpenIM source
+        uses: actions/checkout@v4
+        with:
+          repository: MECCADEV/open-im-server
+          ref: ${{ inputs.openim_ref }}
+          path: openim-server
+          fetch-depth: 1
+
+      - name: Resolve OpenIM source revision
+        id: source
+        shell: bash
+        working-directory: openim-server
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: openim-server/go.mod
+          cache: true
+          cache-dependency-path: openim-server/go.sum
+
+      - name: Test group RPC
+        working-directory: openim-server
+        run: go test ./internal/rpc/group
+
+      - name: Fetch deployment credentials from Vault
+        id: vault
+        uses: hashicorp/vault-action@v3
+        with:
+          url: https://vault.meainternal.com
+          token: ${{ secrets.VAULT_TOKEN }}
+          secrets: |
+            secret/data/pingmessenger/platform/deploy REGISTRY_USER       | REGISTRY_USER ;
+            secret/data/pingmessenger/platform/deploy REGISTRY_PASSWORD    | REGISTRY_PASSWORD ;
+            secret/data/pingmessenger/platform/deploy AWS_ACCESS_KEY_ID    | AWS_ACCESS_KEY_ID ;
+            secret/data/pingmessenger/platform/deploy AWS_SECRET_ACCESS_KEY | AWS_SECRET_ACCESS_KEY ;
+            secret/data/pingmessenger/platform/deploy AWS_REGION           | AWS_REGION ;
+            secret/data/pingmessenger/platform/deploy EKS_CLUSTER          | EKS_CLUSTER ;
+
+      - name: Resolve immutable image tag
+        id: image
+        env:
+          REQUESTED_TAG: ${{ inputs.image_tag }}
+          OPENIM_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_TAG:-channels-${OPENIM_SHA::12}}"
+          if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "image tag contains unsupported characters" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image=registry.meainternal.com/pingmessenger/openim-rpc-group:$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the private registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.meainternal.com
+          username: ${{ steps.vault.outputs.REGISTRY_USER }}
+          password: ${{ steps.vault.outputs.REGISTRY_PASSWORD }}
+
+      - name: Build and push group RPC image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          OPENIM_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --file openim-server/build/images/openim-rpc-group/Dockerfile.local \
+            --build-arg OPENIM_API_IMAGE=registry.meainternal.com/pingmessenger/openim-api:20260930-1 \
+            --tag "$IMAGE" \
+            --label "org.opencontainers.image.revision=$OPENIM_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/MECCADEV/open-im-server" \
+            --push openim-server
+          docker buildx imagetools inspect "$IMAGE"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ steps.vault.outputs.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ steps.vault.outputs.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ steps.vault.outputs.AWS_REGION }}
+
+      - name: Write isolated kubeconfig
+        env:
+          AWS_REGION: ${{ steps.vault.outputs.AWS_REGION }}
+          EKS_CLUSTER: ${{ steps.vault.outputs.EKS_CLUSTER }}
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig \
+            --name "$EKS_CLUSTER" \
+            --region "$AWS_REGION" \
+            --kubeconfig "$RUNNER_TEMP/kubeconfig"
+          chmod 600 "$RUNNER_TEMP/kubeconfig"
+
+      - name: Roll out OpenIM group RPC with current discovery config
+        id: rollout
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          IMAGE: ${{ steps.image.outputs.image }}
+          OPENIM_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          deployment=openimserver-openim-rpc-group
+          namespace=openim
+          kubectl -n "$namespace" get deployment "$deployment" >/dev/null
+          old_image=$(kubectl -n "$namespace" get deployment "$deployment" \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="openim-rpc-group")].image}')
+          test -n "$old_image"
+          echo "old_image=$old_image" >> "$GITHUB_OUTPUT"
+
+          kubectl -n "$namespace" patch deployment "$deployment" --type=strategic --patch \
+            '{"spec":{"template":{"spec":{"containers":[{"name":"openim-rpc-group","env":[{"name":"CONFIG_PATH","value":"/openim/openim-server/config"}],"volumeMounts":[{"name":"config","mountPath":"/openim/openim-server/config/discovery.yml","subPath":"discovery.yml","readOnly":true},{"name":"config","mountPath":"/openim/openim-server/config/mongodb.yml","subPath":"mongodb.yml","readOnly":true},{"name":"config","mountPath":"/openim/openim-server/config/redis.yml","subPath":"redis.yml","readOnly":true},{"name":"config","mountPath":"/openim/openim-server/config/share.yml","subPath":"share.yml","readOnly":true}],"readinessProbe":{"tcpSocket":{"port":80},"initialDelaySeconds":5,"periodSeconds":5,"failureThreshold":12}}]}}}}'
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          kubectl -n "$namespace" set image "deployment/$deployment" \
+            "openim-rpc-group=$IMAGE"
+          kubectl -n "$namespace" annotate deployment "$deployment" \
+            "pingmessenger.dev/openim-source-sha=$OPENIM_SHA" \
+            "pingmessenger.dev/deployed-image=$IMAGE" \
+            --overwrite
+          kubectl -n "$namespace" rollout status "deployment/$deployment" --timeout=10m
+          test "$(kubectl -n "$namespace" get deployment "$deployment" \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="openim-rpc-group")].image}')" = "$IMAGE"
+          ready=$(kubectl -n "$namespace" get deployment "$deployment" \
+            -o jsonpath='{.status.readyReplicas}')
+          test "${ready:-0}" -ge 1
+          echo "rolled_out=true" >> "$GITHUB_OUTPUT"
+
+      - name: Roll back failed group RPC rollout
+        if: ${{ failure() && steps.rollout.outputs.changed == 'true' && steps.rollout.outputs.rolled_out != 'true' }}
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          set -euo pipefail
+          kubectl -n openim rollout undo deployment/openimserver-openim-rpc-group
+          kubectl -n openim rollout status deployment/openimserver-openim-rpc-group --timeout=10m
+
+      - name: Deployment summary
+        if: always()
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          OPENIM_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          {
+            echo "### OpenIM channel guard deployment"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Image | \`$IMAGE\` |"
+            echo "| OpenIM source commit | \`$OPENIM_SHA\` |"
+            echo "| Deployment | \`openim/openimserver-openim-rpc-group\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
