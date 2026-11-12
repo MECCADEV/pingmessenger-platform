@@ -35,6 +35,14 @@ jobs:
           path: openim-server
           fetch-depth: 1
 
+      - name: Check out the OpenIM protocol fork
+        uses: actions/checkout@v4
+        with:
+          repository: MECCADEV/protocol
+          ref: 1bf4e77f4476661dd503f901fd0f65d66d66fa70
+          path: openim-protocol
+          fetch-depth: 1
+
       - name: Resolve OpenIM source revision
         id: source
         shell: bash
@@ -85,6 +93,22 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Build the group RPC binary
+        working-directory: openim-server
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../openim-rpc-group ./cmd/openim-rpc/openim-rpc-group
+
+      - name: Prepare the production group image recipe
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/Dockerfile.openim-rpc-group" <<'EOF'
+          FROM registry.meainternal.com/pingmessenger/openim-api:20260930-1
+          WORKDIR /openim/openim-server
+          COPY openim-rpc-group /openim/openim-server/bin/openim-rpc-group
+          COPY openim-server/build/images/openim-rpc-group/openim-rpc-group.local.yml /openim/openim-server/config/openim-rpc-group.yml
+          COPY openim-server/build/images/openim-rpc-user/mongodb.local.yml /openim/openim-server/config/mongodb.yml
+          ENTRYPOINT ["./bin/openim-rpc-group"]
+          EOF
+
       - name: Log in to the private registry
         uses: docker/login-action@v3
         with:
@@ -100,12 +124,11 @@ jobs:
           set -euo pipefail
           docker buildx build \
             --platform linux/amd64 \
-            --file openim-server/build/images/openim-rpc-group/Dockerfile.local \
-            --build-arg OPENIM_API_IMAGE=registry.meainternal.com/pingmessenger/openim-api:20260930-1 \
+            --file "$RUNNER_TEMP/Dockerfile.openim-rpc-group" \
             --tag "$IMAGE" \
             --label "org.opencontainers.image.revision=$OPENIM_SHA" \
             --label "org.opencontainers.image.source=https://github.com/MECCADEV/open-im-server" \
-            --push openim-server
+            --push .
           docker buildx imagetools inspect "$IMAGE"
 
       - name: Configure AWS credentials

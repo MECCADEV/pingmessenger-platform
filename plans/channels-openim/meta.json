@@ -75,7 +75,10 @@
       "tier": 2,
       "status": "in_progress",
       "description": "Build the channel-guard OpenIM group RPC from a selected source revision, refresh shared discovery config, and roll out with readiness and rollback gates.",
-      "verification": "Workflow passes group package tests, publishes an immutable private image, mounts current discovery.yml and config files, verifies a ready group RPC rollout, and rolls back a failed rollout."
+      "verification": "Workflow checks out the pinned protocol sibling required by OpenIM's local module replacement, passes group package tests, publishes an immutable private image, mounts current discovery.yml and config files, verifies a ready group RPC rollout, and rolls back a failed rollout.",
+      "verified": [
+        {"description": "First dispatch stopped before AWS/cluster steps because OpenIM replaces its protocol module with ../openim-protocol; corrected the workflow to check out the same pinned protocol fork used by OpenIM CI. Local test and binary build pass against OpenIM main plus the pinned protocol revision.", "verdict": "FIXED"}
+      ]
     },
     {
       "phase": "remote_deployment_e2e",
