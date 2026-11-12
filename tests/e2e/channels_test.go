@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fasthttp/websocket"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 func TestChannelsAgainstDeployedAPI(t *testing.T) {
@@ -78,12 +81,52 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	readerToken := issueDeviceOpenIMTokenForE2E(t, client, base, reader["access_token"].(string))
 	readerID := openIMUserID(t, reader)
 	postOpenIMJSON(t, client, base, "/group/join_group", readerToken, fmt.Sprintf(`{"groupID":%q,"reqMessage":"","joinSource":1,"inviterUserID":%q}`, publicGroupID, readerID))
-	ordinaryPost := postOpenIMExpectError(t, client, base, "/msg/send_msg", readerToken, fmt.Sprintf(`{"sendID":%q,"groupID":%q,"sessionType":3,"contentType":101,"content":{"content":"member post must be blocked"}}`, readerID, publicGroupID))
+	// The app's OpenIM REST send endpoint is intentionally app-admin-only. Use
+	// the client WebSocket protocol so the group RPC evaluates member roles and
+	// channel mute status as it does for real Flutter/JS clients.
+	readerSocket := dialOpenIMClient(t, base, readerToken, readerID)
+	defer readerSocket.Close()
+	readerFrame, err := encodeChannelMessageFrame(readerToken, readerID, publicGroupID, "member post must be blocked")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = readerSocket.WriteMessage(websocket.BinaryMessage, readerFrame); err != nil {
+		t.Fatalf("send ordinary channel member message: %v", err)
+	}
+	ordinaryPost := readOpenIMSendResponse(t, readerSocket)
 	if ordinaryPost["errCode"] == float64(0) {
-		t.Fatalf("ordinary channel member could post: %#v", ordinaryPost)
+		t.Fatalf("ordinary channel member message was not rejected by the group mute: %#v", ordinaryPost)
+	}
+	readerSocket.Close()
+	postOpenIMJSON(t, client, base, "/group/set_group_member_info", openIMToken,
+		fmt.Sprintf(`{"members":[{"groupID":%q,"userID":%q,"roleLevel":60}]}`, publicGroupID, readerID))
+	adminSocket := dialOpenIMClient(t, base, readerToken, readerID)
+	defer adminSocket.Close()
+	adminFrame, err := encodeChannelMessageFrame(readerToken, readerID, publicGroupID, "admin announcement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = adminSocket.WriteMessage(websocket.BinaryMessage, adminFrame); err != nil {
+		t.Fatalf("send channel admin message: %v", err)
+	}
+	adminPost := readOpenIMSendResponse(t, adminSocket)
+	if adminPost["errCode"] != float64(0) {
+		t.Fatalf("channel admin could not post while the group was muted: %#v", adminPost)
 	}
 	ownerID := openIMUserID(t, owner)
-	postOpenIMJSON(t, client, base, "/msg/send_msg", openIMToken, fmt.Sprintf(`{"sendID":%q,"groupID":%q,"sessionType":3,"contentType":101,"content":{"content":"owner announcement"}}`, ownerID, publicGroupID))
+	ownerSocket := dialOpenIMClient(t, base, openIMToken, ownerID)
+	defer ownerSocket.Close()
+	ownerFrame, err := encodeChannelMessageFrame(openIMToken, ownerID, publicGroupID, "owner announcement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = ownerSocket.WriteMessage(websocket.BinaryMessage, ownerFrame); err != nil {
+		t.Fatalf("send channel owner message: %v", err)
+	}
+	ownerPost := readOpenIMSendResponse(t, ownerSocket)
+	if ownerPost["errCode"] != float64(0) {
+		t.Fatalf("channel owner could not post while the group was muted: %#v", ownerPost)
+	}
 
 	private := create("channel-private-"+ownerName, "private")
 	privateChannel := private["channel"].(map[string]any)
@@ -148,6 +191,49 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	if responseBody["errCode"] == float64(0) {
 		t.Fatalf("private channel owner disabled read-only mode: %#v", responseBody)
 	}
+}
+
+func encodeChannelMessageFrame(token, senderID, groupID, content string) ([]byte, error) {
+	var data []byte
+	appendString := func(number protowire.Number, value string) {
+		data = protowire.AppendTag(data, number, protowire.BytesType)
+		data = protowire.AppendString(data, value)
+	}
+	appendVarint := func(number protowire.Number, value uint64) {
+		data = protowire.AppendTag(data, number, protowire.VarintType)
+		data = protowire.AppendVarint(data, value)
+	}
+	appendString(1, senderID)
+	appendString(3, groupID)
+	appendString(4, fmt.Sprintf("channel-e2e-%d", time.Now().UnixNano()))
+	appendVarint(6, 5)
+	appendVarint(9, 3)
+	appendVarint(10, 100)
+	appendVarint(11, 101)
+	appendString(12, content)
+	appendVarint(15, uint64(time.Now().UnixMilli()))
+	operationID := fmt.Sprintf("e2e-channel-post-%d", time.Now().UnixNano())
+	return json.Marshal(map[string]any{
+		"reqIdentifier": 1003,
+		"token":         token,
+		"sendID":        senderID,
+		"operationID":   operationID,
+		"msgIncr":       senderID + "_" + operationID,
+		"data":          data,
+	})
+}
+
+func readOpenIMSendResponse(t *testing.T, conn *websocket.Conn) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		frame := readOpenIMJSONFrame(t, conn, time.Until(deadline))
+		if frame["reqIdentifier"] == float64(1003) {
+			return frame
+		}
+	}
+	t.Fatal("timed out waiting for OpenIM send response")
+	return nil
 }
 
 func postOpenIMExpectError(t *testing.T, client *http.Client, base, path, token, payload string) map[string]any {
