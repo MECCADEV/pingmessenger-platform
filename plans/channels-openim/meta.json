@@ -3,16 +3,15 @@
   "plan": "channels-openim",
   "plan_doc": "00-plan.md",
   "source_task": "Implement PingMessenger channels backed by OpenIM groups with ID prefixes, public/private directory APIs, admin-only posting guard, pinned posts, e2e coverage, and post-deploy verification.",
-  "status": "in_progress",
-  "updated": "2026-11-12 — deployment complete; final WebSocket E2E update pending merge",
+  "status": "completed",
+  "updated": "2026-11-12 \u2014 deployed channel E2E passed from merged main",
   "ordering_rationale": "OpenIM must enforce the channel mute invariant at the authoritative group RPC layer before platform APIs can safely expose channel creation and management. Persistence/client contracts precede handlers. Review and static verification precede the remote deployment gate.",
-  "completed": [],
-  "pending": [
+  "completed": [
     {
       "phase": "openim_guardrails",
       "order": 1,
       "tier": 1,
-      "status": "complete",
+      "status": "completed",
       "description": "Prefix generated ordinary group IDs, reserve ch_ IDs for trusted creation, create channel groups muted, and make channel unmute impossible.",
       "verification": "Focused OpenIM tests prove ch_ starts muted; owner, group admin, and app admin cannot unmute; ordinary groups retain mute/unmute behavior."
     },
@@ -20,7 +19,7 @@
       "phase": "channel_persistence_and_client",
       "order": 2,
       "tier": 2,
-      "status": "complete",
+      "status": "completed",
       "description": "Add channel/pin tables and repositories; add OpenIM group create/info/member lookup client calls.",
       "verification": "Database-backed tests prove one-to-one group mapping, unique IDs/pins, visibility filters, pagination, and live count/profile decoding."
     },
@@ -28,7 +27,7 @@
       "phase": "channel_http_api",
       "order": 3,
       "tier": 2,
-      "status": "complete",
+      "status": "completed",
       "description": "Expose channel create/search/detail and pin/unpin/list APIs with auth, privacy, and role checks.",
       "verification": "Handler tests cover auth/validation, public/private disclosure, owner/admin permission checks, OpenIM failures, and OpenAPI registration."
     },
@@ -40,15 +39,21 @@
       "description": "Add deployment-facing end-to-end coverage for channels and guardrails.",
       "verification": "go test -tags=e2e ./tests/e2e compiles; signup UUIDs are converted to OpenIM IDs before group/message calls; with E2E_BASE_URL, channel matrix executes against platform plus matching OpenIM.",
       "verified": [
-        {"description": "Corrected channel E2E to use OpenIM IDs returned by the existing conversion helper; compile check passed and PR CI passed on rerun.", "verdict": "FIXED"},
-        {"description": "Switched group posting assertions from OpenIM's app-admin-only REST endpoint to the client WebSocket protocol; live channel E2E passed after the OpenIM group rollout.", "verdict": "PASS"}
+        {
+          "description": "Corrected channel E2E to use OpenIM IDs returned by the existing conversion helper; compile check passed and PR CI passed on rerun.",
+          "verdict": "FIXED"
+        },
+        {
+          "description": "Switched group posting assertions from OpenIM's app-admin-only REST endpoint to the client WebSocket protocol; live channel E2E passed after the OpenIM group rollout.",
+          "verdict": "PASS"
+        }
       ]
     },
     {
       "phase": "review",
       "order": 5,
       "tier": "review_gate",
-      "status": "complete",
+      "status": "completed",
       "description": "Audit platform and OpenIM changes for policy and security gaps.",
       "max_iterations": 2,
       "verification": "No unresolved authorization, ID-prefix, privacy, or rollout findings."
@@ -57,7 +62,7 @@
       "phase": "implementation_verification",
       "order": 6,
       "tier": "verification_gate",
-      "status": "complete",
+      "status": "completed",
       "description": "Compare implementation, tests, API docs, and both repository patches to 00-plan.md.",
       "misalignments": [],
       "verification": "Every plan requirement has implementation and test evidence; misalignments array is empty."
@@ -66,7 +71,7 @@
       "phase": "verification_loop",
       "order": 7,
       "tier": "loop_gate",
-      "status": "complete",
+      "status": "completed",
       "description": "Resolve verification-gate findings and rerun verification.",
       "completion_rule": "Closes only when implementation_verification.misalignments is empty."
     },
@@ -78,8 +83,14 @@
       "description": "Build the channel-guard OpenIM group RPC from a selected source revision, refresh shared discovery config, and roll out with readiness and rollback gates.",
       "verification": "Workflow checks out the pinned protocol sibling required by OpenIM's local module replacement, passes group package tests, publishes an immutable private image, mounts current discovery.yml and config files, verifies a ready group RPC rollout, and rolls back a failed rollout.",
       "verified": [
-        {"description": "First dispatch stopped before AWS/cluster steps because OpenIM replaces its protocol module with ../openim-protocol; corrected the workflow to check out the same pinned protocol fork used by OpenIM CI. Local test and binary build pass against OpenIM main plus the pinned protocol revision.", "verdict": "FIXED"},
-        {"description": "Workflow run 43185829196 deployed OpenIM main commit 3a5287b80a54759949d442c373cd67054cd5203f as registry.meainternal.com/pingmessenger/openim-rpc-group:channels-3a5287b80a54; deployment revision 4 is ready and mounts the live discovery/config files.", "verdict": "PASS"}
+        {
+          "description": "First dispatch stopped before AWS/cluster steps because OpenIM replaces its protocol module with ../openim-protocol; corrected the workflow to check out the same pinned protocol fork used by OpenIM CI. Local test and binary build pass against OpenIM main plus the pinned protocol revision.",
+          "verdict": "FIXED"
+        },
+        {
+          "description": "Workflow run 43185829196 deployed OpenIM main commit 3a5287b80a54759949d442c373cd67054cd5203f as registry.meainternal.com/pingmessenger/openim-rpc-group:channels-3a5287b80a54; deployment revision 4 is ready and mounts the live discovery/config files.",
+          "verdict": "PASS"
+        }
       ]
     },
     {
@@ -91,24 +102,70 @@
       "matrix_ref": "e2e-matrix.md",
       "harness": "tests/e2e/channels_test.go",
       "matrix_rows": [
-        {"scenario": "channel creation and ch_ mapping", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
-        {"scenario": "public/private search and access", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
-        {"scenario": "owner posting, ordinary-member block, and immutable mute", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
-        {"scenario": "pinned posts", "flag": "E2E_BASE_URL", "matrix_status": "passed"},
-        {"scenario": "group-admin posting", "flag": "E2E_BASE_URL", "matrix_status": "passed after promoting a joined member"}
+        {
+          "scenario": "channel creation and ch_ mapping",
+          "flag": "E2E_BASE_URL",
+          "matrix_status": "passed"
+        },
+        {
+          "scenario": "public/private search and access",
+          "flag": "E2E_BASE_URL",
+          "matrix_status": "passed"
+        },
+        {
+          "scenario": "owner posting, ordinary-member block, and immutable mute",
+          "flag": "E2E_BASE_URL",
+          "matrix_status": "passed"
+        },
+        {
+          "scenario": "pinned posts",
+          "flag": "E2E_BASE_URL",
+          "matrix_status": "passed"
+        },
+        {
+          "scenario": "group-admin posting",
+          "flag": "E2E_BASE_URL",
+          "matrix_status": "passed after promoting a joined member"
+        }
       ],
       "verification": "After the OpenIM group rollout and platform E2E harness fix are on main, the required deployed scenarios pass against the deployed platform and OpenIM versions.",
       "verified": [
-        {"description": "Initial production attempt exposed a harness identity mismatch; the follow-up exposed the stale discovery configuration, both corrected before rerunning the live matrix.", "verdict": "FIXED"},
-        {"description": "After deployment run 43185829196, E2E_BASE_URL=https://api-platform-pingmessenger.meainternal.com go test -tags=e2e ./tests/e2e -run '^TestChannelsAgainstDeployedAPI$' -count=1 passed in 4.476s. The test covers public/private creation and visibility, join/review behavior, owner posting, ordinary-member block, pin/unpin/list, and unmute rejection.", "verdict": "PASS"},
-        {"description": "Updated the E2E to promote the joined reader to group admin and send owner/admin/member posts over OpenIM WebSockets; the expanded live run passed in 4.637s.", "verdict": "PASS"}
+        {
+          "description": "Initial production attempt exposed a harness identity mismatch; the follow-up exposed the stale discovery configuration, both corrected before rerunning the live matrix.",
+          "verdict": "FIXED"
+        },
+        {
+          "description": "After deployment run 43185829196, E2E_BASE_URL=https://api-platform-pingmessenger.meainternal.com go test -tags=e2e ./tests/e2e -run '^TestChannelsAgainstDeployedAPI$' -count=1 passed in 4.476s. The test covers public/private creation and visibility, join/review behavior, owner posting, ordinary-member block, pin/unpin/list, and unmute rejection.",
+          "verdict": "PASS"
+        },
+        {
+          "description": "Updated the E2E to promote the joined reader to group admin and send owner/admin/member posts over OpenIM WebSockets; the expanded live run passed in 4.637s.",
+          "verdict": "PASS"
+        },
+        {
+          "description": "Final run from merged main 9dd914837759ac3a7becc0f01adca534d73c3546 passed against the live platform and OpenIM channel-guard image in 4.622s, including group-admin posting.",
+          "verdict": "PASS"
+        }
       ]
     }
   ],
+  "pending": [],
   "open_risks_ref": "00-plan.md#known-risks--deployment-constraints",
   "design_decisions": [
-    {"id": "channel_registry", "decision": "PostgreSQL channel row is the authority for public/private metadata; OpenIM group membership/messages remain the transport layer.", "why": "OpenIM groups do not supply a public searchable catalog with channel visibility semantics."},
-    {"id": "prefix_guard", "decision": "Use ch_ and gp_ prefixes, preserve legacy IDs, and enforce channel mute rules in OpenIM group RPC.", "why": "The OpenIM service is the authoritative layer for both REST and SDK group mute updates."},
-    {"id": "private_search", "decision": "Public search returns only public channels; private metadata requires membership.", "why": "Avoid leaking private channel existence/details through directory queries."}
+    {
+      "id": "channel_registry",
+      "decision": "PostgreSQL channel row is the authority for public/private metadata; OpenIM group membership/messages remain the transport layer.",
+      "why": "OpenIM groups do not supply a public searchable catalog with channel visibility semantics."
+    },
+    {
+      "id": "prefix_guard",
+      "decision": "Use ch_ and gp_ prefixes, preserve legacy IDs, and enforce channel mute rules in OpenIM group RPC.",
+      "why": "The OpenIM service is the authoritative layer for both REST and SDK group mute updates."
+    },
+    {
+      "id": "private_search",
+      "decision": "Public search returns only public channels; private metadata requires membership.",
+      "why": "Avoid leaking private channel existence/details through directory queries."
+    }
   ]
 }
