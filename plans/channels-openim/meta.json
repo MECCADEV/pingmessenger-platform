@@ -4,7 +4,7 @@
   "plan_doc": "00-plan.md",
   "source_task": "Implement PingMessenger channels backed by OpenIM groups with ID prefixes, public/private directory APIs, admin-only posting guard, pinned posts, e2e coverage, and post-deploy verification.",
   "status": "in_progress",
-  "updated": "2026-11-10 — implementation and local verification complete; deployment E2E pending",
+  "updated": "2026-11-12 — deployment workflow and E2E harness correction in progress",
   "ordering_rationale": "OpenIM must enforce the channel mute invariant at the authoritative group RPC layer before platform APIs can safely expose channel creation and management. Persistence/client contracts precede handlers. Review and static verification precede the remote deployment gate.",
   "completed": [],
   "pending": [
@@ -38,7 +38,10 @@
       "tier": 3,
       "status": "implemented_local_verified_remote_pending",
       "description": "Add deployment-facing end-to-end coverage for channels and guardrails.",
-      "verification": "go test -tags=e2e ./tests/e2e compiles; with E2E_BASE_URL, channel matrix executes against platform plus matching OpenIM."
+      "verification": "go test -tags=e2e ./tests/e2e compiles; signup UUIDs are converted to OpenIM IDs before group/message calls; with E2E_BASE_URL, channel matrix executes against platform plus matching OpenIM.",
+      "verified": [
+        {"description": "Corrected channel E2E to use OpenIM IDs returned by the existing conversion helper; compile check passed and PR CI passed on rerun.", "verdict": "FIXED"}
+      ]
     },
     {
       "phase": "review",
@@ -67,8 +70,16 @@
       "completion_rule": "Closes only when implementation_verification.misalignments is empty."
     },
     {
+      "phase": "openim_group_rollout_workflow",
+      "order": "8a",
+      "tier": 2,
+      "status": "in_progress",
+      "description": "Build the channel-guard OpenIM group RPC from a selected source revision, refresh shared discovery config, and roll out with readiness and rollback gates.",
+      "verification": "Workflow passes group package tests, publishes an immutable private image, mounts current discovery.yml and config files, verifies a ready group RPC rollout, and rolls back a failed rollout."
+    },
+    {
       "phase": "remote_deployment_e2e",
-      "order": 8,
+      "order": 9,
       "tier": "runtime_gate",
       "status": "waiting_for_compatible_deployment",
       "description": "Wait for compatible platform and OpenIM deployment, then execute the deployed channel matrix.",
@@ -80,7 +91,10 @@
         {"scenario": "admin-only posting and immutable mute", "flag": "E2E_BASE_URL", "matrix_status": "pending"},
         {"scenario": "pinned posts", "flag": "E2E_BASE_URL", "matrix_status": "pending"}
       ],
-      "verification": "All required matrix scenarios pass against the deployed platform and OpenIM versions."
+      "verification": "After the OpenIM group rollout and platform E2E harness fix are on main, all required matrix scenarios pass against the deployed platform and OpenIM versions.",
+      "verified": [
+        {"description": "Initial production attempt exposed a harness identity mismatch; after fixing it, the live group RPC called the msg service on port 80 while the current endpoint is 10280. No production rollout has been applied yet.", "verdict": "BLOCKED"}
+      ]
     }
   ],
   "open_risks_ref": "00-plan.md#known-risks--deployment-constraints",

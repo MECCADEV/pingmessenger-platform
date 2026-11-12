@@ -76,13 +76,13 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	readerName := fmt.Sprintf("channel-reader-%d", time.Now().UnixNano())
 	reader := postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, readerName, password), http.StatusCreated)
 	readerToken := issueDeviceOpenIMTokenForE2E(t, client, base, reader["access_token"].(string))
-	readerID := reader["user_id"].(string)
+	readerID := openIMUserID(t, reader)
 	postOpenIMJSON(t, client, base, "/group/join_group", readerToken, fmt.Sprintf(`{"groupID":%q,"reqMessage":"","joinSource":1,"inviterUserID":%q}`, publicGroupID, readerID))
 	ordinaryPost := postOpenIMExpectError(t, client, base, "/msg/send_msg", readerToken, fmt.Sprintf(`{"sendID":%q,"groupID":%q,"sessionType":3,"contentType":101,"content":{"content":"member post must be blocked"}}`, readerID, publicGroupID))
 	if ordinaryPost["errCode"] == float64(0) {
 		t.Fatalf("ordinary channel member could post: %#v", ordinaryPost)
 	}
-	ownerID := owner["user_id"].(string)
+	ownerID := openIMUserID(t, owner)
 	postOpenIMJSON(t, client, base, "/msg/send_msg", openIMToken, fmt.Sprintf(`{"sendID":%q,"groupID":%q,"sessionType":3,"contentType":101,"content":{"content":"owner announcement"}}`, ownerID, publicGroupID))
 
 	private := create("channel-private-"+ownerName, "private")
