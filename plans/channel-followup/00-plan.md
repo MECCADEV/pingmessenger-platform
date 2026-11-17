@@ -20,19 +20,23 @@ Audit deployed and repository support for requested channel behavior, implement 
 - Platform channel management now supports admin-only metadata/visibility updates, photo uploads, channel deletion, and lookup by OpenIM group ID. The Flutter settings screen includes metadata, visibility, photo, deletion, and OpenIM SDK join-request approval controls.
 - App channel lists are derived from the signed-in user's OpenIM conversations. Public discovery remains through Platform search; group-ID lookup hides private metadata from nonmembers.
 - The OpenIM Flutter SDK exposes join, application-list, accept/refuse, and role-update operations. Join-request approval is now wired through that SDK. Admin role assignment should also remain an SDK operation.
-- Production is answering `/healthz` (200) and `/openapi.json` (200, version 0.15.0) but has not deployed these pending API changes yet. The first live E2E attempt hit a transient 503 on unauthenticated channel create; a subsequent direct probe returned the expected 401. Rerun the full deployed E2E after rollout.
+- The platform and Flutter changes are merged (`pingmessenger-platform` PR #14 at `33d0fed6b071d6de4270d8a39664b8aedf7140df`; `pingchat-flutter` PR #30 at `d7604532c9b971cf565203d59eda4c8f518d1165`). Platform Go CI passed in run [#44028809509](https://github.com/MECCADEV/pingmessenger-platform/actions/runs/44028809509). The OpenIM `ch_` guard was previously deployed in run [#43185829196](https://github.com/MECCADEV/pingmessenger-platform/actions/runs/43185829196).
+- Platform production rollout has not happened. Manual deploy runs [#44028852259](https://github.com/MECCADEV/pingmessenger-platform/actions/runs/44028852259) and [#44029780567](https://github.com/MECCADEV/pingmessenger-platform/actions/runs/44029780567) passed build/test/OpenAPI preflight, then failed at Vault access (`lookup-self` returned 503; deploy config returned 403), before image build or rollout. Production probes on 2026-11-17 were intermittent (`/healthz` alternated between 200 and 503); `/openapi.json` returned 0.15.0 while merged local code is 0.16.0. Production lacks the new `/v1/channels/by-openim-group/{groupID}`, `/v1/channels/{channelID}/photo`, and `/v1/channels/{channelID}/posts/{messageID}/like` routes. An unauthenticated channel-create request returned the expected 401. Restore Vault deployment access, roll out 0.16.0, and confirm API health before running the full deployed E2E.
+- `tests/e2e/channels_test.go` exercises API creation, search/privacy, lookup, admin metadata changes, Likes, pins, photo upload, and the OpenIM read-only posting guard. It creates disposable production accounts and channel records. The app's 1–24 hour retention is local to each installation; it does not delete messages for all channel members. Production Flutter SDK approval and client retention behavior are not covered by this Go E2E harness and require client-side runtime verification.
 
 ## Verification matrix
 
 | Request | Evidence/implementation target | Verification |
 | --- | --- | --- |
-| Auto-delete 1–24h | Verify and, if needed, add admin-controlled channel retention. Current app retention appears local/device scoped. | API/integration tests and live E2E expiry behavior |
+| Auto-delete 1–24h | Existing chat retention expires cached channel posts on that installation only; it is not a server-wide deletion timer. | Verify local Flutter behavior; server-wide expiry remains unimplemented if required |
 | Private invite link | Client deep link carries the OpenIM group ID; SDK requests to join and OpenIM admins approve. No searchable directory entry. | link parsing, private lookup/privacy, pending request and approval E2E |
 | Like reactions | Persist idempotent user/message reaction or use supported OpenIM reaction API | set/unset/list authorization and E2E |
 | Edit/delete/photo | Admin-only channel patch/delete and authenticated photo upload flow | owner/admin/reader cases and E2E |
 | My channels/group lookup | Membership-backed list and exact group ID resolver | member visibility and nonmember/private leakage tests |
 | Admin/join approval via SDK | Join and request approval through OpenIM SDK; role changes remain SDK-owned | Flutter SDK integration and live E2E |
 | OpenIM guard deployment | Confirm deployed OpenIM image/source and run direct guard E2E | AWS deployment status plus OpenIM/API E2E |
+
+The deployed API E2E is intentionally gated on both successful platform rollout and production API health. It creates test accounts and channel records and exercises the rows above where the production harness supports them. It does not verify Flutter SDK join-request approval or device-local retention; these need client runtime coverage.
 
 ## Decisions and constraints
 

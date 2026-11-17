@@ -2,9 +2,9 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "plan": "channel-followup",
   "plan_doc": "00-plan.md",
-  "source_task": "Audit, implement, E2E verify, merge, and deploy requested channel feature follow-ups.",
+  "source_task": "Complete the merged channel feature follow-up by deploying the platform API, running production E2E, and recording verified results.",
   "status": "in_progress",
-  "updated": "2026-11-17 \u2014 implementation and local verification complete; deployment E2E pending rollout",
+  "updated": "2026-11-17 \u2014 PRs merged; production rollout held at failed Vault preflight; live API E2E awaits deployment and healthy contract endpoint",
   "ordering_rationale": "Audit current shared primitives and deployed OpenIM guard first; then implement independent platform capability groups, review and verify code, and finish with live runtime checks after service availability.",
   "completed": [
     {
@@ -55,24 +55,50 @@
       "tier": "verification_gate",
       "status": "complete",
       "description": "Go suite and Flutter analyze/tests pass; generated OpenAPI contract updated."
+    },
+    {
+      "phase": "merge",
+      "order": 8,
+      "tier": 3,
+      "status": "complete",
+      "description": "Platform PR #14 and Flutter PR #30 merged; platform CI passed and OpenIM ch_ guard is deployed.",
+      "implementation_evidence": "Platform merge 33d0fed6b071d6de4270d8a39664b8aedf7140df; Flutter merge d7604532c9b971cf565203d59eda4c8f518d1165; platform Go CI run 44028809509; OpenIM guard run 43185829196."
     }
   ],
   "pending": [
     {
-      "phase": "runtime_e2e",
+      "phase": "platform_deploy",
       "order": 9,
-      "tier": "runtime_gate",
-      "status": "pending",
-      "description": "Run full deployed channel E2E and confirm production OpenIM guard after platform rollout. Live API currently advertises OpenAPI 0.15.0.",
-      "matrix_ref": "00-plan.md#verification-matrix",
-      "harness": "tests/e2e"
-    },
-    {
-      "phase": "merge_deploy",
-      "order": 10,
       "tier": 3,
       "status": "in_progress",
-      "description": "Open and merge platform and Flutter PRs in dependency order, then rerun deployed E2E."
+      "description": "Deploy merged platform commit after restoring GitHub Actions Vault deployment access.",
+      "verification": "Deployment workflow completes build, rollout, and health/OpenAPI smoke checks for 33d0fed6b071d6de4270d8a39664b8aedf7140df.",
+      "verified": [
+        {
+          "description": "Deploy run 44029780567 passed build/test/OpenAPI preflight but failed Vault token access (lookup-self 503; deploy config 403); no build or rollout occurred.",
+          "verdict": "FAILED"
+        },
+        {
+          "description": "Production probe: /healthz returned 200; /openapi.json returned gateway 503.",
+          "verdict": "BLOCKED"
+        },
+        {
+          "description": "Production OpenAPI returned 0.15.0 while merged code is 0.16.0; the by-OpenIM-group lookup, photo upload, and Like routes are absent. /healthz fluctuated between 200 and 503; unauthenticated channel create returned 401.",
+          "verdict": "BLOCKED"
+        }
+      ]
+    },
+    {
+      "phase": "runtime_e2e",
+      "order": 10,
+      "tier": "runtime_gate",
+      "status": "not_started",
+      "description": "Run deployed channel API E2E after platform rollout and API health recovery; separately verify client-only retention and SDK approval if runtime access is available.",
+      "matrix_ref": "00-plan.md#verification-matrix",
+      "harness": "tests/e2e/channels_test.go",
+      "depends_on": [
+        "platform_deploy"
+      ]
     }
   ],
   "open_risks_ref": "00-plan.md#verification-matrix"
