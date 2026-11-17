@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -25,7 +26,10 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	if base == "" {
 		t.Skip("E2E_BASE_URL is not configured")
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableKeepAlives = true
+	transport.ResponseHeaderTimeout = 15 * time.Second
+	client := &http.Client{Timeout: 90 * time.Second, Transport: channelE2ETransport{next: transport}}
 	password := "correct-horse-battery-staple"
 	assertStatus(t, client, http.MethodPost, base+"/v1/channels", `{"name":"unauthenticated","visibility":"public"}`, http.StatusUnauthorized, "unauthenticated channel create")
 	ownerName := fmt.Sprintf("channel-owner-%d", time.Now().UnixNano())
@@ -207,6 +211,23 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	if privateDetailResponse.StatusCode != http.StatusNotFound {
 		t.Fatalf("private detail after join request status=%d, want 404", privateDetailResponse.StatusCode)
 	}
+	postOpenIMJSON(t, client, base, "/group/group_application_response", openIMToken,
+		fmt.Sprintf(`{"groupID":%q,"fromUserID":%q,"handledMsg":"approved by channel owner","handleResult":1}`, privateGroupID, readerID))
+	privateDetailRequest, _ = http.NewRequest(http.MethodGet, base+"/v1/channels/"+privateID, nil)
+	privateDetailRequest.Header.Set("Authorization", "Bearer "+nonMember["access_token"].(string))
+	privateDetailResponse, err = client.Do(privateDetailRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var approvedDetail map[string]any
+	if err = json.NewDecoder(privateDetailResponse.Body).Decode(&approvedDetail); err != nil {
+		t.Fatal(err)
+	}
+	privateDetailResponse.Body.Close()
+	approvedChannel, _ := approvedDetail["channel"].(map[string]any)
+	if privateDetailResponse.StatusCode != http.StatusOK || approvedChannel["id"] != privateID || approvedDetail["is_member"] != true {
+		t.Fatalf("private channel detail after owner approval status=%d body=%#v", privateDetailResponse.StatusCode, approvedDetail)
+	}
 
 	pinned := postAuthenticatedJSON(t, client, base+"/v1/channels/"+publicID+"/pins", access, `{"message_id":"channel-post-e2e-1"}`, http.StatusCreated)
 	if pinned["pin"].(map[string]any)["message_id"] != "channel-post-e2e-1" {
@@ -251,6 +272,56 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	photoResponse.Body.Close()
 	if photoResponse.StatusCode != http.StatusOK || photoResult["channel"].(map[string]any)["photo_url"] == "https://cdn.example.test/channel.png" {
 		t.Fatalf("channel photo upload status=%d body=%#v", photoResponse.StatusCode, photoResult)
+	}
+}
+
+// The production Envoy occasionally returns this exact 503 before forwarding
+// a request to either ready API pod. Retry only that pre-upstream failure; a
+// persistent failure still fails the E2E, and application 503 responses pass
+// through unchanged.
+type channelE2ETransport struct{ next http.RoundTripper }
+
+func (t channelE2ETransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		current := req.Clone(req.Context())
+		if req.Body != nil {
+			if attempt == 0 {
+				current.Body = req.Body
+			} else if req.GetBody != nil {
+				body, err := req.GetBody()
+				if err != nil {
+					return nil, err
+				}
+				current.Body = body
+			} else {
+				return nil, fmt.Errorf("cannot replay channel E2E request body")
+			}
+		}
+		response, err := t.next.RoundTrip(current)
+		if err != nil {
+			var urlErr *url.Error
+			if req.Method == http.MethodGet && attempt < 4 && errors.As(err, &urlErr) && urlErr.Timeout() && req.Context().Err() == nil {
+				time.Sleep(time.Duration(150*(1<<attempt)) * time.Millisecond)
+				continue
+			}
+			return nil, err
+		}
+		if response.StatusCode != http.StatusServiceUnavailable || attempt >= 4 {
+			return response, nil
+		}
+		body, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		edgeUnavailable := len(bytes.TrimSpace(body)) == 0 ||
+			(strings.EqualFold(strings.TrimSpace(response.Header.Get("Server")), "envoy") &&
+				bytes.Contains(body, []byte("upstream connect error or disconnect/reset before headers")))
+		if readErr != nil || !edgeUnavailable {
+			response.Body = io.NopCloser(bytes.NewReader(body))
+			return response, nil
+		}
+		if err := req.Context().Err(); err != nil {
+			return nil, err
+		}
+		time.Sleep(time.Duration(150*(1<<attempt)) * time.Millisecond)
 	}
 }
 
