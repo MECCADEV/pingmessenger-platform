@@ -3,8 +3,8 @@
   "plan": "channel-followup",
   "plan_doc": "00-plan.md",
   "source_task": "Complete the merged channel feature follow-up by deploying the platform API, running production E2E, and recording verified results.",
-  "status": "in_progress",
-  "updated": "2026-11-17 \u2014 PRs merged; production rollout held at failed Vault preflight; live API E2E awaits deployment and healthy contract endpoint",
+  "status": "complete",
+  "updated": "2026-11-17 \u2014 renewable Vault token installed; channel API deployed; production E2E passed after channel metadata request fix",
   "ordering_rationale": "Audit current shared primitives and deployed OpenIM guard first; then implement independent platform capability groups, review and verify code, and finish with live runtime checks after service availability.",
   "completed": [
     {
@@ -63,51 +63,24 @@
       "status": "complete",
       "description": "Platform PR #14 and Flutter PR #30 merged; platform CI passed and OpenIM ch_ guard is deployed.",
       "implementation_evidence": "Platform merge 33d0fed6b071d6de4270d8a39664b8aedf7140df; Flutter merge d7604532c9b971cf565203d59eda4c8f518d1165; platform Go CI run 44028809509; OpenIM guard run 43185829196."
-    }
-  ],
-  "pending": [
+    },
     {
       "phase": "platform_deploy",
       "order": 9,
       "tier": 3,
-      "status": "in_progress",
-      "description": "Deploy merged platform commit after restoring GitHub Actions Vault deployment access.",
-      "verification": "Deployment workflow completes build, rollout, and health/OpenAPI smoke checks for 33d0fed6b071d6de4270d8a39664b8aedf7140df.",
-      "verified": [
-        {
-          "description": "Deploy run 44029780567 passed build/test/OpenAPI preflight but failed Vault token access (lookup-self 503; deploy config 403); no build or rollout occurred.",
-          "verdict": "FAILED"
-        },
-        {
-          "description": "Production probe: /healthz returned 200; /openapi.json returned gateway 503.",
-          "verdict": "BLOCKED"
-        },
-        {
-          "description": "Production OpenAPI returned 0.15.0 while merged code is 0.16.0; the by-OpenIM-group lookup, photo upload, and Like routes are absent. /healthz fluctuated between 200 and 503; unauthenticated channel create returned 401.",
-          "verdict": "BLOCKED"
-        },
-        {
-          "description": "Retry run 44031269683 on current main passed full preflight but again failed Vault token access (lookup-self 503; deploy config 403); no image build or rollout occurred. Vault health endpoint returned 200.",
-          "verdict": "FAILED"
-        },
-        {
-          "description": "Historical Vault renewal run 43699013423 returned a 6,661-second lease, below the workflow minimum of seven days; renewal failed. A renewable deployment token with correct path policy is required.",
-          "verdict": "FAILED"
-        }
-      ]
+      "status": "complete",
+      "description": "Created and verified a renewable least-privilege Vault deployment token, installed it in both GitHub environments, and deployed platform main with channel APIs.",
+      "implementation_evidence": "Vault renewal workflow run 44053718859 passed with 31-day lease; deployment run 44053772607 deployed 40412308a6ac28b8e6efac89cd88d8d564c24437; PR #15 fixed OpenIM set_group_info wrapper and merged as d6fdcc170e74041f8b9db7219a89f12e6f94b3fc; deployment run 44055569538 passed rollout and health/OpenAPI smoke checks."
     },
     {
       "phase": "runtime_e2e",
       "order": 10,
       "tier": "runtime_gate",
-      "status": "not_started",
-      "description": "Run deployed channel API E2E after platform rollout and API health recovery; separately verify client-only retention and SDK approval if runtime access is available.",
-      "matrix_ref": "00-plan.md#verification-matrix",
-      "harness": "tests/e2e/channels_test.go",
-      "depends_on": [
-        "platform_deploy"
-      ]
+      "status": "complete",
+      "description": "Passed the live channel E2E matrix against production, including private-channel owner approval and the deployed OpenIM ch_ posting guard.",
+      "implementation_evidence": "2026-11-17: E2E_BASE_URL=https://api-platform-pingmessenger.meainternal.com go test -tags=e2e ./tests/e2e -run ^TestChannelsAgainstDeployedAPI$ -count=1 -v passed in 33.78s."
     }
   ],
+  "pending": [],
   "open_risks_ref": "00-plan.md#verification-matrix"
 }
