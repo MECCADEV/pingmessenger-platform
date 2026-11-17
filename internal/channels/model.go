@@ -16,6 +16,7 @@ type Channel struct {
 	Name          string     `json:"name"`
 	Description   string     `json:"description"`
 	PhotoURL      string     `json:"photo_url"`
+	PhotoKey      string     `json:"-"`
 	Visibility    Visibility `json:"visibility"`
 	MemberCount   int        `json:"member_count"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -29,6 +30,11 @@ type Pin struct {
 	PinnedAt  time.Time `json:"pinned_at"`
 }
 
+type LikeSummary struct {
+	Count     int  `json:"count"`
+	LikedByMe bool `json:"liked_by_me"`
+}
+
 type CreateParams struct {
 	OpenIMGroupID string
 	CreatedBy     string
@@ -36,4 +42,12 @@ type CreateParams struct {
 	Description   string
 	PhotoURL      string
 	Visibility    Visibility
+}
+
+type UpdateParams struct {
+	Name        *string
+	Description *string
+	PhotoURL    *string
+	PhotoKey    *string
+	Visibility  *Visibility
 }

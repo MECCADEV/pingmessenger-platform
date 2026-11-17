@@ -1,0 +1,33 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.15.0
+  next: 0.16.0
+  bump: minor
+  compatibility: additive-channel-admin-and-like-operations
+releaseDate: 2026-11-17
+summary: Adds channel metadata management, photo uploads, OpenIM group lookup, and member Like reactions.
+changes:
+- id: channel-management
+  type: endpoint
+  method: GET,PATCH,DELETE,POST
+  path: /v1/channels/by-openim-group/{groupID}, /v1/channels/{channelID}, /v1/channels/{channelID}/photo
+  description: Resolves a channel by OpenIM group ID, allows owners/admins to update metadata and photo or dismiss the channel, and keeps private metadata hidden from nonmembers. Visibility edits update the OpenIM join approval policy.
+- id: channel-post-likes
+  type: endpoint
+  method: GET,PUT,DELETE
+  path: /v1/channels/{channelID}/posts/{messageID}/like
+  description: Adds idempotent member Like and unlike operations and returns the caller's state plus total count.
+- id: channel-photo-storage
+  type: schema
+  description: Migration 0034_channel_photo_key tracks channel-owned photo objects for replacement and channel deletion cleanup.
+- id: channel-post-like-storage
+  type: schema
+  description: Migration 0035_channel_post_reactions persists a unique Like per channel, OpenIM message, and user.
+- id: channel-sdk-workflow
+  type: behavior
+  description: Private channel deep links route through the OpenIM group ID. The OpenIM SDK join request remains pending for owner/admin approval; links do not grant membership or expose private channel metadata.
+verification:
+- go test ./internal/channels ./internal/openim ./internal/httpapi ./internal/openapi
+- regenerate and compare the checked-in OpenAPI contract
+- deployed E2E for private lookup privacy, metadata authorization, photo upload, Like/unlike, and the OpenIM channel mute guard

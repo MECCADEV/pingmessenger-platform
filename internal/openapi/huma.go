@@ -822,7 +822,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.15.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.16.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -901,6 +901,19 @@ func newDocument() (*DocumentModel, error) {
 	channelDetail := operation(http.MethodGet, "/v1/channels/{channelID}", "getChannel", "Channels", "Get a public channel profile or a private channel profile when the caller is a member.", 200, bearer)
 	channelDetail.Errors = append(channelDetail.Errors, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
 	register[channelPathInput, channelDetailOutput](api, channelDetail)
+	channelByGroup := operation(http.MethodGet, "/v1/channels/by-openim-group/{groupID}", "getChannelByOpenIMGroup", "Channels", "Resolve a channel by its OpenIM group ID. Private channel metadata is returned only after the caller is a group member; opening a deep link does not bypass the OpenIM join approval flow.", 200, bearer)
+	channelByGroup.Errors = append(channelByGroup.Errors, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelOpenIMGroupInput, channelDetailOutput](api, channelByGroup)
+	updateChannel := operation(http.MethodPatch, "/v1/channels/{channelID}", "updateChannel", "Channels", "Update channel name, description, photo URL, or visibility. Only the channel owner or group admin may update metadata; join policy is synchronized with visibility in OpenIM.", 200, bearer)
+	updateChannel.Errors = append(updateChannel.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelUpdateInput, channelCreateOutput](api, updateChannel)
+	deleteChannel := operation(http.MethodDelete, "/v1/channels/{channelID}", "deleteChannel", "Channels", "Dismiss the OpenIM group and remove channel metadata. Only the channel owner or group admin may delete a channel.", 204, bearer)
+	deleteChannel.Errors = append(deleteChannel.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
+	register[channelPathInput, emptyOutput](api, deleteChannel)
+	channelPhoto := operation(http.MethodPost, "/v1/channels/{channelID}/photo", "uploadChannelPhoto", "Channels", "Upload and set the channel photo (JPEG, PNG, or WebP; maximum 5 MiB). Only the channel owner or group admin may update it.", 200, bearer)
+	channelPhoto.MaxBodyBytes = 6 << 20
+	channelPhoto.Errors = append(channelPhoto.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusRequestEntityTooLarge)
+	register[channelPhotoInput, channelCreateOutput](api, channelPhoto)
 	pinChannel := operation(http.MethodPost, "/v1/channels/{channelID}/pins", "pinChannelPost", "Channels", "Pin an OpenIM message in a channel. The channel owner or an OpenIM group admin may pin posts.", 201, bearer)
 	pinChannel.Errors = append(pinChannel.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
 	register[channelPinInput, channelPinOutput](api, pinChannel)
@@ -910,6 +923,15 @@ func newDocument() (*DocumentModel, error) {
 	listChannelPins := operation(http.MethodGet, "/v1/channels/{channelID}/pins", "listChannelPins", "Channels", "List pinned message IDs for a channel member.", 200, bearer)
 	listChannelPins.Errors = append(listChannelPins.Errors, http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable)
 	register[channelPathInput, channelPinsOutput](api, listChannelPins)
+	channelLike := operation(http.MethodGet, "/v1/channels/{channelID}/posts/{messageID}/like", "getChannelPostLike", "Channels", "Get the authenticated channel member's Like state and total Like count for a post.", 200, bearer)
+	channelLike.Errors = append(channelLike.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway)
+	register[channelPostLikeInput, channelPostLikeOutput](api, channelLike)
+	likeChannelPost := operation(http.MethodPut, "/v1/channels/{channelID}/posts/{messageID}/like", "likeChannelPost", "Channels", "Idempotently Like a channel post as a channel member.", 200, bearer)
+	likeChannelPost.Errors = append(likeChannelPost.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway)
+	register[channelPostLikeInput, channelPostLikeOutput](api, likeChannelPost)
+	unlikeChannelPost := operation(http.MethodDelete, "/v1/channels/{channelID}/posts/{messageID}/like", "unlikeChannelPost", "Channels", "Remove the authenticated channel member's Like from a post.", 200, bearer)
+	unlikeChannelPost.Errors = append(unlikeChannelPost.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway)
+	register[channelPostLikeInput, channelPostLikeOutput](api, unlikeChannelPost)
 
 	storyCreate := operation(http.MethodPost, "/v1/stories", "createStory", "Stories", "Create an image, video, or text status. Text statuses carry up to 700 characters and a required #RRGGBB background color; media responses use short-lived private S3 URLs. Idempotency-Key is optional and owner-scoped: the same key and semantic payload returns the original story for 30 days; a different payload returns 409, and a deleted or expired result returns 410. Requests without a key retain legacy behavior and may create duplicates when retried after an unknown outcome.", 201, bearer)
 	storyCreate.MaxBodyBytes = 10 << 20
@@ -1151,6 +1173,24 @@ type channelSearchOutput struct {
 type channelPathInput struct {
 	ChannelID string `path:"channelID" format:"uuid"`
 }
+type channelOpenIMGroupInput struct {
+	GroupID string `path:"groupID" minLength:"1" maxLength:"128" pattern:"^ch_"`
+}
+type channelUpdateInput struct {
+	ChannelID string `path:"channelID" format:"uuid"`
+	Body      struct {
+		Name        *string `json:"name,omitempty" minLength:"1" maxLength:"120"`
+		Description *string `json:"description,omitempty" maxLength:"2000"`
+		PhotoURL    *string `json:"photo_url,omitempty" format:"uri" maxLength:"2048"`
+		Visibility  *string `json:"visibility,omitempty" enum:"public,private"`
+	}
+}
+type channelPhotoInput struct {
+	ChannelID string `path:"channelID" format:"uuid"`
+	RawBody   huma.MultipartFormFiles[struct {
+		Image huma.FormFile `form:"image" contentType:"image/jpeg,image/png,image/webp"`
+	}]
+}
 type channelDetailOutput struct {
 	Body struct {
 		Channel  channelDocument `json:"channel"`
@@ -1178,6 +1218,13 @@ type channelPinsOutput struct {
 	Body struct {
 		Pins []*channels.Pin `json:"pins"`
 	}
+}
+type channelPostLikeInput struct {
+	ChannelID string `path:"channelID" format:"uuid"`
+	MessageID string `path:"messageID" minLength:"1" maxLength:"128"`
+}
+type channelPostLikeOutput struct {
+	Body channels.LikeSummary
 }
 
 func register[I, O any](api huma.API, op huma.Operation) {

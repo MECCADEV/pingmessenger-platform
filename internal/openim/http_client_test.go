@@ -156,6 +156,31 @@ func TestMessageLifecycleClientUsesForkRoutes(t *testing.T) {
 	}
 }
 
+func TestUpdateGroupInfoUsesOpenIMGroupInfoEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/group/set_group_info" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		for _, want := range []string{`"groupID":"ch_123"`, `"groupName":"Channel"`, `"introduction":"News"`, `"faceURL":"https://cdn.example/channel.png"`, `"needVerification":1`} {
+			if !strings.Contains(string(body), want) {
+				t.Fatalf("request missing %s: %s", want, body)
+			}
+		}
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, introduction, photo := "Channel", "News", "https://cdn.example/channel.png"
+	verification := int32(1)
+	if err = client.UpdateGroupInfo(context.Background(), &UpdateGroupInfoRequest{GroupID: "ch_123", GroupName: &name, Introduction: &introduction, FaceURL: &photo, NeedVerification: &verification}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGetMessageBySeqReturnsAuthoritativeOpenIMMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/msg/pull_msg_by_seq" {

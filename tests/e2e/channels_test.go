@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strings"
@@ -49,6 +51,14 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	if publicID == "" || !strings.HasPrefix(publicGroupID, "ch_") || publicChannel["member_count"] != float64(1) {
 		t.Fatalf("public channel create response=%#v", public)
 	}
+	lookup := getChannelJSON(t, client, base+"/v1/channels/by-openim-group/"+url.PathEscape(publicGroupID), access, http.StatusOK)
+	if lookup["channel"].(map[string]any)["id"] != publicID {
+		t.Fatalf("lookup by OpenIM group ID=%#v", lookup)
+	}
+	updated := patchAuthenticatedJSON(t, client, base+"/v1/channels/"+publicID, access, `{"description":"updated channel E2E"}`, http.StatusOK)
+	if updated["channel"].(map[string]any)["description"] != "updated channel E2E" {
+		t.Fatalf("channel metadata update=%#v", updated)
+	}
 
 	search := func(query string) []any {
 		t.Helper()
@@ -81,6 +91,31 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	readerToken := issueDeviceOpenIMTokenForE2E(t, client, base, reader["access_token"].(string))
 	readerID := openIMUserID(t, reader)
 	postOpenIMJSON(t, client, base, "/group/join_group", readerToken, fmt.Sprintf(`{"groupID":%q,"reqMessage":"","joinSource":1,"inviterUserID":%q}`, publicGroupID, readerID))
+	for _, auth := range []string{reader["access_token"].(string)} {
+		request, _ := http.NewRequest(http.MethodPatch, base+"/v1/channels/"+publicID, strings.NewReader(`{"description":"unauthorized update"}`))
+		request.Header.Set("Authorization", "Bearer "+auth)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusForbidden {
+			t.Fatalf("ordinary member channel update status=%d, want 403", response.StatusCode)
+		}
+	}
+	like := putAuthenticatedJSON(t, client, base+"/v1/channels/"+publicID+"/posts/e2e-post-1/like", access, `{}`, http.StatusOK)
+	if like["count"] != float64(1) || like["liked_by_me"] != true {
+		t.Fatalf("like response=%#v", like)
+	}
+	readerLike := putAuthenticatedJSON(t, client, base+"/v1/channels/"+publicID+"/posts/e2e-post-1/like", reader["access_token"].(string), `{}`, http.StatusOK)
+	if readerLike["count"] != float64(2) || readerLike["liked_by_me"] != true {
+		t.Fatalf("member like response=%#v", readerLike)
+	}
+	readerUnlike := channelDeleteJSON(t, client, base+"/v1/channels/"+publicID+"/posts/e2e-post-1/like", reader["access_token"].(string), http.StatusOK)
+	if readerUnlike["count"] != float64(1) || readerUnlike["liked_by_me"] != false {
+		t.Fatalf("member unlike response=%#v", readerUnlike)
+	}
 	// The app's OpenIM REST send endpoint is intentionally app-admin-only. Use
 	// the client WebSocket protocol so the group RPC evaluates member roles and
 	// channel mute status as it does for real Flutter/JS clients.
@@ -134,6 +169,16 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	privateGroupID := privateChannel["openim_group_id"].(string)
 	if !strings.HasPrefix(privateGroupID, "ch_") {
 		t.Fatalf("private channel group ID=%q", privateGroupID)
+	}
+	privateLookupRequest, _ := http.NewRequest(http.MethodGet, base+"/v1/channels/by-openim-group/"+url.PathEscape(privateGroupID), nil)
+	privateLookupRequest.Header.Set("Authorization", "Bearer "+reader["access_token"].(string))
+	privateLookupResponse, err := client.Do(privateLookupRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateLookupResponse.Body.Close()
+	if privateLookupResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("private group lookup status=%d, want 404", privateLookupResponse.StatusCode)
 	}
 	if got := search("channel-private-" + ownerName); len(got) != 0 {
 		t.Fatalf("private channel leaked in public search: %#v", got)
@@ -191,6 +236,65 @@ func TestChannelsAgainstDeployedAPI(t *testing.T) {
 	if responseBody["errCode"] == float64(0) {
 		t.Fatalf("private channel owner disabled read-only mode: %#v", responseBody)
 	}
+	photoBody, photoType := channelPhotoForm(t)
+	photoRequest, _ := http.NewRequest(http.MethodPost, base+"/v1/channels/"+publicID+"/photo", photoBody)
+	photoRequest.Header.Set("Authorization", "Bearer "+access)
+	photoRequest.Header.Set("Content-Type", photoType)
+	photoResponse, err := client.Do(photoRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var photoResult map[string]any
+	if err = json.NewDecoder(photoResponse.Body).Decode(&photoResult); err != nil {
+		t.Fatal(err)
+	}
+	photoResponse.Body.Close()
+	if photoResponse.StatusCode != http.StatusOK || photoResult["channel"].(map[string]any)["photo_url"] == "https://cdn.example.test/channel.png" {
+		t.Fatalf("channel photo upload status=%d body=%#v", photoResponse.StatusCode, photoResult)
+	}
+}
+
+func channelDeleteJSON(t *testing.T, client *http.Client, endpoint, access string, want int) map[string]any {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+access)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != want {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("DELETE %s got %d want %d: %s", endpoint, response.StatusCode, want, body)
+	}
+	var result map[string]any
+	if err = json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func channelPhotoForm(t *testing.T) (*bytes.Buffer, string) {
+	t.Helper()
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="image"; filename="channel.png"`)
+	header.Set("Content-Type", "image/png")
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write([]byte("test-channel-photo")); err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body, writer.FormDataContentType()
 }
 
 func encodeChannelMessageFrame(token, senderID, groupID, content string) ([]byte, error) {
