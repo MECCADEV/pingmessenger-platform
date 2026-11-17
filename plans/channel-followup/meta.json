@@ -89,6 +89,10 @@
         {
           "description": "Retry run 44031269683 on current main passed full preflight but again failed Vault token access (lookup-self 503; deploy config 403); no image build or rollout occurred. Vault health endpoint returned 200.",
           "verdict": "FAILED"
+        },
+        {
+          "description": "Historical Vault renewal run 43699013423 returned a 6,661-second lease, below the workflow minimum of seven days; renewal failed. A renewable deployment token with correct path policy is required.",
+          "verdict": "FAILED"
         }
       ]
     },
