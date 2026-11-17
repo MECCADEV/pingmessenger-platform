@@ -118,11 +118,10 @@ jobs:
         shell: bash
         run: |
           cat > "$RUNNER_TEMP/Dockerfile.openim-rpc-msg" <<'EOF'
-          FROM registry.meainternal.com/pingmessenger/openim-api:20260930-1
+          FROM registry.meainternal.com/pingmessenger/openim-rpc-msg:20261019-e2e-fix
           WORKDIR /openim/openim-server
           COPY openim-rpc-msg /openim/openim-server/bin/openim-rpc-msg
           COPY openim-server/config/openim-rpc-msg.yml /openim/openim-server/config/openim-rpc-msg.yml
-          COPY openim-server/build/images/openim-rpc-user/mongodb.local.yml /openim/openim-server/config/mongodb.yml
           ENTRYPOINT ["./bin/openim-rpc-msg"]
           EOF
 
@@ -242,7 +241,7 @@ jobs:
           test -n "$old_image"
           echo "old_image=$old_image" >> "$GITHUB_OUTPUT"
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          patch=$(printf '{"spec":{"template":{"spec":{"containers":[{"name":"openim-rpc-msg","image":"%s","readinessProbe":{"tcpSocket":{"port":10280},"initialDelaySeconds":10,"periodSeconds":5,"failureThreshold":12}}]}}}}' "$IMAGE")
+          patch=$(printf '{"spec":{"template":{"spec":{"containers":[{"name":"openim-rpc-msg","image":"%s","volumeMounts":[{"name":"config","mountPath":"/openim/openim-server/config/mongodb.yml","subPath":"mongodb.yml","readOnly":true},{"name":"config","mountPath":"/openim/openim-server/config/redis.yml","subPath":"redis.yml","readOnly":true},{"name":"config","mountPath":"/openim/openim-server/config/share.yml","subPath":"share.yml","readOnly":true}],"readinessProbe":{"tcpSocket":{"port":10280},"initialDelaySeconds":10,"periodSeconds":5,"failureThreshold":12}}]}}}}' "$IMAGE")
           kubectl -n "$namespace" patch deployment "$deployment" --type=strategic --patch "$patch"
           kubectl -n "$namespace" annotate deployment "$deployment" \
             "pingmessenger.dev/openim-source-sha=$OPENIM_SHA" \
