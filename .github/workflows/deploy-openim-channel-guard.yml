@@ -1,4 +1,4 @@
-name: Deploy OpenIM channel guard
+name: Deploy OpenIM channel server
 
 on:
   workflow_dispatch:
@@ -17,12 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: openim-channel-guard-production
+  group: openim-channel-server-production
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Build and roll out OpenIM group RPC
+    name: Build and roll out OpenIM channel services
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 35
@@ -56,9 +56,9 @@ jobs:
           cache: true
           cache-dependency-path: openim-server/go.sum
 
-      - name: Test group RPC
+      - name: Test channel group and message RPCs
         working-directory: openim-server
-        run: go test ./internal/rpc/group
+        run: go test ./internal/rpc/group ./internal/rpc/msg
 
       - name: Fetch deployment credentials from Vault
         id: vault
@@ -89,6 +89,7 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "image=registry.meainternal.com/pingmessenger/openim-rpc-group:$tag" >> "$GITHUB_OUTPUT"
+          echo "msg_image=registry.meainternal.com/pingmessenger/openim-rpc-msg:$tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -96,6 +97,10 @@ jobs:
       - name: Build the group RPC binary
         working-directory: openim-server
         run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../openim-rpc-group ./cmd/openim-rpc/openim-rpc-group
+
+      - name: Build the message RPC binary
+        working-directory: openim-server
+        run: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o ../openim-rpc-msg ./cmd/openim-rpc/openim-rpc-msg
 
       - name: Prepare the production group image recipe
         shell: bash
@@ -107,6 +112,18 @@ jobs:
           COPY openim-server/build/images/openim-rpc-group/openim-rpc-group.local.yml /openim/openim-server/config/openim-rpc-group.yml
           COPY openim-server/build/images/openim-rpc-user/mongodb.local.yml /openim/openim-server/config/mongodb.yml
           ENTRYPOINT ["./bin/openim-rpc-group"]
+          EOF
+
+      - name: Prepare the production message image recipe
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/Dockerfile.openim-rpc-msg" <<'EOF'
+          FROM registry.meainternal.com/pingmessenger/openim-api:20260930-1
+          WORKDIR /openim/openim-server
+          COPY openim-rpc-msg /openim/openim-server/bin/openim-rpc-msg
+          COPY openim-server/config/openim-rpc-msg.yml /openim/openim-server/config/openim-rpc-msg.yml
+          COPY openim-server/build/images/openim-rpc-user/mongodb.local.yml /openim/openim-server/config/mongodb.yml
+          ENTRYPOINT ["./bin/openim-rpc-msg"]
           EOF
 
       - name: Log in to the private registry
@@ -125,6 +142,21 @@ jobs:
           docker buildx build \
             --platform linux/amd64 \
             --file "$RUNNER_TEMP/Dockerfile.openim-rpc-group" \
+            --tag "$IMAGE" \
+            --label "org.opencontainers.image.revision=$OPENIM_SHA" \
+            --label "org.opencontainers.image.source=https://github.com/MECCADEV/open-im-server" \
+            --push .
+          docker buildx imagetools inspect "$IMAGE"
+
+      - name: Build and push message RPC image
+        env:
+          IMAGE: ${{ steps.image.outputs.msg_image }}
+          OPENIM_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --file "$RUNNER_TEMP/Dockerfile.openim-rpc-msg" \
             --tag "$IMAGE" \
             --label "org.opencontainers.image.revision=$OPENIM_SHA" \
             --label "org.opencontainers.image.source=https://github.com/MECCADEV/open-im-server" \
@@ -193,18 +225,58 @@ jobs:
           kubectl -n openim rollout undo deployment/openimserver-openim-rpc-group
           kubectl -n openim rollout status deployment/openimserver-openim-rpc-group --timeout=10m
 
+      - name: Roll out OpenIM message RPC retention worker
+        id: msg-rollout
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          IMAGE: ${{ steps.image.outputs.msg_image }}
+          OPENIM_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          deployment=openimserver-openim-rpc-msg
+          namespace=openim
+          kubectl -n "$namespace" get deployment "$deployment" >/dev/null
+          old_image=$(kubectl -n "$namespace" get deployment "$deployment" \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="openim-rpc-msg")].image}')
+          test -n "$old_image"
+          echo "old_image=$old_image" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          kubectl -n "$namespace" set image "deployment/$deployment" "openim-rpc-msg=$IMAGE"
+          kubectl -n "$namespace" annotate deployment "$deployment" \
+            "pingmessenger.dev/openim-source-sha=$OPENIM_SHA" \
+            "pingmessenger.dev/deployed-image=$IMAGE" --overwrite
+          kubectl -n "$namespace" rollout status "deployment/$deployment" --timeout=10m
+          test "$(kubectl -n "$namespace" get deployment "$deployment" \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="openim-rpc-msg")].image}')" = "$IMAGE"
+          ready=$(kubectl -n "$namespace" get deployment "$deployment" \
+            -o jsonpath='{.status.readyReplicas}')
+          test "${ready:-0}" -ge 1
+          echo "rolled_out=true" >> "$GITHUB_OUTPUT"
+
+      - name: Roll back failed message RPC rollout
+        if: ${{ failure() && steps.msg-rollout.outputs.changed == 'true' && steps.msg-rollout.outputs.rolled_out != 'true' }}
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          set -euo pipefail
+          kubectl -n openim rollout undo deployment/openimserver-openim-rpc-msg
+          kubectl -n openim rollout status deployment/openimserver-openim-rpc-msg --timeout=10m
+
       - name: Deployment summary
         if: always()
         env:
           IMAGE: ${{ steps.image.outputs.image }}
+          MSG_IMAGE: ${{ steps.image.outputs.msg_image }}
           OPENIM_SHA: ${{ steps.source.outputs.sha }}
         run: |
           {
-            echo "### OpenIM channel guard deployment"
+            echo "### OpenIM channel server deployment"
             echo
             echo "| Field | Value |"
             echo "|---|---|"
             echo "| Image | \`$IMAGE\` |"
+            echo "| Message RPC image | \`$MSG_IMAGE\` |"
             echo "| OpenIM source commit | \`$OPENIM_SHA\` |"
-            echo "| Deployment | \`openim/openimserver-openim-rpc-group\` |"
+            echo "| Deployments | \`openim/openimserver-openim-rpc-group\`, \`openim/openimserver-openim-rpc-msg\` |"
           } >> "$GITHUB_STEP_SUMMARY"

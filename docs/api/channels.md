@@ -63,4 +63,4 @@ Only current channel members may read or change Like counts. The message ID is t
 
 ## Post retention
 
-The current 1–24 hour auto-delete preference is the app's local chat-retention setting. It applies to channel messages cached by that app installation, just as it does to other chats. It does not revoke the OpenIM message for every member; channel-wide server-enforced deletion is not currently available.
+OpenIM does not expose a reliable per-member delivery acknowledgment for channel posts; its read sequence means read, not delivered. Channel posts are therefore available in server history for a maximum of 24 hours from the server-assigned send time. A background worker in the message RPC removes expired channel posts from server history and cache, and notifies connected members' clients to remove their local copies. Members joining during the 24-hour window can retrieve the posts through normal OpenIM history sync. The app's 1–24 hour local cache preference remains per installation and does not change this server-side 24-hour cap.
