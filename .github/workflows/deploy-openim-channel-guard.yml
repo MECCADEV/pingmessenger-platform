@@ -242,7 +242,8 @@ jobs:
           test -n "$old_image"
           echo "old_image=$old_image" >> "$GITHUB_OUTPUT"
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          kubectl -n "$namespace" set image "deployment/$deployment" "openim-rpc-msg=$IMAGE"
+          patch=$(printf '{"spec":{"template":{"spec":{"containers":[{"name":"openim-rpc-msg","image":"%s","readinessProbe":{"tcpSocket":{"port":10280},"initialDelaySeconds":10,"periodSeconds":5,"failureThreshold":12}}]}}}}' "$IMAGE")
+          kubectl -n "$namespace" patch deployment "$deployment" --type=strategic --patch "$patch"
           kubectl -n "$namespace" annotate deployment "$deployment" \
             "pingmessenger.dev/openim-source-sha=$OPENIM_SHA" \
             "pingmessenger.dev/deployed-image=$IMAGE" --overwrite
@@ -252,6 +253,16 @@ jobs:
           ready=$(kubectl -n "$namespace" get deployment "$deployment" \
             -o jsonpath='{.status.readyReplicas}')
           test "${ready:-0}" -ge 1
+          for attempt in {1..6}; do
+            ready=$(kubectl -n "$namespace" get deployment "$deployment" \
+              -o jsonpath='{.status.readyReplicas}')
+            restarts=$(kubectl -n "$namespace" get pods \
+              -l app.kubernetes.io/name=openim-rpc-msg \
+              -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}')
+            test "${ready:-0}" -ge 1
+            test "${restarts:-0}" -eq 0
+            sleep 5
+          done
           echo "rolled_out=true" >> "$GITHUB_OUTPUT"
 
       - name: Roll back failed message RPC rollout
