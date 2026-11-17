@@ -333,8 +333,8 @@ func (c *HTTPClient) UpdateGroupInfo(ctx context.Context, request *UpdateGroupIn
 		NeedVerification *int32  `json:"needVerification,omitempty"`
 	}{GroupID: request.GroupID, GroupName: request.GroupName, Introduction: request.Introduction, FaceURL: request.FaceURL, NeedVerification: request.NeedVerification}
 	return c.call(ctx, "group/set_group_info", struct {
-		GroupInfo any `json:"groupInfo"`
-	}{GroupInfo: groupInfo}, nil)
+		GroupInfoForSet any `json:"groupInfoForSet"`
+	}{GroupInfoForSet: groupInfo}, nil)
 }
 
 func (c *HTTPClient) GetGroupsInfo(ctx context.Context, groupIDs []string) ([]*GroupInfo, error) {

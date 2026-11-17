@@ -162,6 +162,9 @@ func TestUpdateGroupInfoUsesOpenIMGroupInfoEndpoint(t *testing.T) {
 			t.Fatalf("path=%q", r.URL.Path)
 		}
 		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"groupInfoForSet":`) {
+			t.Fatalf("request missing groupInfoForSet wrapper: %s", body)
+		}
 		for _, want := range []string{`"groupID":"ch_123"`, `"groupName":"Channel"`, `"introduction":"News"`, `"faceURL":"https://cdn.example/channel.png"`, `"needVerification":1`} {
 			if !strings.Contains(string(body), want) {
 				t.Fatalf("request missing %s: %s", want, body)
