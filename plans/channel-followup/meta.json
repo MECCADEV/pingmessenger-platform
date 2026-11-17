@@ -85,6 +85,10 @@
         {
           "description": "Production OpenAPI returned 0.15.0 while merged code is 0.16.0; the by-OpenIM-group lookup, photo upload, and Like routes are absent. /healthz fluctuated between 200 and 503; unauthenticated channel create returned 401.",
           "verdict": "BLOCKED"
+        },
+        {
+          "description": "Retry run 44031269683 on current main passed full preflight but again failed Vault token access (lookup-self 503; deploy config 403); no image build or rollout occurred. Vault health endpoint returned 200.",
+          "verdict": "FAILED"
         }
       ]
     },
