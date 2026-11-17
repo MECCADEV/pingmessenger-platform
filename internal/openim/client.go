@@ -38,6 +38,14 @@ type CreateGroupRequest struct {
 	NeedVerification int32
 }
 
+type UpdateGroupInfoRequest struct {
+	GroupID          string
+	GroupName        *string
+	Introduction     *string
+	FaceURL          *string
+	NeedVerification *int32
+}
+
 type GroupInfo struct {
 	GroupID      string `json:"groupID"`
 	GroupName    string `json:"groupName"`

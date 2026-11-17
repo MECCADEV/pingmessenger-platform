@@ -26,14 +26,45 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (*Channel, erro
 
 func (r *Repository) ByID(ctx context.Context, id string) (*Channel, error) {
 	channel := new(Channel)
-	err := r.pool.QueryRow(ctx, `SELECT id::text,openim_group_id,created_by::text,name,description,photo_url,visibility,created_at,updated_at
+	err := r.pool.QueryRow(ctx, `SELECT id::text,openim_group_id,created_by::text,name,description,photo_url,photo_key,visibility,created_at,updated_at
 		FROM channels WHERE id=$1`, id).Scan(
 		&channel.ID, &channel.OpenIMGroupID, &channel.CreatedBy, &channel.Name, &channel.Description,
-		&channel.PhotoURL, &channel.Visibility, &channel.CreatedAt, &channel.UpdatedAt)
+		&channel.PhotoURL, &channel.PhotoKey, &channel.Visibility, &channel.CreatedAt, &channel.UpdatedAt)
 	if err == nil && channel.ID == "" {
 		return nil, pgx.ErrNoRows
 	}
 	return channel, err
+}
+
+func (r *Repository) ByOpenIMGroupID(ctx context.Context, groupID string) (*Channel, error) {
+	channel := new(Channel)
+	err := r.pool.QueryRow(ctx, `SELECT id::text,openim_group_id,created_by::text,name,description,photo_url,photo_key,visibility,created_at,updated_at
+		FROM channels WHERE openim_group_id=$1`, groupID).Scan(
+		&channel.ID, &channel.OpenIMGroupID, &channel.CreatedBy, &channel.Name, &channel.Description,
+		&channel.PhotoURL, &channel.PhotoKey, &channel.Visibility, &channel.CreatedAt, &channel.UpdatedAt)
+	return channel, err
+}
+
+func (r *Repository) Update(ctx context.Context, id string, p UpdateParams) (*Channel, error) {
+	channel := new(Channel)
+	var visibility any
+	if p.Visibility != nil {
+		visibility = string(*p.Visibility)
+	}
+	err := r.pool.QueryRow(ctx, `UPDATE channels SET
+		name=COALESCE($2,name), description=COALESCE($3,description), photo_url=COALESCE($4,photo_url),
+		visibility=COALESCE($5,visibility), photo_key=COALESCE($6,photo_key), updated_at=now()
+		WHERE id=$1
+		RETURNING id::text,openim_group_id,created_by::text,name,description,photo_url,photo_key,visibility,created_at,updated_at`,
+		id, p.Name, p.Description, p.PhotoURL, visibility, p.PhotoKey).Scan(
+		&channel.ID, &channel.OpenIMGroupID, &channel.CreatedBy, &channel.Name, &channel.Description,
+		&channel.PhotoURL, &channel.PhotoKey, &channel.Visibility, &channel.CreatedAt, &channel.UpdatedAt)
+	return channel, err
+}
+
+func (r *Repository) Delete(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM channels WHERE id=$1`, id)
+	return err
 }
 
 func (r *Repository) SearchPublic(ctx context.Context, query string, limit, offset int) ([]*Channel, int, error) {
@@ -107,6 +138,24 @@ func (r *Repository) Pins(ctx context.Context, channelID string, limit int) ([]*
 		return nil, err
 	}
 	return pins, nil
+}
+
+func (r *Repository) Like(ctx context.Context, channelID, messageID, userID string) error {
+	_, err := r.pool.Exec(ctx, `INSERT INTO channel_post_likes(channel_id,openim_message_id,user_id)
+		VALUES($1,$2,$3) ON CONFLICT(channel_id,openim_message_id,user_id) DO NOTHING`, channelID, messageID, userID)
+	return err
+}
+
+func (r *Repository) Unlike(ctx context.Context, channelID, messageID, userID string) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM channel_post_likes WHERE channel_id=$1 AND openim_message_id=$2 AND user_id=$3`, channelID, messageID, userID)
+	return err
+}
+
+func (r *Repository) LikeSummary(ctx context.Context, channelID, messageID, userID string) (*LikeSummary, error) {
+	summary := new(LikeSummary)
+	err := r.pool.QueryRow(ctx, `SELECT count(*), COALESCE(bool_or(user_id=$3),false)
+		FROM channel_post_likes WHERE channel_id=$1 AND openim_message_id=$2`, channelID, messageID, userID).Scan(&summary.Count, &summary.LikedByMe)
+	return summary, err
 }
 
 func escapeLike(value string) string {

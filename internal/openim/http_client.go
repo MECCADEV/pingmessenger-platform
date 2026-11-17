@@ -322,6 +322,21 @@ func (c *HTTPClient) CreateGroup(ctx context.Context, request *CreateGroupReques
 	return response.GroupInfo, nil
 }
 
+// UpdateGroupInfo uses the OpenIM group mutation endpoint after callers have
+// checked the authenticated actor's group role against the channel catalog.
+func (c *HTTPClient) UpdateGroupInfo(ctx context.Context, request *UpdateGroupInfoRequest) error {
+	groupInfo := struct {
+		GroupID          string  `json:"groupID"`
+		GroupName        *string `json:"groupName,omitempty"`
+		Introduction     *string `json:"introduction,omitempty"`
+		FaceURL          *string `json:"faceURL,omitempty"`
+		NeedVerification *int32  `json:"needVerification,omitempty"`
+	}{GroupID: request.GroupID, GroupName: request.GroupName, Introduction: request.Introduction, FaceURL: request.FaceURL, NeedVerification: request.NeedVerification}
+	return c.call(ctx, "group/set_group_info", struct {
+		GroupInfo any `json:"groupInfo"`
+	}{GroupInfo: groupInfo}, nil)
+}
+
 func (c *HTTPClient) GetGroupsInfo(ctx context.Context, groupIDs []string) ([]*GroupInfo, error) {
 	response := new(struct {
 		GroupInfos []*GroupInfo `json:"groupInfos"`

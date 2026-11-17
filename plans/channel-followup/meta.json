@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "plan": "channel-followup",
+  "plan_doc": "00-plan.md",
+  "source_task": "Audit, implement, E2E verify, merge, and deploy requested channel feature follow-ups.",
+  "status": "in_progress",
+  "updated": "2026-11-17 \u2014 implementation and local verification complete; deployment E2E pending rollout",
+  "ordering_rationale": "Audit current shared primitives and deployed OpenIM guard first; then implement independent platform capability groups, review and verify code, and finish with live runtime checks after service availability.",
+  "completed": [
+    {
+      "phase": "capability_audit",
+      "order": 1,
+      "tier": 2,
+      "status": "complete",
+      "description": "Audited channel APIs, local retention, OpenIM SDK capabilities, and current production contract."
+    },
+    {
+      "phase": "retention_and_invites",
+      "order": 2,
+      "tier": 3,
+      "status": "complete",
+      "description": "Confirmed local channel retention; wired private deep-link join flow through OpenIM SDK."
+    },
+    {
+      "phase": "reactions_and_profile_lifecycle",
+      "order": 3,
+      "tier": 3,
+      "status": "complete",
+      "description": "Added channel Like, admin metadata/photo/delete APIs, and Flutter settings."
+    },
+    {
+      "phase": "channel_discovery",
+      "order": 4,
+      "tier": 2,
+      "status": "complete",
+      "description": "Added OpenIM group lookup; app lists channels from OpenIM channel conversations and public search remains available."
+    },
+    {
+      "phase": "sdk_workflow_contract",
+      "order": 5,
+      "tier": 2,
+      "status": "complete",
+      "description": "Wired join request review through OpenIM Flutter SDK; roles remain OpenIM-owned."
+    },
+    {
+      "phase": "review_gate",
+      "order": 6,
+      "tier": "review_gate",
+      "status": "complete",
+      "description": "Reviewed route authorization, private metadata visibility, and link join flow."
+    },
+    {
+      "phase": "verification_gate",
+      "order": 7,
+      "tier": "verification_gate",
+      "status": "complete",
+      "description": "Go suite and Flutter analyze/tests pass; generated OpenAPI contract updated."
+    }
+  ],
+  "pending": [
+    {
+      "phase": "runtime_e2e",
+      "order": 9,
+      "tier": "runtime_gate",
+      "status": "pending",
+      "description": "Run full deployed channel E2E and confirm production OpenIM guard after platform rollout. Live API currently advertises OpenAPI 0.15.0.",
+      "matrix_ref": "00-plan.md#verification-matrix",
+      "harness": "tests/e2e"
+    },
+    {
+      "phase": "merge_deploy",
+      "order": 10,
+      "tier": 3,
+      "status": "in_progress",
+      "description": "Open and merge platform and Flutter PRs in dependency order, then rerun deployed E2E."
+    }
+  ],
+  "open_risks_ref": "00-plan.md#verification-matrix"
+}

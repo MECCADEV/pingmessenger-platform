@@ -2,10 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -15,6 +19,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"pingmessenger/internal/channels"
 	"pingmessenger/internal/openim"
+	"pingmessenger/internal/storage"
 )
 
 const (
@@ -32,6 +37,13 @@ type createChannelInput struct {
 	Visibility  string `json:"visibility" validate:"required,oneof=public private"`
 }
 
+type updateChannelInput struct {
+	Name        *string `json:"name,omitempty" validate:"omitempty,min=1,max=120"`
+	Description *string `json:"description,omitempty" validate:"omitempty,max=2000"`
+	PhotoURL    *string `json:"photo_url,omitempty" validate:"omitempty,max=2048"`
+	Visibility  *string `json:"visibility,omitempty" validate:"omitempty,oneof=public private"`
+}
+
 type pinChannelPostInput struct {
 	MessageID string `json:"message_id" validate:"required,min=1,max=128"`
 }
@@ -39,10 +51,285 @@ type pinChannelPostInput struct {
 func (a *API) registerChannelRoutes(r *router.Router) {
 	r.POST("/v1/channels", a.createChannel)
 	r.GET("/v1/channels/search", a.searchChannels)
+	r.GET("/v1/channels/by-openim-group/{groupID}", a.getChannelByOpenIMGroup)
 	r.GET("/v1/channels/{channelID}", a.getChannel)
+	r.PATCH("/v1/channels/{channelID}", a.updateChannel)
+	r.DELETE("/v1/channels/{channelID}", a.deleteChannel)
+	r.POST("/v1/channels/{channelID}/photo", a.uploadChannelPhoto)
 	r.POST("/v1/channels/{channelID}/pins", a.pinChannelPost)
 	r.DELETE("/v1/channels/{channelID}/pins/{messageID}", a.unpinChannelPost)
 	r.GET("/v1/channels/{channelID}/pins", a.listChannelPins)
+	r.GET("/v1/channels/{channelID}/posts/{messageID}/like", a.getChannelPostLike)
+	r.PUT("/v1/channels/{channelID}/posts/{messageID}/like", a.likeChannelPost)
+	r.DELETE("/v1/channels/{channelID}/posts/{messageID}/like", a.unlikeChannelPost)
+}
+
+func (a *API) getChannelPostLike(ctx *fasthttp.RequestCtx) {
+	a.channelPostLike(ctx, false, false)
+}
+
+func (a *API) likeChannelPost(ctx *fasthttp.RequestCtx) {
+	a.channelPostLike(ctx, true, false)
+}
+
+func (a *API) unlikeChannelPost(ctx *fasthttp.RequestCtx) {
+	a.channelPostLike(ctx, false, true)
+}
+
+func (a *API) channelPostLike(ctx *fasthttp.RequestCtx, like, unlike bool) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "channel-like", userID, 120, 240) {
+		return
+	}
+	channel, found := a.channelByRequestID(ctx)
+	if !found {
+		return
+	}
+	member, _, err := a.channelMembership(channel, userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not verify channel membership"})
+		return
+	}
+	if !member {
+		writeJSON(ctx, http.StatusForbidden, map[string]string{"error": "channel membership required"})
+		return
+	}
+	messageID := strings.TrimSpace(ctx.UserValue("messageID").(string))
+	if messageID == "" || len(messageID) > 128 {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "invalid message ID"})
+		return
+	}
+	if like {
+		err = a.channels.Like(context.Background(), channel.ID, messageID, userID)
+	} else if unlike {
+		err = a.channels.Unlike(context.Background(), channel.ID, messageID, userID)
+	}
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not update channel reaction"})
+		return
+	}
+	summary, err := a.channels.LikeSummary(context.Background(), channel.ID, messageID, userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load channel reaction"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, summary)
+}
+
+func (a *API) getChannelByOpenIMGroup(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	groupID := strings.TrimSpace(ctx.UserValue("groupID").(string))
+	channel, err := a.channels.ByOpenIMGroupID(context.Background(), groupID)
+	if err != nil {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "channel not found"})
+		return
+	}
+	member, role, err := a.channelMembership(channel, userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not verify channel membership"})
+		return
+	}
+	if channel.Visibility == channels.VisibilityPrivate && !member {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "channel not found"})
+		return
+	}
+	info, err := a.channelOpenIMInfo(channel.OpenIMGroupID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not load channel info"})
+		return
+	}
+	channel.MemberCount = info.MemberCount
+	writeJSON(ctx, http.StatusOK, map[string]any{"channel": channel, "is_member": member, "is_admin": member && isChannelAdminRole(role)})
+}
+
+func (a *API) updateChannel(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	channel, found := a.channelByRequestID(ctx)
+	if !found || !a.requireChannelAdmin(ctx, channel, userID) {
+		return
+	}
+	var req updateChannelInput
+	if err := a.DecodeAndValidate(ctx, &req); err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	if req.Name == nil && req.Description == nil && req.PhotoURL == nil && req.Visibility == nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "at least one channel field is required"})
+		return
+	}
+	params := channels.UpdateParams{Name: req.Name, Description: req.Description, PhotoURL: req.PhotoURL}
+	if params.Name != nil {
+		value := strings.TrimSpace(*params.Name)
+		if value == "" {
+			writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "name is required"})
+			return
+		}
+		params.Name = &value
+	}
+	if params.Description != nil {
+		value := strings.TrimSpace(*params.Description)
+		params.Description = &value
+	}
+	if params.PhotoURL != nil {
+		value := strings.TrimSpace(*params.PhotoURL)
+		if value != "" {
+			photoURL, err := url.ParseRequestURI(value)
+			if err != nil || photoURL.Scheme != "https" || photoURL.Host == "" {
+				writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "photo_url must be an https URL"})
+				return
+			}
+		}
+		params.PhotoURL = &value
+		emptyKey := ""
+		params.PhotoKey = &emptyKey
+	}
+	if req.Visibility != nil {
+		visibility := channels.Visibility(*req.Visibility)
+		params.Visibility = &visibility
+	}
+	updated := *channel
+	if params.Name != nil {
+		updated.Name = *params.Name
+	}
+	if params.Description != nil {
+		updated.Description = *params.Description
+	}
+	if params.PhotoURL != nil {
+		updated.PhotoURL = *params.PhotoURL
+	}
+	if params.Visibility != nil {
+		updated.Visibility = *params.Visibility
+	}
+	needVerification := channelVisibilityJoinPolicy(updated.Visibility)
+	groupName, introduction, faceURL := updated.Name, updated.Description, updated.PhotoURL
+	if updater, ok := a.openIM.(interface {
+		UpdateGroupInfo(context.Context, *openim.UpdateGroupInfoRequest) error
+	}); ok {
+		if err := updater.UpdateGroupInfo(context.Background(), &openim.UpdateGroupInfoRequest{
+			GroupID: updated.OpenIMGroupID, GroupName: &groupName, Introduction: &introduction,
+			FaceURL: &faceURL, NeedVerification: &needVerification,
+		}); err != nil {
+			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not update channel group"})
+			return
+		}
+	} else {
+		writeJSON(ctx, http.StatusServiceUnavailable, map[string]string{"error": "channel group updates are unavailable"})
+		return
+	}
+	updatedChannel, err := a.channels.Update(context.Background(), channel.ID, params)
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not save channel update"})
+		return
+	}
+	if params.PhotoKey != nil && channel.PhotoKey != "" && channel.PhotoKey != *params.PhotoKey {
+		if err := a.objects.Delete(context.Background(), channel.PhotoKey); err != nil {
+			log.Printf("channel photo cleanup failed channel=%s: %v", channel.ID, err)
+		}
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"channel": updatedChannel})
+}
+
+func (a *API) deleteChannel(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	channel, found := a.channelByRequestID(ctx)
+	if !found || !a.requireChannelAdmin(ctx, channel, userID) {
+		return
+	}
+	if err := a.openIM.DismissGroup(context.Background(), channel.OpenIMGroupID); err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not delete channel group"})
+		return
+	}
+	if err := a.channels.Delete(context.Background(), channel.ID); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not delete channel metadata"})
+		return
+	}
+	if channel.PhotoKey != "" {
+		if err := a.objects.Delete(context.Background(), channel.PhotoKey); err != nil {
+			log.Printf("channel photo cleanup failed channel=%s: %v", channel.ID, err)
+		}
+	}
+	ctx.SetStatusCode(http.StatusNoContent)
+}
+
+func (a *API) uploadChannelPhoto(ctx *fasthttp.RequestCtx) {
+	userID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	channel, found := a.channelByRequestID(ctx)
+	if !found || !a.requireChannelAdmin(ctx, channel, userID) {
+		return
+	}
+	file, err := ctx.FormFile("image")
+	if err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "image is required"})
+		return
+	}
+	defer ctx.Request.RemoveMultipartFormFiles()
+	stream, err := file.Open()
+	if err != nil {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "could not read image"})
+		return
+	}
+	defer stream.Close()
+	contentType := file.Header.Get("Content-Type")
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "image must be jpeg, png, or webp"})
+		return
+	}
+	data, err := storage.ReadLimited(stream, 5<<20)
+	if err != nil {
+		writeJSON(ctx, http.StatusRequestEntityTooLarge, map[string]string{"error": err.Error()})
+		return
+	}
+	var nonce [16]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not create photo"})
+		return
+	}
+	key := path.Join("channels", channel.ID, hex.EncodeToString(nonce[:]))
+	if err = a.objects.Put(context.Background(), key, contentType, data); err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not store photo"})
+		return
+	}
+	photoURL := storage.PublicPath(a.assetBase, key)
+	if updater, ok := a.openIM.(interface {
+		UpdateGroupInfo(context.Context, *openim.UpdateGroupInfoRequest) error
+	}); !ok || updater.UpdateGroupInfo(context.Background(), &openim.UpdateGroupInfoRequest{GroupID: channel.OpenIMGroupID, FaceURL: &photoURL}) != nil {
+		_ = a.objects.Delete(context.Background(), key)
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not update channel photo"})
+		return
+	}
+	photoKey := key
+	updated, err := a.channels.Update(context.Background(), channel.ID, channels.UpdateParams{PhotoURL: &photoURL, PhotoKey: &photoKey})
+	if err != nil {
+		_ = a.objects.Delete(context.Background(), key)
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not save channel photo"})
+		return
+	}
+	if channel.PhotoKey != "" && channel.PhotoKey != key {
+		if err := a.objects.Delete(context.Background(), channel.PhotoKey); err != nil {
+			log.Printf("channel photo cleanup failed channel=%s: %v", channel.ID, err)
+		}
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"channel": updated})
 }
 
 func (a *API) createChannel(ctx *fasthttp.RequestCtx) {
