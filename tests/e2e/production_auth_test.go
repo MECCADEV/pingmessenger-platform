@@ -303,6 +303,135 @@ func TestProductionOpenIMMessageBetweenTwoUsers(t *testing.T) {
 	}
 }
 
+// TestProductionBlockSuppressesPresenceAndMessageDelivery verifies the server
+// hides a blocker's online status and rejects blocked-user message/status
+// frames without exposing an incoming-block list.
+func TestProductionBlockSuppressesPresenceAndMessageDelivery(t *testing.T) {
+	base := productionBaseURL(t)
+	client := &http.Client{Timeout: 20 * time.Second}
+	password := "correct-horse-battery-staple"
+	newUser := func(prefix string) map[string]any {
+		name := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+		return postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q}`, name, password), http.StatusCreated)
+	}
+	blocker := newUser("prod-presence-blocker")
+	viewer := newUser("prod-presence-viewer")
+	blockerAccess := blocker["access_token"].(string)
+	viewerAccess := viewer["access_token"].(string)
+	blockerID := openIMUserID(t, blocker)
+	viewerID := openIMUserID(t, viewer)
+	blockerToken := issueDeviceOpenIMTokenForE2E(t, client, base, blockerAccess)
+	viewerToken := issueDeviceOpenIMTokenForE2E(t, client, base, viewerAccess)
+	blockerSocket := dialOpenIMClient(t, base, blockerToken, blockerID)
+	defer blockerSocket.Close()
+	viewerSocket := dialOpenIMClient(t, base, viewerToken, viewerID)
+	defer viewerSocket.Close()
+
+	postAuthenticatedJSON(t, client, base+"/v1/blocks", blockerAccess, fmt.Sprintf(`{"ping_id":%q}`, viewer["ping_id"]), http.StatusCreated)
+
+	status := postOpenIMJSON(t, client, base, "/user/get_users_online_status", viewerToken, fmt.Sprintf(`{"userIDs":[%q]}`, blockerID))
+	statuses, _ := status["data"].([]any)
+	for _, raw := range statuses {
+		if item, ok := raw.(map[string]any); ok && item["userID"] == blockerID {
+			t.Fatalf("blocked viewer received blocker's presence status: %#v", item)
+		}
+	}
+
+	var subscription []byte
+	subscription = protowire.AppendTag(subscription, 1, protowire.BytesType)
+	subscription = protowire.AppendString(subscription, blockerID)
+	frame, err := json.Marshal(map[string]any{
+		"reqIdentifier": 2005,
+		"token":         viewerToken,
+		"sendID":        viewerID,
+		"operationID":   fmt.Sprintf("blocked-presence-%d", time.Now().UnixNano()),
+		"data":          base64.StdEncoding.EncodeToString(subscription),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = viewerSocket.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+		t.Fatalf("send blocked presence subscription: %v", err)
+	}
+	subscriptionReply := readOpenIMJSONFrame(t, viewerSocket, 15*time.Second)
+	encoded, _ := subscriptionReply["data"].(string)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode presence subscription response: %v", err)
+	}
+	if count, err := countProtobufBytesField(decoded, 1); err != nil {
+		t.Fatalf("decode presence subscription response: %v", err)
+	} else if count != 0 {
+		t.Fatalf("blocked viewer subscribed to blocker's presence: response=%x", decoded)
+	}
+
+	operationID := fmt.Sprintf("blocked-message-%d", time.Now().UnixNano())
+	message, err := json.Marshal(map[string]any{
+		"reqIdentifier": 1003,
+		"token":         viewerToken,
+		"sendID":        viewerID,
+		"operationID":   operationID,
+		"msgIncr":       viewerID + "_" + operationID,
+		"data":          encodeE2EMessageData(viewerID, blockerID, "blocked-message-must-not-deliver"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = viewerSocket.WriteMessage(websocket.BinaryMessage, message); err != nil {
+		t.Fatalf("send blocked-user message: %v", err)
+	}
+	messageReply := readOpenIMJSONFrame(t, viewerSocket, 15*time.Second)
+	if messageReply["errCode"] == float64(0) {
+		t.Fatalf("blocked-user message was accepted: %#v", messageReply)
+	}
+
+	typingOperationID := fmt.Sprintf("blocked-typing-%d", time.Now().UnixNano())
+	typing, err := json.Marshal(map[string]any{
+		"reqIdentifier": 1003,
+		"token":         viewerToken,
+		"sendID":        viewerID,
+		"operationID":   typingOperationID,
+		"msgIncr":       viewerID + "_" + typingOperationID,
+		"data":          encodeE2EMessageDataWithContentType(viewerID, blockerID, "{}", 113),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = viewerSocket.WriteMessage(websocket.BinaryMessage, typing); err != nil {
+		t.Fatalf("send blocked typing status: %v", err)
+	}
+	typingReply := readOpenIMJSONFrame(t, viewerSocket, 15*time.Second)
+	if typingReply["errCode"] == float64(0) {
+		t.Fatalf("blocked-user typing status was accepted: %#v", typingReply)
+	}
+}
+
+func countProtobufBytesField(data []byte, wanted protowire.Number) (int, error) {
+	count := 0
+	for len(data) > 0 {
+		number, wireType, tagSize := protowire.ConsumeTag(data)
+		if tagSize < 0 {
+			return 0, protowire.ParseError(tagSize)
+		}
+		data = data[tagSize:]
+		if number == wanted && wireType == protowire.BytesType {
+			_, size := protowire.ConsumeBytes(data)
+			if size < 0 {
+				return 0, protowire.ParseError(size)
+			}
+			count++
+			data = data[size:]
+			continue
+		}
+		size := protowire.ConsumeFieldValue(number, wireType, data)
+		if size < 0 {
+			return 0, protowire.ParseError(size)
+		}
+		data = data[size:]
+	}
+	return count, nil
+}
+
 func issueDeviceOpenIMTokenForE2E(t *testing.T, client *http.Client, base, access string) string {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
