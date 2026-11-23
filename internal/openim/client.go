@@ -62,6 +62,18 @@ type MessageFetcher interface {
 	GetMessageBySeq(context.Context, string, string, int64) (*MessageSnapshot, error)
 }
 
+// BlockStatusChecker checks block direction without exposing a block list.
+// The first argument is the potential blocker; the second is the target.
+type BlockStatusChecker interface {
+	IsBlocked(context.Context, string, string) (bool, error)
+}
+
+// BlockStatusBatchChecker checks whether any candidate blocked the viewer in
+// one trusted OpenIM request.
+type BlockStatusBatchChecker interface {
+	BlockedBy(context.Context, string, []string) (map[string]bool, error)
+}
+
 type ProvisionUserRequest struct {
 	UserID   string `json:"userID"`
 	Nickname string `json:"nickname"`

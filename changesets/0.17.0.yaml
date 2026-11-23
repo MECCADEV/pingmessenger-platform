@@ -1,0 +1,29 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.16.0
+  next: 0.17.0
+  bump: minor
+  compatibility: targeted-blocked-user-status
+releaseDate: 2026-11-23
+summary: Adds a targeted blocked-user status and hides blocker profile images and stories without exposing an incoming-block list.
+changes:
+- id: user-block-status
+  type: endpoint
+  method: GET
+  path: /v1/users/{pingID}/status
+  description: Returns AVAILABLE or HTTP 403 with code BLOCKED_BY_USER for a specific target; does not enumerate incoming blockers.
+- id: blocked-user-search-visibility
+  type: behavior
+  description: Broad username search omits accounts that blocked the caller. Exact email, phone, and PingID search still returns matches with BLOCKED_BY_USER and no profile image.
+- id: blocked-user-story-visibility
+  type: behavior
+  description: Redacts blocked users' profile images in friend and discovered-contact responses and suppresses their story events, views, and media for the blocked viewer.
+- id: openim-directional-block-check
+  type: internal
+  description: Adds the trusted OpenIM API directional blacklist check consumed by Platform; no public incoming-block list is added.
+verification:
+- go test ./internal/openim ./internal/httpapi ./internal/openapi
+- go test -tags=e2e ./tests/e2e -run '^TestBlockedUserVisibilityAgainstDeployedAPI$' -count=1
+- regenerate and compare the checked-in OpenAPI contract
+- deploy OpenIM API and Platform API; verify the deployed contract reports 0.17.0

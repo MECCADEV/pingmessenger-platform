@@ -25,11 +25,21 @@ additional documentation routes.
 The deployed document is served read-only at
 `https://api-platform-pingmessenger.meainternal.com/openapi.json`.
 
-The current contract version is `0.14.0`. Story uploads accept image/video MIME
+The current contract version is `0.17.0`. Story uploads accept image/video MIME
 types up to 10 MiB and are capped at 10 active stories per user; deleted or
 expired media is removed from S3 with retryable cleanup. Cluster E2E coverage is in
 `tests/e2e/` and includes optional-username signup, concurrent claims, MFA,
 SES delivery with a test mirror, password recovery, and OpenIM interoperability.
+
+`GET /v1/users/{pingID}/status` is a point lookup. It returns
+`{"status_code":"AVAILABLE"}` when the target has not blocked the caller, or
+HTTP 403 with `{"code":"BLOCKED_BY_USER"}` when they have. Incoming blockers
+are never returned as a list. Broad username search omits accounts that blocked
+the caller; exact email, phone, and PingID search still returns the match with
+`status_code: "BLOCKED_BY_USER"` and no profile image. Friend and discovered
+contact responses redact the profile image, and story events, views, and media
+are withheld from a user blocked by the story owner. The caller can only unblock
+accounts in their own block list through `DELETE /v1/blocks/{pingID}`.
 
 ## Terms of Use acceptance
 

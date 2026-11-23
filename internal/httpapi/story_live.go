@@ -57,6 +57,15 @@ func (a *API) broadcastStoryEvent(ctx context.Context, eventID int64) {
 		log.Printf("story event %d lookup failed: %v", eventID, err)
 		return
 	}
+	visible, err := a.visibleStoryEvents(ctx, delivery.RecipientID, []*stories.Event{delivery.Event})
+	if err != nil {
+		log.Printf("story event %d visibility check failed: %v", eventID, err)
+		return
+	}
+	if len(visible) == 0 {
+		return
+	}
+	delivery.Event = visible[0]
 	if err := a.signStoryEvents(ctx, []*stories.Event{delivery.Event}); err != nil {
 		log.Printf("story event %d media signing failed: %v", eventID, err)
 		return
