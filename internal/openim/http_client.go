@@ -159,6 +159,57 @@ func (c *HTTPClient) ListBlocks(ctx context.Context, request *ListBlocksRequest)
 	}
 	return blocks, nil
 }
+
+func (c *HTTPClient) IsBlocked(ctx context.Context, blockerUserID, targetUserID string) (bool, error) {
+	response := struct {
+		InUser1Blacks bool `json:"inUser1Blacks"`
+	}{}
+	request := struct {
+		UserID1 string `json:"userID1"`
+		UserID2 string `json:"userID2"`
+	}{UserID1: blockerUserID, UserID2: targetUserID}
+	if err := c.call(ctx, "friend/is_black", request, &response); err != nil {
+		return false, err
+	}
+	return response.InUser1Blacks, nil
+}
+
+func (c *HTTPClient) BlockedBy(ctx context.Context, viewerUserID string, targetUserIDs []string) (map[string]bool, error) {
+	response := struct {
+		Statuses []struct {
+			UserID  string `json:"userID"`
+			Blocked bool   `json:"blocked"`
+		} `json:"statuses"`
+	}{}
+	request := struct {
+		ViewerUserID  string   `json:"viewerUserID"`
+		TargetUserIDs []string `json:"targetUserIDs"`
+	}{ViewerUserID: viewerUserID, TargetUserIDs: targetUserIDs}
+	if err := c.call(ctx, "friend/is_black_batch", request, &response); err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]struct{}, len(targetUserIDs))
+	for _, targetUserID := range targetUserIDs {
+		wanted[targetUserID] = struct{}{}
+	}
+	blocked := make(map[string]bool, len(response.Statuses))
+	for _, status := range response.Statuses {
+		if _, ok := wanted[status.UserID]; !ok {
+			return nil, fmt.Errorf("OpenIM block status returned unexpected user %q", status.UserID)
+		}
+		if _, exists := blocked[status.UserID]; exists {
+			return nil, fmt.Errorf("OpenIM block status returned duplicate user %q", status.UserID)
+		}
+		// Record false as well as true so an incomplete service response is
+		// detected below instead of treating an unchecked target as visible.
+		blocked[status.UserID] = status.Blocked
+	}
+	if len(blocked) != len(wanted) {
+		return nil, fmt.Errorf("OpenIM block status returned %d of %d requested users", len(blocked), len(wanted))
+	}
+	return blocked, nil
+}
+
 func (c *HTTPClient) AddBlock(ctx context.Context, request *BlockRequest) error {
 	return c.call(ctx, "friend/add_black", request, nil)
 }

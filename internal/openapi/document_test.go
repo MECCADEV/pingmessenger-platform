@@ -13,13 +13,13 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if doc.OpenAPI != "3.1.0" {
 		t.Fatalf("OpenAPI version = %q", doc.OpenAPI)
 	}
-	if doc.Info.Version != "0.16.0" {
+	if doc.Info.Version != "0.17.0" {
 		t.Fatalf("API version = %q", doc.Info.Version)
 	}
 	for _, path := range []string{
 		"/v1/auth/signup", "/v1/auth/verify-username", "/v1/auth/login", "/v1/auth/login/start", "/v1/auth/login/verify", "/v1/auth/refresh",
 		"/v1/mfa/challenge", "/v1/mfa/verify", "/v1/security/backup-codes", "/v1/security/backup-codes/regenerate",
-		"/v1/mfa/contacts", "/v1/account/terms",
+		"/v1/mfa/contacts", "/v1/account/terms", "/v1/users/{pingID}/status",
 		"/v1/auth/password/recovery/options", "/v1/auth/password/recovery/start", "/v1/auth/password/recovery/verify", "/v1/auth/password/recovery/complete",
 		"/v1/security/activity", "/v1/security/revoke", "/v1/profile/", "/v1/profile/mood", "/v1/profile/update", "/v1/profile/image", "/v1/friends", "/v1/friends/discover-network", "/v1/friends/search", "/v1/contacts/discovered", "/v1/blocks", "/v1/blocks/{pingID}", "/v1/account/delete",
 		"/v1/reports", "/v1/admin/session", "/v1/admin/reports", "/v1/admin/reports/summary", "/v1/admin/reports/{reportID}",
@@ -35,6 +35,13 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	}
 	if doc.Paths["/v1/mfa/contacts/{kind}"] != nil {
 		t.Fatal("immutable MFA contacts must not document change or delete routes")
+	}
+	if doc.Paths["/v1/blocks/incoming"] != nil {
+		t.Fatal("incoming block list must not be exposed")
+	}
+	userStatus := doc.Paths["/v1/users/{pingID}/status"].Get
+	if userStatus == nil || userStatus.Responses["403"] == nil || !strings.Contains(userStatus.Description, "BLOCKED_BY_USER") {
+		t.Fatal("targeted user status must document the blocked-by-user result")
 	}
 	if doc.Components.SecuritySchemes["bearerAuth"] == nil {
 		t.Fatal("missing bearerAuth scheme")

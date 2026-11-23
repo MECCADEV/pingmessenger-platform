@@ -58,6 +58,15 @@ func (a *API) downloadStoryMedia(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load story media"})
 		return
 	}
+	blocked, err := a.storyOwnerBlocked(context.Background(), userID, story.OwnerID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check story visibility"})
+		return
+	}
+	if blocked {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "story not found"})
+		return
+	}
 	reader, ok := a.objects.(storage.ObjectReader)
 	if !ok {
 		writeJSON(ctx, http.StatusNotImplemented, map[string]string{"error": "story download proxy is unavailable"})
@@ -482,6 +491,18 @@ func (a *API) viewStory(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	storyID := strings.TrimSpace(ctx.UserValue("storyID").(string))
+	story, storyErr := a.stories.MediaForRecipient(context.Background(), userID, storyID)
+	if storyErr == nil {
+		blocked, checkErr := a.storyOwnerBlocked(context.Background(), userID, story.OwnerID)
+		if checkErr != nil {
+			writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check story visibility"})
+			return
+		}
+		if blocked {
+			writeJSON(ctx, http.StatusForbidden, map[string]string{"code": userStatusBlockedBy, "error": "user blocked you"})
+			return
+		}
+	}
 	reaction := strings.TrimSpace(req.Reaction)
 	idempotencyKey, err := parseStoryIdempotencyKey(string(ctx.Request.Header.Peek("Idempotency-Key")))
 	if err != nil {
@@ -604,6 +625,12 @@ func (a *API) storyWebSocket(ctx *fasthttp.RequestCtx) {
 						code = "cursor_regression"
 					}
 					_ = subscription.send(map[string]any{"type": "error", "code": code})
+					continue
+				}
+				result.Events, e = a.visibleStoryEvents(context.Background(), userID, result.Events)
+				if e != nil {
+					log.Printf("story visibility check failed for user %s: %v", userID, e)
+					_ = subscription.send(map[string]any{"type": "error", "code": "visibility_unavailable"})
 					continue
 				}
 				if e = a.signStoryEvents(context.Background(), result.Events); e != nil {

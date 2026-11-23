@@ -984,6 +984,28 @@ func (r *UserRepository) OpenIMUserID(ctx context.Context, userID string) (strin
 	return openIMUserID, err
 }
 
+// OpenIMUserIDsByPlatform resolves Platform account UUIDs to their immutable
+// OpenIM identities for batched relationship checks.
+func (r *UserRepository) OpenIMUserIDsByPlatform(ctx context.Context, userIDs []string) (map[string]string, error) {
+	result := make(map[string]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+	rows, err := r.pool.Query(ctx, `SELECT id::text,openim_user_id FROM users WHERE id=ANY($1::uuid[]) AND openim_user_id IS NOT NULL AND deleted_at IS NULL`, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var userID, openIMID string
+		if err = rows.Scan(&userID, &openIMID); err != nil {
+			return nil, err
+		}
+		result[userID] = openIMID
+	}
+	return result, rows.Err()
+}
+
 // PlatformUserIDsByOpenIM resolves the immutable OpenIM identities returned
 // by the relation service back to Platform account UUIDs for story fan-out.
 func (r *UserRepository) PlatformUserIDsByOpenIM(ctx context.Context, openIMIDs []string) (map[string]string, error) {

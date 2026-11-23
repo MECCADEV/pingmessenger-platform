@@ -347,6 +347,14 @@ type profileOutput struct {
 		TermsRequiredVersion string  `json:"terms_required_version" maxLength:"64"`
 	}
 }
+type userStatusPathInput struct {
+	PingID string `path:"pingID" pattern:"^[0-9]{12}$"`
+}
+type userStatusOutput struct {
+	Body struct {
+		StatusCode string `json:"status_code" enum:"AVAILABLE,BLOCKED_BY_USER"`
+	}
+}
 type profileMoodInput struct {
 	Body struct {
 		Mood *string `json:"mood" maxLength:"100"`
@@ -552,6 +560,7 @@ type friendProfile struct {
 	Username     string  `json:"username,omitempty"`
 	Nickname     string  `json:"nickname"`
 	Image        *string `json:"image" format:"uri"`
+	StatusCode   string  `json:"status_code,omitempty" enum:"AVAILABLE,BLOCKED_BY_USER"`
 }
 type friendsOutput struct {
 	Body struct {
@@ -659,6 +668,7 @@ type friendSearchItem struct {
 	Relationship int     `json:"relationship" doc:"-1 means the platform directory did not evaluate OpenIM friendship or blacklist state."`
 	Username     string  `json:"username"`
 	PingID       string  `json:"ping_id" pattern:"^[0-9]{12}$"`
+	StatusCode   string  `json:"status_code,omitempty" enum:"AVAILABLE,BLOCKED_BY_USER"`
 }
 type friendSearchOutput struct {
 	Body struct {
@@ -822,7 +832,7 @@ type paymentEventOutput struct {
 }
 
 func newDocument() (*DocumentModel, error) {
-	config := huma.DefaultConfig("PingMessenger API", "0.16.0")
+	config := huma.DefaultConfig("PingMessenger API", "0.17.0")
 	// Disable all Huma HTTP endpoints. The running FastHTTP router is unchanged.
 	config.OpenAPIPath = ""
 	config.DocsPath = ""
@@ -873,6 +883,21 @@ func newDocument() (*DocumentModel, error) {
 	register[struct{}, openIMChallengeOutput](api, operation(http.MethodPost, "/v1/openim/token/challenge", "createOpenIMTokenChallenge", "OpenIM", "Create a session-bound device-proof challenge.", 201, bearer))
 	register[issueOpenIMTokenInput, issueOpenIMTokenOutput](api, operation(http.MethodPost, "/v1/openim/token/issue", "issueOpenIMToken", "OpenIM", "Verify the signed device proof and issue an OpenIM token for this device.", 200, bearer))
 	register[struct{}, profileOutput](api, operation(http.MethodGet, "/v1/profile/", "getProfile", "Profile", "Get the authenticated user's profile, optional persistent mood, email/phone contact verification state, and accepted/current terms versions.", 200, bearer))
+	userStatus := operation(http.MethodGet, "/v1/users/{pingID}/status", "getUserStatus", "Users", "Check a target user's status before showing their profile or stories. Returns HTTP 403 with code BLOCKED_BY_USER when the target blocked the caller; this is a point lookup and does not list incoming blockers.", 200, bearer)
+	userStatus.Errors = append(userStatus.Errors, http.StatusForbidden, http.StatusNotFound, http.StatusBadGateway)
+	if userStatus.Responses == nil {
+		userStatus.Responses = make(map[string]*huma.Response)
+	}
+	userStatus.Responses["403"] = &huma.Response{
+		Description: "The target blocked the caller. The caller cannot remove this block.",
+		Content: map[string]*huma.MediaType{
+			"application/json": {Schema: &huma.Schema{Type: "object", Properties: map[string]*huma.Schema{
+				"code":  {Type: "string", Enum: []any{"BLOCKED_BY_USER"}},
+				"error": {Type: "string"},
+			}}},
+		},
+	}
+	register[userStatusPathInput, userStatusOutput](api, userStatus)
 	register[profileMoodInput, profileMoodOutput](api, operation(http.MethodPut, "/v1/profile/mood", "updateProfileMood", "Profile", "Set a persistent profile mood of up to 100 characters, or pass null to clear it.", 200, bearer))
 	register[struct{}, profileImageDeleteOutput](api, operation(http.MethodDelete, "/v1/profile/image", "deleteProfileImage", "Profile", "Remove the authenticated user's profile image and clear its OpenIM faceURL.", 200, bearer))
 	register[usernameInput, usernameUpdateOutput](api, operation(http.MethodPatch, "/v1/profile/username", "updateUsername", "Profile", "Set or change the optional unique username.", 200, bearer))
@@ -938,7 +963,7 @@ func newDocument() (*DocumentModel, error) {
 	storyCreate.Errors = append(storyCreate.Errors, http.StatusConflict, http.StatusGone, http.StatusTooManyRequests)
 	register[storyCreateInput, storyCreateOutput](api, storyCreate)
 	register[storyDeleteInput, storyDeleteOutput](api, operation(http.MethodDelete, "/v1/stories/{storyID}", "deleteStory", "Stories", "Delete one of the authenticated user's stories.", 200, bearer))
-	storyMediaDownload := operation(http.MethodGet, "/v1/stories/{storyID}/media", "downloadStoryMedia", "Stories", "Stream the complete private story media object as the raw response body (not JSON or a redirect). The proxy URI has no signed-URL TTL; each request requires a valid signed-in bearer session and current recipient authorization. Persist story IDs, not event media_url values: those are temporary private S3 presigned bearer capabilities valid for 10 minutes and are not durable job credentials. No long-lived or signed-job media URL route is offered; a background worker must use this authenticated proxy only with a valid session. Missing, expired, deleted, and non-recipient stories return 404. Content-Type is the stored object MIME type (image/* or video/*). The proxy does not implement byte ranges or conditional requests and does not set Cache-Control or other cache validators. When Redis is configured, limits are 120 requests per authenticated user and 600 per peer IP per minute; otherwise the process-local development limiter is used.", 200, bearer)
+	storyMediaDownload := operation(http.MethodGet, "/v1/stories/{storyID}/media", "downloadStoryMedia", "Stories", "Stream the complete private story media object as the raw response body (not JSON or a redirect). The proxy URI has no signed-URL TTL; each request requires a valid signed-in bearer session and current recipient authorization, and returns 404 when the story owner blocked the caller. Persist story IDs, not event media_url values: those are temporary private S3 presigned bearer capabilities valid for 10 minutes and are not durable job credentials. No long-lived or signed-job media URL route is offered; a background worker must use this authenticated proxy only with a valid session. Missing, expired, deleted, non-recipient, and blocked-owner stories return 404. Content-Type is the stored object MIME type (image/* or video/*). The proxy does not implement byte ranges or conditional requests and does not set Cache-Control or other cache validators. When Redis is configured, limits are 120 requests per authenticated user and 600 per peer IP per minute; otherwise the process-local development limiter is used.", 200, bearer)
 	storyMediaDownload.Errors = append(storyMediaDownload.Errors, http.StatusNotFound, http.StatusNotImplemented, http.StatusBadGateway, http.StatusServiceUnavailable)
 	storyMediaDownload.Responses = map[string]*huma.Response{
 		"200": {
@@ -951,8 +976,8 @@ func newDocument() (*DocumentModel, error) {
 		},
 	}
 	register[storyDeleteInput, struct{}](api, storyMediaDownload)
-	storyView := operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Upsert the current view and optional reaction for this story/viewer pair. Without Idempotency-Key, legacy behavior refreshes viewed_at and replaces reaction on every call. With a 1–128 visible non-whitespace ASCII Idempotency-Key, a repeated request for the same story and reaction returns the original view snapshot without changing current state; reusing the key with different input returns 409, and replay after story deletion or expiry returns 410. Keys are retained for 30 days. Use a fresh key for each later intentional open. See docs/story-retry-semantics.md.", 200, bearer)
-	storyView.Errors = append(storyView.Errors, http.StatusConflict, http.StatusGone, http.StatusTooManyRequests)
+	storyView := operation(http.MethodPost, "/v1/stories/{storyID}/view", "viewStory", "Stories", "Upsert the current view and optional reaction for this story/viewer pair. If the story owner blocked the caller, returns HTTP 403 with code BLOCKED_BY_USER. Without Idempotency-Key, legacy behavior refreshes viewed_at and replaces reaction on every call. With a 1–128 visible non-whitespace ASCII Idempotency-Key, a repeated request for the same story and reaction returns the original view snapshot without changing current state; reusing the key with different input returns 409, and replay after story deletion or expiry returns 410. Keys are retained for 30 days. Use a fresh key for each later intentional open. See docs/story-retry-semantics.md.", 200, bearer)
+	storyView.Errors = append(storyView.Errors, http.StatusForbidden, http.StatusConflict, http.StatusGone, http.StatusTooManyRequests)
 	if storyView.Responses == nil {
 		storyView.Responses = make(map[string]*huma.Response)
 	}
@@ -985,21 +1010,21 @@ func newDocument() (*DocumentModel, error) {
 	register[documentPathInput, struct{}](api, operation(http.MethodGet, "/v1/documents/{documentID}/download", "downloadDocument", "Documents", "Download a document through the authenticated, rate-limited platform proxy.", 200, bearer))
 	register[documentPathInput, struct{}](api, operation(http.MethodDelete, "/v1/documents/{documentID}", "deleteDocument", "Documents", "Delete the S3 object while retaining a tombstone for message history. Expired objects are removed automatically after seven days.", 204, bearer))
 	register[documentMessageLinkInput, struct{}](api, operation(http.MethodPost, "/v1/documents/{documentID}/message-link", "linkDocumentMessage", "Documents", "Link an uploaded document to its OpenIM conversation sequence so disappearing-message cleanup can revoke the message before deleting S3 media.", 201, bearer))
-	discover := operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover other active accounts from verified contacts matching the supplied email addresses or E.164 phone numbers. Each array is optional and accepts up to 100 values; at least one non-empty array is required. Emails are trimmed and lowercased; phone numbers are trimmed but otherwise matched exactly. Returns distinct OpenIM user IDs (not Platform account UUIDs); no matches return null. Requires an active bearer session. Invalid input returns 422, inactive/missing authentication returns 401, and database failures return 500. See docs/friend-contact-discovery.md for the full request and matching contract.", 200, bearer)
+	discover := operation(http.MethodPost, "/v1/friends/discover-network", "discoverNetwork", "Friends", "Discover other active accounts from verified contacts matching the supplied email addresses or E.164 phone numbers. Accounts that blocked the caller are omitted. Each array is optional and accepts up to 100 values; at least one non-empty array is required. Emails are trimmed and lowercased; phone numbers are trimmed but otherwise matched exactly. Returns distinct OpenIM user IDs (not Platform account UUIDs); no matches return null. Requires an active bearer session. Invalid input returns 422, inactive/missing authentication returns 401, and database failures return 500. See docs/friend-contact-discovery.md for the full request and matching contract.", 200, bearer)
 	// This endpoint is not rate limited in the FastHTTP handler. The common
 	// operation helper includes 429 for routes that use that policy, so remove
 	// that generic response here to keep the contract faithful to runtime.
-	discover.Errors = []int{http.StatusUnauthorized, http.StatusUnprocessableEntity, http.StatusInternalServerError}
+	discover.Errors = []int{http.StatusUnauthorized, http.StatusUnprocessableEntity, http.StatusInternalServerError, http.StatusBadGateway}
 	register[discoverInput, discoverOutput](api, discover)
-	register[struct{}, friendsOutput](api, operation(http.MethodGet, "/v1/friends", "listFriends", "Friends", "List the authenticated user's OpenIM friends with public platform profile fields. Each result includes both user_id (Platform account UUID) and openim_user_id (OpenIM identity); clients can map between them without assuming the values match. The story viewed-by endpoint is GET /v1/stories/{storyID}/views.", 200, bearer))
-	discoveredContactsDescription := "List the authenticated user's persisted, client-discovered contacts. The set is separate from OpenIM friends and is included in the default story contacts audience."
+	register[struct{}, friendsOutput](api, operation(http.MethodGet, "/v1/friends", "listFriends", "Friends", "List the authenticated user's OpenIM friends with public platform profile fields. Profiles for users who blocked the caller include status_code BLOCKED_BY_USER and image null. Each result includes both user_id (Platform account UUID) and openim_user_id (OpenIM identity); clients can map between them without assuming the values match. The story viewed-by endpoint is GET /v1/stories/{storyID}/views.", 200, bearer))
+	discoveredContactsDescription := "List the authenticated user's persisted, client-discovered contacts. The set is separate from OpenIM friends and is included in the default story contacts audience. Profiles for users who blocked the caller include status_code BLOCKED_BY_USER and image null."
 	register[struct{}, discoveredContactsOutput](api, operation(http.MethodGet, "/v1/contacts/discovered", "listDiscoveredContacts", "Friends", discoveredContactsDescription, 200, bearer))
 	addDiscovered := operation(http.MethodPost, "/v1/contacts/discovered", "addDiscoveredContacts", "Friends", "Add discovered OpenIM user IDs to the authenticated user's persisted discovered-contact set. This operation is additive and never removes prior contacts; use DELETE to clear the set. IDs should come from POST /v1/friends/discover-network. Returns the updated list.", 200, bearer)
 	addDiscovered.Errors = append(addDiscovered.Errors, http.StatusUnprocessableEntity)
 	register[discoveredContactsInput, discoveredContactsOutput](api, addDiscovered)
 	clearDiscovered := operation(http.MethodDelete, "/v1/contacts/discovered", "clearDiscoveredContacts", "Friends", "Clear the authenticated user's persisted discovered-contact set. OpenIM friends are not changed. This is the only operation that removes discovered contacts.", 204, bearer)
 	register[struct{}, emptyOutput](api, clearDiscovered)
-	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Results use OpenIM-compatible identity fields; relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
+	register[friendSearchInput, friendSearchOutput](api, operation(http.MethodPost, "/v1/friends/search", "searchFriends", "Friends", "Search active users by partial username or exact verified email, phone, or PingID. Broad username results omit users who blocked the caller. Exact email, phone, and PingID matches remain available and include status_code BLOCKED_BY_USER with faceURL null. Other results use status_code AVAILABLE. relationship is -1 because this global directory lookup does not evaluate the local friend graph.", 200, bearer))
 	register[struct{}, blocksOutput](api, operation(http.MethodGet, "/v1/blocks", "listBlocks", "Blocks", "List only users blocked by the authenticated user; OpenIM is the source of truth.", 200, bearer))
 	register[blockInput, blockCreatedOutput](api, operation(http.MethodPost, "/v1/blocks", "addBlock", "Blocks", "Block a user by PingID and synchronize the OpenIM blacklist.", 201, bearer))
 	register[blockPathInput, emptyOutput](api, operation(http.MethodDelete, "/v1/blocks/{pingID}", "removeBlock", "Blocks", "Unblock a user by PingID and synchronize the OpenIM blacklist.", 204, bearer))

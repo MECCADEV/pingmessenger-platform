@@ -263,6 +263,67 @@ func TestChannelGroupClientUsesStableGroupEndpoints(t *testing.T) {
 	}
 }
 
+func TestIsBlockedChecksDirectionalOwner(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/friend/is_black" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"userID1":"blocker"`) || !strings.Contains(string(body), `"userID2":"viewer"`) {
+			t.Fatalf("request = %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{"inUser1Blacks":true,"inUser2Blacks":false}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := client.IsBlocked(context.Background(), "blocker", "viewer")
+	if err != nil || !blocked {
+		t.Fatalf("IsBlocked() = %t, %v", blocked, err)
+	}
+}
+
+func TestBlockedByUsesSingleBatchEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/friend/is_black_batch" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"viewerUserID":"viewer"`) || !strings.Contains(string(body), `"targetUserIDs":["owner-a","owner-b"]`) {
+			t.Fatalf("request = %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{"statuses":[{"userID":"owner-a","blocked":true},{"userID":"owner-b","blocked":false}]}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := client.BlockedBy(context.Background(), "viewer", []string{"owner-a", "owner-b"})
+	if err != nil || !blocked["owner-a"] || blocked["owner-b"] {
+		t.Fatalf("BlockedBy() = %#v, %v", blocked, err)
+	}
+}
+
+func TestBlockedByRejectsIncompleteBatchResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{"statuses":[{"userID":"owner-a","blocked":false}]}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.BlockedBy(context.Background(), "viewer", []string{"owner-a", "owner-b"}); err == nil {
+		t.Fatal("BlockedBy() accepted an incomplete response")
+	}
+}
+
 func TestListConversationUserIDsFiltersGroupConversations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/conversation/get_all_conversations" {

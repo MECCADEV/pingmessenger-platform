@@ -2,13 +2,16 @@ package httpapi
 
 import (
 	"context"
-	"github.com/fasthttp/router"
-	"github.com/valyala/fasthttp"
+	"errors"
 	"net/http"
 	"net/mail"
+	"strings"
+
+	"github.com/fasthttp/router"
+	"github.com/jackc/pgx/v5"
+	"github.com/valyala/fasthttp"
 	"pingmessenger/internal/auth"
 	"pingmessenger/internal/openim"
-	"strings"
 )
 
 func (a *API) registerFriendRoutes(r *router.Router) {
@@ -18,7 +21,13 @@ func (a *API) registerFriendRoutes(r *router.Router) {
 	r.GET("/v1/contacts/discovered", a.listDiscoveredContacts)
 	r.POST("/v1/contacts/discovered", a.addDiscoveredContacts)
 	r.DELETE("/v1/contacts/discovered", a.clearDiscoveredContacts)
+	r.GET("/v1/users/{pingID}/status", a.userStatus)
 }
+
+const (
+	userStatusAvailable = "AVAILABLE"
+	userStatusBlockedBy = "BLOCKED_BY_USER"
+)
 
 type friendProfileResult struct {
 	UserID       string  `json:"user_id"`
@@ -27,6 +36,7 @@ type friendProfileResult struct {
 	Username     string  `json:"username,omitempty"`
 	Nickname     string  `json:"nickname"`
 	Image        *string `json:"image"`
+	StatusCode   string  `json:"status_code,omitempty"`
 }
 
 func (a *API) listFriends(ctx *fasthttp.RequestCtx) {
@@ -53,13 +63,23 @@ func (a *API) listFriends(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load friend profiles"})
 		return
 	}
+	blocked, err := a.blockedByRequester(context.Background(), openIMID, friendIDs)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check friend visibility"})
+		return
+	}
 	friends := make([]friendProfileResult, 0, len(profiles))
 	for _, p := range profiles {
 		nickname := p.Nickname
 		if nickname == "" {
 			nickname = p.Username
 		}
-		friends = append(friends, friendProfileResult{UserID: p.UserID, OpenIMUserID: p.OpenIMUserID, PingID: p.PingID, Username: p.Username, Nickname: nickname, Image: p.Image})
+		statusCode := userStatusAvailable
+		image := p.Image
+		if blocked[p.OpenIMUserID] {
+			statusCode, image = userStatusBlockedBy, nil
+		}
+		friends = append(friends, friendProfileResult{UserID: p.UserID, OpenIMUserID: p.OpenIMUserID, PingID: p.PingID, Username: p.Username, Nickname: nickname, Image: image, StatusCode: statusCode})
 	}
 	writeJSON(ctx, http.StatusOK, map[string]any{"friends": friends})
 }
@@ -78,6 +98,7 @@ type friendSearchResult struct {
 	Relationship int     `json:"relationship"`
 	Username     string  `json:"username"`
 	PingID       string  `json:"ping_id"`
+	StatusCode   string  `json:"status_code,omitempty"`
 }
 
 type discoverRequest struct {
@@ -105,7 +126,17 @@ func (a *API) listDiscoveredContacts(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered contact profiles"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]any{"contacts": friendProfiles(profiles)})
+	openIMID, err := a.users.OpenIMUserID(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
+		return
+	}
+	blocked, err := a.blockedByRequester(context.Background(), openIMID, ids)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check contact visibility"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"contacts": friendProfilesWithStatus(profiles, blocked)})
 }
 
 func (a *API) addDiscoveredContacts(ctx *fasthttp.RequestCtx) {
@@ -157,7 +188,17 @@ func (a *API) addDiscoveredContacts(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load discovered contact profiles"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]any{"contacts": friendProfiles(profiles)})
+	openIMID, err := a.users.OpenIMUserID(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
+		return
+	}
+	blocked, err := a.blockedByRequester(context.Background(), openIMID, ids)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check contact visibility"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"contacts": friendProfilesWithStatus(profiles, blocked)})
 }
 
 func (a *API) clearDiscoveredContacts(ctx *fasthttp.RequestCtx) {
@@ -183,6 +224,98 @@ func friendProfiles(profiles []*auth.PublicProfile) []friendProfileResult {
 		result = append(result, friendProfileResult{UserID: p.UserID, OpenIMUserID: p.OpenIMUserID, PingID: p.PingID, Username: p.Username, Nickname: nickname, Image: p.Image})
 	}
 	return result
+}
+
+func friendProfilesWithStatus(profiles []*auth.PublicProfile, blocked map[string]bool) []friendProfileResult {
+	results := friendProfiles(profiles)
+	for i := range results {
+		results[i].StatusCode = userStatusAvailable
+		if blocked[results[i].OpenIMUserID] {
+			results[i].Image = nil
+			results[i].StatusCode = userStatusBlockedBy
+		}
+	}
+	return results
+}
+
+// blockedByRequester checks each candidate directionally. Only the target's
+// block of the requester is relevant to profile/story visibility.
+func (a *API) blockedByRequester(ctx context.Context, requesterOpenIMID string, targetOpenIMIDs []string) (map[string]bool, error) {
+	blocked := make(map[string]bool)
+	if batch, ok := a.openIM.(openim.BlockStatusBatchChecker); ok && requesterOpenIMID != "" {
+		for start := 0; start < len(targetOpenIMIDs); start += 1000 {
+			end := start + 1000
+			if end > len(targetOpenIMIDs) {
+				end = len(targetOpenIMIDs)
+			}
+			chunk, err := batch.BlockedBy(ctx, requesterOpenIMID, targetOpenIMIDs[start:end])
+			if err != nil {
+				return nil, err
+			}
+			for userID := range chunk {
+				blocked[userID] = true
+			}
+		}
+		return blocked, nil
+	}
+	checker, ok := a.openIM.(openim.BlockStatusChecker)
+	if !ok || requesterOpenIMID == "" {
+		return nil, errors.New("OpenIM directional block status is unavailable")
+	}
+	for _, targetID := range targetOpenIMIDs {
+		if targetID == "" || targetID == requesterOpenIMID {
+			continue
+		}
+		isBlocked, err := checker.IsBlocked(ctx, targetID, requesterOpenIMID)
+		if err != nil {
+			return nil, err
+		}
+		if isBlocked {
+			blocked[targetID] = true
+		}
+	}
+	return blocked, nil
+}
+
+func (a *API) userStatus(ctx *fasthttp.RequestCtx) {
+	requesterID, _, ok := a.authenticated(ctx)
+	if !ok {
+		writeJSON(ctx, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !a.enforceRate(ctx, "user-status", requesterID, friendsListUserLimit, friendsListIPLimit) {
+		return
+	}
+	pingID := strings.TrimSpace(ctx.UserValue("pingID").(string))
+	if len(pingID) != 12 || !isDigits(pingID) {
+		writeJSON(ctx, http.StatusUnprocessableEntity, map[string]string{"error": "ping_id must be 12 digits"})
+		return
+	}
+	target, err := a.users.UserByPingID(context.Background(), pingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeJSON(ctx, http.StatusNotFound, map[string]string{"error": "user not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not load user"})
+		return
+	}
+	requesterOpenIMID, err := a.users.OpenIMUserID(context.Background(), requesterID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
+		return
+	}
+	blocked, err := a.blockedByRequester(context.Background(), requesterOpenIMID, []string{target.OpenIMUserID})
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check user status"})
+		return
+	}
+	if blocked[target.OpenIMUserID] {
+		ctx.Response.Header.Set("X-PingMessenger-User-Status", userStatusBlockedBy)
+		writeJSON(ctx, http.StatusForbidden, map[string]string{"code": userStatusBlockedBy, "error": "user blocked you"})
+		return
+	}
+	writeJSON(ctx, http.StatusOK, map[string]string{"status_code": userStatusAvailable})
 }
 
 func (a *API) discoverNetwork(ctx *fasthttp.RequestCtx) {
@@ -213,7 +346,23 @@ func (a *API) discoverNetwork(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not discover contacts"})
 		return
 	}
-	writeJSON(ctx, http.StatusOK, map[string]any{"open_im_user_ids": ids})
+	requesterOpenIMID, err := a.users.OpenIMUserID(context.Background(), userID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
+		return
+	}
+	blocked, err := a.blockedByRequester(context.Background(), requesterOpenIMID, ids)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check discovered contact visibility"})
+		return
+	}
+	visible := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !blocked[id] {
+			visible = append(visible, id)
+		}
+	}
+	writeJSON(ctx, http.StatusOK, map[string]any{"open_im_user_ids": visible})
 }
 
 func (a *API) searchFriends(ctx *fasthttp.RequestCtx) {
@@ -258,8 +407,26 @@ func (a *API) searchFriends(ctx *fasthttp.RequestCtx) {
 		writeJSON(ctx, http.StatusInternalServerError, map[string]string{"error": "could not search users"})
 		return
 	}
+	requesterOpenIMID, err := a.users.OpenIMUserID(context.Background(), requesterID)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "OpenIM identity is unavailable"})
+		return
+	}
+	userIDs := make([]string, 0, len(users))
+	for _, user := range users {
+		userIDs = append(userIDs, user.OpenIMUserID)
+	}
+	blocked, err := a.blockedByRequester(context.Background(), requesterOpenIMID, userIDs)
+	if err != nil {
+		writeJSON(ctx, http.StatusBadGateway, map[string]string{"error": "could not check search result visibility"})
+		return
+	}
 	results := make([]friendSearchResult, 0, len(users))
 	for _, user := range users {
+		isBlockedByUser := blocked[user.OpenIMUserID]
+		if req.Field == "username" && isBlockedByUser {
+			continue
+		}
 		nickname := strings.TrimSpace(user.Nickname)
 		if nickname == "" {
 			nickname = user.Username
@@ -267,12 +434,24 @@ func (a *API) searchFriends(ctx *fasthttp.RequestCtx) {
 		if nickname == "" {
 			nickname = user.PingID
 		}
+		statusCode := userStatusAvailable
+		if isBlockedByUser {
+			statusCode = userStatusBlockedBy
+		}
 		results = append(results, friendSearchResult{
-			UserID: user.OpenIMUserID, Nickname: nickname, FaceURL: user.Image,
+			UserID: user.OpenIMUserID, Nickname: nickname, FaceURL: visibleImage(user.Image, isBlockedByUser),
 			Remark: "", Relationship: -1, Username: user.Username, PingID: user.PingID,
+			StatusCode: statusCode,
 		})
 	}
 	writeJSON(ctx, http.StatusOK, map[string]any{"results": results, "total": len(results)})
+}
+
+func visibleImage(image *string, blockedByUser bool) *string {
+	if blockedByUser {
+		return nil
+	}
+	return image
 }
 
 func isDigits(value string) bool {
