@@ -5,15 +5,15 @@
   "source_task": "Add targeted blocked-user status, broad-search filtering, visibility behavior, E2E coverage, a minor API bump, and production deployment.",
   "status": "in_progress",
   "updated": "2026-11-23",
-  "completed": [],
+  "completed": [
+    { "phase": "source_lookup", "order": 1, "tier": 2, "status": "completed", "description": "Add an internal directional OpenIM block-status check.", "implementation_evidence": "Admin-only OpenIM single and batch routes plus Platform client; batch responses fail closed on missing or unexpected targets." },
+    { "phase": "platform_api", "order": 2, "tier": 2, "status": "completed", "description": "Add targeted status/profile lookup and search behavior.", "implementation_evidence": "GET /v1/users/{pingID}/status and status_code on profiles/search; broad username and phone discovery omit blockers, exact lookup remains and redacts images." },
+    { "phase": "client_visibility_e2e", "order": 3, "tier": 3, "status": "completed", "description": "Hide blockers' images and stories; add E2E coverage.", "implementation_evidence": "Story sync/live/media/view checks and Flutter friend avatar overlay; E2E covers block, lookup, broad/exact search, story visibility, unauthorized unblock, owner unblock, and avatar restoration." },
+    { "phase": "contract_release", "order": 4, "tier": 1, "status": "completed", "description": "Bump API minor version, update OpenAPI and changeset.", "implementation_evidence": "Generated OpenAPI and changeset updated to 0.17.0; no incoming-block list route is declared." },
+    { "phase": "review", "order": 5, "tier": "review_gate", "status": "completed", "description": "Review changed code and resolve findings.", "max_iterations": 2, "implementation_evidence": "Resolved null OpenIM identity handling for story sync, protected both internal status routes with admin auth, and made incomplete batch status results fail closed." },
+    { "phase": "verify_plan", "order": 6, "tier": "verification_gate", "status": "completed", "description": "Check the implementation against this plan.", "misalignments": [], "verified": [{ "description": "Compared API routes, OpenAPI, changeset, OpenIM service route, client redaction, story filtering, and E2E scope to the accepted design.", "verdict": "PASS" }] }
+  ],
   "pending": [
-    { "phase": "source_lookup", "order": 1, "tier": 2, "status": "in_progress", "description": "Add an internal directional OpenIM block-status check.", "verification": "OpenIM can tell whether target blocks requester and requester blocks target independently." },
-    { "phase": "platform_api", "order": 2, "tier": 2, "status": "not_started", "description": "Add targeted status/profile lookup and search behavior.", "verification": "Broad username search omits blockers; exact search works and returns BLOCKED_BY_USER without image data." },
-    { "phase": "client_visibility_e2e", "order": 3, "tier": 3, "status": "not_started", "description": "Hide blockers' images and stories; add E2E coverage.", "verification": "Blocked viewer cannot see blocker profile image or story; incoming block cannot be removed by viewer; outgoing unblock API remains functional." },
-    { "phase": "contract_release", "order": 4, "tier": 1, "status": "not_started", "description": "Bump API minor version, update OpenAPI and changeset.", "verification": "Generated OpenAPI version and changeset agree; no incoming-block list operation exists." },
-    { "phase": "review", "order": 5, "tier": "review_gate", "status": "not_started", "description": "Review changed code and resolve findings.", "max_iterations": 2 },
-    { "phase": "verify_plan", "order": 6, "tier": "verification_gate", "status": "not_started", "description": "Check the implementation against this plan.", "misalignments": [] },
-    { "phase": "resolve_misalignments", "order": 7, "tier": "loop_gate", "status": "not_started", "description": "Resolve any verification gate findings.", "completion_rule": "Closes only when verify_plan has no unresolved misalignments." },
     { "phase": "production_runtime", "order": 8, "tier": "runtime_gate", "status": "not_started", "description": "Deploy and verify production endpoints and visibility behavior.", "matrix_ref": "00-plan.md", "matrix_rows": [] }
   ]
 }
