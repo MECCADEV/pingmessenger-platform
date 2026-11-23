@@ -188,11 +188,24 @@ func (c *HTTPClient) BlockedBy(ctx context.Context, viewerUserID string, targetU
 	if err := c.call(ctx, "friend/is_black_batch", request, &response); err != nil {
 		return nil, err
 	}
+	wanted := make(map[string]struct{}, len(targetUserIDs))
+	for _, targetUserID := range targetUserIDs {
+		wanted[targetUserID] = struct{}{}
+	}
 	blocked := make(map[string]bool, len(response.Statuses))
 	for _, status := range response.Statuses {
-		if status.Blocked {
-			blocked[status.UserID] = true
+		if _, ok := wanted[status.UserID]; !ok {
+			return nil, fmt.Errorf("OpenIM block status returned unexpected user %q", status.UserID)
 		}
+		if _, exists := blocked[status.UserID]; exists {
+			return nil, fmt.Errorf("OpenIM block status returned duplicate user %q", status.UserID)
+		}
+		// Record false as well as true so an incomplete service response is
+		// detected below instead of treating an unchecked target as visible.
+		blocked[status.UserID] = status.Blocked
+	}
+	if len(blocked) != len(wanted) {
+		return nil, fmt.Errorf("OpenIM block status returned %d of %d requested users", len(blocked), len(wanted))
 	}
 	return blocked, nil
 }

@@ -309,6 +309,21 @@ func TestBlockedByUsesSingleBatchEndpoint(t *testing.T) {
 	}
 }
 
+func TestBlockedByRejectsIncompleteBatchResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"errCode":0,"data":{"statuses":[{"userID":"owner-a","blocked":false}]}}`))
+	}))
+	defer server.Close()
+	client, err := NewHTTPClient(server.URL, "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = client.BlockedBy(context.Background(), "viewer", []string{"owner-a", "owner-b"}); err == nil {
+		t.Fatal("BlockedBy() accepted an incomplete response")
+	}
+}
+
 func TestListConversationUserIDsFiltersGroupConversations(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/conversation/get_all_conversations" {
