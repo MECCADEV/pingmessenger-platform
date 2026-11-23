@@ -29,9 +29,22 @@ func (a *API) storyOwnerBlocked(ctx context.Context, viewerID, ownerID string) (
 }
 
 func (a *API) visibleStoryEvents(ctx context.Context, viewerID string, events []*stories.Event) ([]*stories.Event, error) {
-	viewerOpenIMID, err := a.users.OpenIMUserID(ctx, viewerID)
+	viewerIdentity, err := a.users.OpenIMUserIDsByPlatform(ctx, []string{viewerID})
 	if err != nil {
 		return nil, err
+	}
+	viewerOpenIMID := viewerIdentity[viewerID]
+	if viewerOpenIMID == "" {
+		// Accounts without an OpenIM identity cannot be checked against the
+		// directional block list. Keep their own and deletion events, and fail
+		// closed for other owners instead of breaking the story sync stream.
+		visible := make([]*stories.Event, 0, len(events))
+		for _, event := range events {
+			if event != nil && (event.Type == "deleted" || event.OwnerID == viewerID) {
+				visible = append(visible, event)
+			}
+		}
+		return visible, nil
 	}
 	ownerPlatformIDs := make([]string, 0, len(events))
 	for _, event := range events {
