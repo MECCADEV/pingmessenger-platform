@@ -63,6 +63,7 @@ func TestBlockedUserVisibilityAgainstDeployedAPI(t *testing.T) {
 	blocker := postJSON(t, client, base+"/v1/auth/signup", fmt.Sprintf(`{"username":%q,"password":%q,"nickname":"Blocker"}`, prefix+"-blocker", password), http.StatusCreated)
 	viewerAccess := viewer["access_token"].(string)
 	blockerAccess := blocker["access_token"].(string)
+	postProfileImage(t, client, base, blockerAccess, []byte("blocker-profile-image"), http.StatusOK)
 
 	postAuthenticatedJSON(t, client, base+"/v1/blocks", blockerAccess, fmt.Sprintf(`{"ping_id":%q}`, viewer["ping_id"]), http.StatusCreated)
 	storyResponse := postStory(t, client, base, blockerAccess, "image/png", []byte("blocked-viewer-story"), map[string]string{
@@ -125,6 +126,11 @@ func TestBlockedUserVisibilityAgainstDeployedAPI(t *testing.T) {
 	status = getAuthenticatedJSON(t, client, base+"/v1/users/"+blocker["ping_id"].(string)+"/status", viewerAccess, http.StatusOK)
 	if status["status_code"] != "AVAILABLE" {
 		t.Fatalf("status after owner unblock=%#v", status)
+	}
+	exact = postAuthenticatedJSON(t, client, base+"/v1/friends/search", viewerAccess, fmt.Sprintf(`{"query":%q,"field":"ping_id"}`, blocker["ping_id"]), http.StatusOK)
+	item = exact["results"].([]any)[0].(map[string]any)
+	if item["status_code"] != "AVAILABLE" || item["faceURL"] == nil {
+		t.Fatalf("exact search did not restore the unblocked profile image: %#v", item)
 	}
 	postAuthenticatedJSON(t, client, base+"/v1/stories/"+storyID+"/view", viewerAccess, `{}`, http.StatusOK)
 	broad = postAuthenticatedJSON(t, client, base+"/v1/friends/search", viewerAccess, fmt.Sprintf(`{"query":%q,"field":"username"}`, prefix+"-block"), http.StatusOK)
