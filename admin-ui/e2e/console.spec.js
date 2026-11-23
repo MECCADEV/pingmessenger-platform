@@ -56,6 +56,6 @@ test('moderator can sign in, inspect evidence, and resolve a report', async ({ p
   await page.getByRole('button', { name: 'Mark actioned' }).click();
   expect(reviewedPayload).toEqual({ status: 'actioned', notes: 'Reviewed and escalated to the safety team.' });
   await page.getByRole('combobox').selectOption('actioned');
-  await expect(page.getByText('#d1a36e79')).toBeVisible();
+  await expect(page.getByRole('row', { name: /#d1a36e79/ })).toBeVisible();
   await expect(page.getByText('actioned', { exact: true }).first()).toBeVisible();
 });
