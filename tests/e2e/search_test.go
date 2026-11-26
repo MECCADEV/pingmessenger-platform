@@ -136,7 +136,13 @@ func TestBlockedUserVisibilityAgainstDeployedAPI(t *testing.T) {
 	if item["status_code"] != "AVAILABLE" || item["faceURL"] == nil {
 		t.Fatalf("exact search did not restore the unblocked profile image: %#v", item)
 	}
-	postAuthenticatedJSON(t, client, base+"/v1/stories/"+storyID+"/view", viewerAccess, `{}`, http.StatusOK)
+	// This story has no friend recipients, so it remains unavailable after the
+	// block is removed; the targeted status and exact search above verify that
+	// the block state itself has cleared.
+	view = postAuthenticatedJSON(t, client, base+"/v1/stories/"+storyID+"/view", viewerAccess, `{}`, http.StatusForbidden)
+	if view["error"] != "story is not available" {
+		t.Fatalf("story outside the viewer's audience was exposed after unblock: %#v", view)
+	}
 	broad = postAuthenticatedJSON(t, client, base+"/v1/friends/search", viewerAccess, fmt.Sprintf(`{"query":%q,"field":"username"}`, prefix+"-block"), http.StatusOK)
 	if broad["total"] != float64(1) {
 		t.Fatalf("broad search did not restore the unblocked account: %#v", broad)
