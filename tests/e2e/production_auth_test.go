@@ -459,7 +459,14 @@ func issueDeviceOpenIMTokenForE2E(t *testing.T, client *http.Client, base, acces
 
 func dialOpenIMClient(t *testing.T, base, token, userID string) *websocket.Conn {
 	t.Helper()
-	wsURL := strings.Replace(base, "https://", "wss://", 1) + "/openim/ws?" + url.Values{
+	wsBase := strings.TrimSpace(os.Getenv("E2E_OPENIM_WS_BASE_URL"))
+	if wsBase == "" {
+		wsBase = base
+	}
+	wsBase = strings.TrimRight(wsBase, "/")
+	wsBase = strings.Replace(wsBase, "https://", "wss://", 1)
+	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
+	wsURL := wsBase + "/openim/ws?" + url.Values{
 		"token":        {token},
 		"sendID":       {userID},
 		"platformID":   {"5"},

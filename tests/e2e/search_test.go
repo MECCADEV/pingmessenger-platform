@@ -93,8 +93,8 @@ func TestBlockedUserVisibilityAgainstDeployedAPI(t *testing.T) {
 		t.Fatalf("blocked viewer received story media: %#v", media)
 	}
 	view := postAuthenticatedJSON(t, client, base+"/v1/stories/"+storyID+"/view", viewerAccess, `{}`, http.StatusForbidden)
-	if view["code"] != "BLOCKED_BY_USER" {
-		t.Fatalf("blocked viewer story response=%#v", view)
+	if view["error"] != "story is not available" {
+		t.Fatalf("blocked viewer did not receive the generic unavailable response: %#v", view)
 	}
 	ws := dialStoryWS(t, base, viewerAccess)
 	if err := ws.WriteJSON(map[string]any{"type": "sync", "global_cursor": 0, "user_cursors": map[string]int64{}, "limit": 100}); err != nil {
@@ -123,6 +123,10 @@ func TestBlockedUserVisibilityAgainstDeployedAPI(t *testing.T) {
 	// The block owner can remove their own block; exact and broad search then
 	// return the normal profile state again.
 	deleteNoContent(t, client, base+"/v1/blocks/"+viewer["ping_id"].(string), blockerAccess)
+	blocksAfterUnblock := getAuthenticatedJSON(t, client, base+"/v1/blocks", blockerAccess, http.StatusOK)
+	if items, ok := blocksAfterUnblock["blocks"].([]any); !ok || len(items) != 0 {
+		t.Fatalf("block owner still has outgoing blocks after unblock: %#v", blocksAfterUnblock)
+	}
 	status = getAuthenticatedJSON(t, client, base+"/v1/users/"+blocker["ping_id"].(string)+"/status", viewerAccess, http.StatusOK)
 	if status["status_code"] != "AVAILABLE" {
 		t.Fatalf("status after owner unblock=%#v", status)

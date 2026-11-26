@@ -252,8 +252,10 @@ func (a *API) blockedByRequester(ctx context.Context, requesterOpenIMID string, 
 			if err != nil {
 				return nil, err
 			}
-			for userID := range chunk {
-				blocked[userID] = true
+			for userID, isBlocked := range chunk {
+				if isBlocked {
+					blocked[userID] = true
+				}
 			}
 		}
 		return blocked, nil
