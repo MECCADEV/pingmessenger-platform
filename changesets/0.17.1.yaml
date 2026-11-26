@@ -1,0 +1,13 @@
+apiVersion: pingmessenger.dev/v1
+kind: APIChangeSet
+version:
+  previous: 0.17.0
+  next: 0.17.1
+  bump: patch
+  compatibility: unblock-status-refresh
+releaseDate: 2026-11-26
+summary: Corrects targeted blocked-user status after the block owner unblocks an account.
+changes:
+- id: blocked-user-unblock-status
+  type: behavior
+  description: Preserves false results from OpenIM's directional block-status batch so a successfully unblocked user returns AVAILABLE.
