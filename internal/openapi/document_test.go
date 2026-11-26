@@ -13,7 +13,7 @@ func TestDocumentCoversRuntimeRoutes(t *testing.T) {
 	if doc.OpenAPI != "3.1.0" {
 		t.Fatalf("OpenAPI version = %q", doc.OpenAPI)
 	}
-	if doc.Info.Version != "0.17.0" {
+	if doc.Info.Version != "0.17.1" {
 		t.Fatalf("API version = %q", doc.Info.Version)
 	}
 	for _, path := range []string{

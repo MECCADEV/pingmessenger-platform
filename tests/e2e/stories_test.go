@@ -453,7 +453,11 @@ func getAuthenticatedJSON(t *testing.T, c *http.Client, endpoint, access string,
 
 func dialStoryWS(t *testing.T, base, access string) *websocket.Conn {
 	t.Helper()
-	u, err := url.Parse(base + "/v1/stories/ws")
+	wsBase := strings.TrimSpace(os.Getenv("E2E_STORY_WS_BASE_URL"))
+	if wsBase == "" {
+		wsBase = base
+	}
+	u, err := url.Parse(strings.TrimRight(wsBase, "/") + "/v1/stories/ws")
 	if err != nil {
 		t.Fatal(err)
 	}
